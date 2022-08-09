@@ -2,5 +2,22 @@ Khana Timing project
 
 Now Rust this time
 Rust WASM for client side
+  - Building with trunk
+  - yew? or seed for stuff.
 Rust Rocket for server
 
+
+
+
+## 2. Install / check required tools
+
+1. Make sure you have basic tools installed:
+
+  - [Rust](https://www.rust-lang.org)
+  - cargo install --locked trunk
+
+Once you've installed Trunk, simply execute `trunk serve --open` from this example's directory, and you should see the web application rendered in your browser.
+
+
+
+## 4. Write your website
