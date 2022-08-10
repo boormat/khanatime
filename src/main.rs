@@ -1,14 +1,19 @@
 use enclose::enc;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
-use std::mem;
+use std::{
+    // async_iter::from_iter,
+    collections::{HashMap, HashSet},
+    mem,
+};
 use uuid::Uuid;
 use web_sys::HtmlInputElement;
 
 const ENTER_KEY: u32 = 13;
 const ESC_KEY: u32 = 27;
 const STORAGE_KEY: &str = "seed-todomvc";
+const EVENT_STORAGE_KEY: &str = "kts-event";
 
 type TodoId = Uuid;
 
@@ -24,11 +29,12 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
     Model {
         data: LocalStorage::get(STORAGE_KEY).unwrap_or_default(),
         refs: Refs::default(),
+        event: LocalStorage::get(EVENT_STORAGE_KEY).unwrap_or_default(), //Event::default(), // { name: (), times: (), scores: (), classes: (), entries: (), filter: (), new_todo_title: (), editing_todo: () }
     }
 }
 
 // ------ ------
-//     Model
+//     Models
 // ------ ------
 
 // ------ Model ------
@@ -36,6 +42,46 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
 struct Model {
     data: Data,
     refs: Refs,
+    event: Event,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Event {
+    name: String,
+
+    times: Vec<RawScore>, // raw times, order of insertion
+    scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
+    classes: IndexSet<String>,                       // list of known classes. Order as per display
+    entries: IndexMap<String, Entry>, // list of know entrants/drivers. Ordered by car number
+
+                                      // IndexMap<TodoId, Todo>,
+                                      // filter: TodoFilter,
+                                      // new_todo_title: String,
+                                      // editing_todo: Option<EditingTodo>,
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        // let letters: IndexSet<_> = "a short treatise on fungi".chars().collect();
+        let c = ["Outright", "Female", "Junior"];
+        let args = c.iter().map(|&s| s.into()).collect();
+
+        // let a: Vec<_> = vec!["Outright", "Female", "Junior"];
+        // a.t .map(|a|) {a. to_string};
+        // let b: IndexSet<_> = a.iter().collect(); // ndexSet::from_iter(a);
+        // let d = b;
+        let classes: IndexSet<String> = args;
+        Self {
+            name: "Event TBA2".to_owned(),
+            times: Default::default(),
+            scores: Default::default(),
+            // classes: IndexSet::from_iter(vec!["Outright", "Female", "Junior" ]),
+            entries: Default::default(),
+            classes,
+            // classes: todo!(),
+            // entries: todo!(),
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -52,8 +98,74 @@ struct Refs {
 }
 
 // ------ Todo ------
+// WD, wronmg direction
+// DNS, dis not start
+// FTS failed to stop
+// DNF did not finish
+#[derive(Default, Serialize, Deserialize)]
+enum Time {
+    #[default]
+    DNS,
+    WD,
+    FTS,
+    DNF,
+    Time(f32), // seconds
+}
 
-#[derive(Serialize, Deserialize)]
+// impl Default for Time {
+//     fn default() -> Self {
+//         Time::DNS
+//     }
+// }
+// need Class eventauuily.  Driver/car + outright.  Or just filter in/out.
+// Probably like spreadsheet .. posn vs class.
+// entrant gets all the classes y/n
+// calc posn of relevant class.
+#[derive(Default, Serialize, Deserialize)]
+struct RawScore {
+    /// data entry.  P
+    stage: i8,
+    car: String,
+    time: Time, // as entered.. maybe an enum? of codes and time?
+    flags: i8,
+    ignore: bool, // set when should be used in results.  Ignored if not current, i.e. has been replaced
+    when: String, // timestamp of create/edit
+    by: String,   // user id
+}
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
+struct Pos {
+    order: i8,                    // overall pos, for sorting.. might not be required?
+    pos: HashMap<String, String>, // columname/Classname vs position. Posn is String for =2nd and suchlike
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct CalcScore {
+    // data entry.  P
+    stage: Vec<Pos>,
+    outright: Vec<Pos>,
+    // pos: i8,       // outright position
+    // stage_pos: i8, // position in stage
+    // number i8,
+    car: String,
+    time: Time, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
+    flags: i8,
+}
+
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
+struct Entry {
+    car: String,     // entry/car number
+    name: String,    // name
+    vehicle: String, // description
+    classes: HashSet<String>, // Classname vs position.
+                     // Display sorting maintained in event/File
+                     // order: f32, // sort order based on car oe.g. '0A', '00'.  User can edit, eg  handle seeding
+}
+
+// impl Entry {}
+
+// ------ Todo ------
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 struct Todo {
     title: String,
     completed: bool,
@@ -65,20 +177,6 @@ struct Todo {
 struct EditingTodo {
     id: TodoId,
     title: String,
-}
-
-// `Model` describes our app state.
-// Simplest is a single event.  We upload/download to archive.
-struct Model2 {
-    event: String,
-    scores: Vec<Score>,
-}
-
-// Result for a run .. later problem keeping raw times in stopwatch mode
-struct Score {
-    car: String,
-    // time_s: Float,
-    completed: bool,
 }
 
 // ------ TodoFilter ------
@@ -227,6 +325,7 @@ fn view(model: &Model) -> impl IntoNodes<Msg> {
                     &model.refs.editing_todo_input,
                 ),
                 view_footer(&data.todos, data.filter),
+                view_event(&model.event),
             ]
         },
     ]
@@ -277,6 +376,10 @@ fn view_main(
         label![attrs! {At::For => "toggle-all"}, "Mark all as complete"],
         view_todos(todos, filter, editing_todo, editing_todo_input)
     ]
+}
+
+fn view_event(event: &Event) -> Node<Msg> {
+    ul![div!("hello"), div!(event.name.clone())]
 }
 
 fn view_todos(
@@ -408,6 +511,41 @@ fn view_clear_completed(todos: &IndexMap<TodoId, Todo>) -> Option<Node<Msg>> {
         ]
     })
 }
+
+// WD, wronmg direction
+// DNS, dis not start
+// FTS failed to stop
+// DNF did not finish
+
+// The application of penalties must be as follows for each infringement:
+// Penalty Condition Penalty Applied
+// (i) Wrong direction Slowest time plus five (5) seconds
+// (ii) Any other action that can be deemed as incorrectly
+// completing that course (such as reversing after exceed the
+// limits of a garage)
+// Slowest time plus five (5) seconds
+
+// (iii) Failure to complete a test Slowest time plus five (5) seconds
+// (iv) Running out of order (without the prior approval of the Clerk
+// of the Course)
+// Slowest time plus five (5) seconds
+
+// (v) Failing to stop completely within a mid-course garage Slowest time plus five (5) seconds
+// (vi) Failing to stop completely at the finish of a test Slowest time plus five (5) seconds
+// (vii) Finish a test with the car stopped but completely
+// outside the garage
+// Slowest time plus five (5) seconds
+
+// (viii) Finishing a test with part of the car outside the
+// garage boundaries (plus the penalty for striking any
+// flag/marker
+// Plus five (5) seconds plus any
+
+// flag/marker strike
+// (ix) Striking a course flag/marker(including garage boundary
+// flag/marker)
+// Plus five (5) seconds per flag/marker
+// (x) Failure to attempt a test Slowest time plus ten (10) seconds
 
 // ------ ------
 //     Start
