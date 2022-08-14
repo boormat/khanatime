@@ -3,6 +3,7 @@ use kts::khana_rule::RULES_MARKDOWN;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp::max,
     collections::{HashMap, HashSet},
     mem,
 };
@@ -20,7 +21,7 @@ const EVENT_PREFIX: &str = "EVENT:";
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
         events: list_events(),
-        cmd: SessionStorage::get(UI_STORAGE_KEY).unwrap_or_default(),
+        ui: SessionStorage::get(UI_STORAGE_KEY).unwrap_or_default(),
         event: Default::default(),
     }
 }
@@ -32,80 +33,61 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
 // ------ Model ------
 
 struct Model {
-    cmd: CmdUi,          // cmd prompt. Probably will want an enum to get a hint on what to do
-    events: Vec<String>, // names of known/stored events (local)
-    event: Event,
-}
-
-#[derive(Default, Serialize, Deserialize)]
-enum UiState {
-    #[default]
-    NoEvent,
-    InStage,
-    Show,
+    ui: CmdUi, // cmd prompt. Probably will want an enum to get a hint on what to do
+    events: HashSet<String>, // names of known/stored events (local)
+    event: Event, // active event
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct CmdUi {
+    // UI state.  Stored in session
     cmd: String, // cmd prompt. Probably will want an enum to get a hint on what to do
-    mode: UiState,
-    stage: i8, // curent stage displayed
+    page: Page,
+    event: String, // curent event displayed
+    stage: i8,     // curent stage displayed
 }
-
-// #[derive(Serialize, Deserialize)]
-// struct Stage {
-//     num: i8,
-//     name: String,
-// }
+#[derive(Default, Serialize, Deserialize)]
+enum Page {
+    #[default]
+    Home,
+    InStage,
+    InEvent,
+}
 
 #[derive(Serialize, Deserialize)]
 struct Event {
     name: String,
-    // stages: Vec<Stage>,                              // existing stages... meh
-    stages: HashSet<i8>,                             // existing stages... meh
-    times: Vec<RawScore>,                            // raw times, order of insertion
+    stages_count: i8, // number of stages to run. 1 indexed
+    // stages: HashSet<i8>, // stage numbers/index (we might have to skip some?)
+    // times: Vec<RawScore>,                            // raw times, order of insertion
     scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
     classes: IndexSet<String>,                       // list of known classes. Order as per display
     entries: IndexMap<String, Entry>, // list of know entrants/drivers. Ordered by car number
-
-                                      // IndexMap<TodoId, Todo>,
-                                      // filter: TodoFilter,
-                                      // new_todo_title: String,
-                                      // editing_todo: Option<EditingTodo>,
 }
 
-impl Default for Event {
-    fn default() -> Self {
-        // let letters: IndexSet<_> = "a short treatise on fungi".chars().collect();
-        let c = ["Outright", "Female", "Junior"];
-        let args = c.iter().map(|&s| s.into()).collect();
+#[derive(Default, Serialize, Deserialize)]
+struct CalcScore {
+    // keys
+    car: String,
+    stage: i8,
 
-        // let a: Vec<_> = vec!["Outright", "Female", "Junior"];
-        // a.t .map(|a|) {a. to_string};
-        // let b: IndexSet<_> = a.iter().collect(); // ndexSet::from_iter(a);
-        // let d = b;
-        let classes: IndexSet<String> = args;
-        Self {
-            // name: "Event TBA2".to_owned(),
-            // stages
-            name: Default::default(),
-            stages: Default::default(),
-            times: Default::default(),
-            scores: Default::default(),
-            // classes: IndexSet::from_iter(vec!["Outright", "Female", "Junior" ]),
-            entries: Default::default(),
-            classes,
-            // classes: todo!(),
-            // entries: todo!(),
-        }
-    }
+    // date
+    time: Time, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
+    flags: i8,
+
+    // calculated
+    score: f32, // derived time
+    // positions.
+    pos_stage: Pos,
+    pos_outright: Pos,
 }
 
-// ------ Todo ------
-// WD, wronmg direction
-// DNS, dis not start
-// FTS failed to stop
-// DNF did not finish
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
+struct Pos {
+    order: i8,                    // overall pos, for sorting.. might not be required?
+    pos: HashMap<String, String>, // columname/Classname vs position. Posn is String for =2nd and suchlike
+}
+
 #[derive(Default, Serialize, Deserialize)]
 enum Time {
     #[default]
@@ -114,6 +96,45 @@ enum Time {
     FTS,
     DNF,
     Time(f32), // seconds
+}
+#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
+struct Entry {
+    car: String,     // entry/car number
+    name: String,    // name
+    vehicle: String, // description
+    classes: HashSet<String>, // Classname vs position.
+                     // Display sorting maintained in event/File
+                     // order: f32, // sort order based on car oe.g. '0A', '00'.  User can edit, eg  handle seeding
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        // let letters: IndexSet<_> = "a short treatise on fungi".chars().collect();
+
+        // let a: Vec<_> = vec!["Outright", "Female", "Junior"];
+        // a.t .map(|a|) {a. to_string};
+        // let b: IndexSet<_> = a.iter().collect(); // ndexSet::from_iter(a);
+        // let d = b;
+        // let classes = IndexSet::from_iter(default_classes());
+        Self {
+            // name: "Event TBA2".to_owned(),
+            // stages
+            name: Default::default(),
+            // stages: Default::default(),
+            stages_count: 10, // default is 10
+            // times: Default::default(),
+            scores: Default::default(),
+            entries: Default::default(),
+            classes: IndexSet::from_iter(default_classes()),
+        }
+    }
+}
+
+fn default_classes() -> Vec<String> {
+    ["Outright", "Female", "Junior"]
+        .iter()
+        .map(|&s| s.into())
+        .collect::<_>()
 }
 
 // impl Default for Time {
@@ -125,46 +146,7 @@ enum Time {
 // Probably like spreadsheet .. posn vs class.
 // entrant gets all the classes y/n
 // calc posn of relevant class.
-#[derive(Default, Serialize, Deserialize)]
-struct RawScore {
-    /// data entry.  P
-    stage: i8,
-    car: String,
-    time: Time, // as entered.. maybe an enum? of codes and time?
-    flags: i8,
-    ignore: bool, // set when should be used in results.  Ignored if not current, i.e. has been replaced
-    when: String, // timestamp of create/edit
-    by: String,   // user id
-}
-#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
-struct Pos {
-    order: i8,                    // overall pos, for sorting.. might not be required?
-    pos: HashMap<String, String>, // columname/Classname vs position. Posn is String for =2nd and suchlike
-}
-
-#[derive(Default, Serialize, Deserialize)]
-struct CalcScore {
-    // data entry.  P
-    stage: Vec<Pos>,
-    outright: Vec<Pos>,
-    // pos: i8,       // outright position
-    // stage_pos: i8, // position in stage
-    // number i8,
-    car: String,
-    time: Time, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
-    flags: i8,
-}
-
-#[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
-struct Entry {
-    car: String,     // entry/car number
-    name: String,    // name
-    vehicle: String, // description
-    classes: HashSet<String>, // Classname vs position.
-                     // Display sorting maintained in event/File
-                     // order: f32, // sort order based on car oe.g. '0A', '00'.  User can edit, eg  handle seeding
-}
-
+// #[derive(Default, Serialize, Deserialize)]
 // ------ ------
 //    Update
 // ------ ------
@@ -181,14 +163,14 @@ fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
     match msg {
         // text box typing
         Msg::DataEntry(value) => {
-            model.cmd.cmd = value;
+            model.ui.cmd = value;
         }
         Msg::CancelEdit => {
-            model.cmd.cmd.clear();
+            model.ui.cmd.clear();
         }
         Msg::CreateEvent => {
-            model.event.name = mem::take(&mut model.cmd.cmd);
-            model.cmd.mode = UiState::Show;
+            model.event.name = mem::take(&mut model.ui.cmd);
+            model.ui.page = Page::InEvent;
         }
         Msg::ShowStage => {
             // creates it if new.  Cmd is number space optional name
@@ -196,10 +178,10 @@ fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
             // ?;// whitespace();
             // hmm need validation!
             // model.event.stages. = mem::take(&mut model.cmd.cmd);
-            if let Ok(i) = model.cmd.cmd.parse() {
-                model.cmd.mode = UiState::InStage;
-                model.cmd.stage = i; // type from here. Sheesh turbofish ::<
-                model.event.stages.insert(i);
+            if let Ok(i) = model.ui.cmd.parse() {
+                model.ui.page = Page::InStage;
+                model.ui.stage = i; // type from here. Sheesh turbofish ::<
+                model.event.stages_count = max(i, model.event.stages_count);
             }; //; = model.cmd.cmd.to
         }
         Msg::AddTime => todo!(),
@@ -215,15 +197,15 @@ fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
 
 /// list of known events in storage.  String is storage key, is the event name
 /// if it fails .. empty is fine
-fn list_events() -> Vec<String> {
+fn list_events() -> HashSet<String> {
     let len = LocalStorage::len().unwrap_or_default();
-    let mut out: Vec<String> = Vec::new();
+    let mut out: HashSet<String> = Default::default();
     // ugly it up with map?
     // out.push("dog".to_string());
     (0..len).for_each(|i| {
         if let Ok(name) = LocalStorage::key(i) {
             if name.starts_with(EVENT_PREFIX) {
-                out.push(name[EVENT_PREFIX.len()..].to_string());
+                out.insert(name[EVENT_PREFIX.len()..].to_string());
             }
         }
     });
@@ -236,10 +218,10 @@ fn list_events() -> Vec<String> {
 
 fn view(model: &Model) -> impl IntoNodes<Msg> {
     // let data = &model.data;
-    match model.cmd.mode {
-        UiState::NoEvent => view_no_event(&model),
-        UiState::Show => view_show_event(&model),
-        UiState::InStage => view_show_stage(&model),
+    match model.ui.page {
+        Page::Home => view_no_event(&model),
+        Page::InEvent => view_show_event(&model),
+        Page::InStage => view_show_stage(&model),
     }
     // nodes![
     //     vec![
@@ -271,7 +253,7 @@ fn view_no_event(model: &Model) -> Node<Msg> {
             attrs! {
                 At::Placeholder => "New Event Name?"; // this changes
                 At::AutoFocus => true.as_at_value();
-                At::Value => model.cmd.cmd;
+                At::Value => model.ui.cmd;
             },
             keyboard_ev(Ev::KeyDown, |keyboard_event| {
                 match keyboard_event.key_code() {
@@ -297,7 +279,7 @@ fn view_show_event(model: &Model) -> Node<Msg> {
             attrs! {
                 At::Placeholder => "stage to edit?"; // this changes
                 At::AutoFocus => true.as_at_value();
-                At::Value => model.cmd.cmd;
+                At::Value => model.ui.cmd;
             },
             keyboard_ev(Ev::KeyDown, |keyboard_event| {
                 match keyboard_event.key_code() {
@@ -322,7 +304,7 @@ fn view_show_stage(model: &Model) -> Node<Msg> {
             attrs! {
                 At::Placeholder => "stage to edit?"; // this changes
                 At::AutoFocus => true.as_at_value();
-                At::Value => model.cmd.cmd;
+                At::Value => model.ui.cmd;
             },
             keyboard_ev(Ev::KeyDown, |keyboard_event| {
                 match keyboard_event.key_code() {
@@ -358,9 +340,9 @@ fn view_event_link(name: &String) -> Node<Msg> {
 fn view_stage_links(model: &Model) -> Node<Msg> {
     ul![
         C!["stages"],
-        model.event.stages.iter().map(|stage| {
-            let current = *stage == model.cmd.stage;
-            view_stage_link(*stage, current)
+        (1..model.event.stages_count).map(|stage| {
+            let current = stage == model.ui.stage;
+            view_stage_link(stage, current)
         })
     ]
 }
