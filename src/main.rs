@@ -1,7 +1,5 @@
-mod khana_rule;
-
 use indexmap::{IndexMap, IndexSet};
-use khana_rule::RULES_MARKDOWN;
+use kts::khana_rule::RULES_MARKDOWN;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -22,8 +20,7 @@ const EVENT_PREFIX: &str = "EVENT:";
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
         events: list_events(),
-        cmd: LocalStorage::get(UI_STORAGE_KEY).unwrap_or_default(), //Event::default(), // { name: (), times: (), scores: (), classes: (), entries: (), filter: (), new_todo_title: (), editing_todo: () }
-        // event: LocalStorage::get(EVENT_STORAGE_KEY).unwrap_or_default(), //Event::default(), // { name: (), times: (), scores: (), classes: (), entries: (), filter: (), new_todo_title: (), editing_todo: () }
+        cmd: SessionStorage::get(UI_STORAGE_KEY).unwrap_or_default(),
         event: Default::default(),
     }
 }
