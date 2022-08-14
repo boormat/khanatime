@@ -1,35 +1,30 @@
-use enclose::enc;
+mod khana_rule;
+
 use indexmap::{IndexMap, IndexSet};
+use khana_rule::RULES_MARKDOWN;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 use std::{
-    // async_iter::from_iter,
     collections::{HashMap, HashSet},
     mem,
 };
-use uuid::Uuid;
-use web_sys::HtmlInputElement;
+// use uuid::Uuid;
 
 const ENTER_KEY: u32 = 13;
 const ESC_KEY: u32 = 27;
-const STORAGE_KEY: &str = "seed-todomvc";
-const EVENT_STORAGE_KEY: &str = "kts-event";
-
-type TodoId = Uuid;
+const UI_STORAGE_KEY: &str = "kts";
+const EVENT_PREFIX: &str = "EVENT:";
 
 // ------ ------
 //     Init
 // ------ ------
 
-fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
-    orders
-        .subscribe(Msg::UrlChanged)
-        .notify(subs::UrlChanged(url));
-
+fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
-        data: LocalStorage::get(STORAGE_KEY).unwrap_or_default(),
-        refs: Refs::default(),
-        event: LocalStorage::get(EVENT_STORAGE_KEY).unwrap_or_default(), //Event::default(), // { name: (), times: (), scores: (), classes: (), entries: (), filter: (), new_todo_title: (), editing_todo: () }
+        events: list_events(),
+        cmd: LocalStorage::get(UI_STORAGE_KEY).unwrap_or_default(), //Event::default(), // { name: (), times: (), scores: (), classes: (), entries: (), filter: (), new_todo_title: (), editing_todo: () }
+        // event: LocalStorage::get(EVENT_STORAGE_KEY).unwrap_or_default(), //Event::default(), // { name: (), times: (), scores: (), classes: (), entries: (), filter: (), new_todo_title: (), editing_todo: () }
+        event: Default::default(),
     }
 }
 
@@ -40,16 +35,38 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
 // ------ Model ------
 
 struct Model {
-    data: Data,
-    refs: Refs,
+    cmd: CmdUi,          // cmd prompt. Probably will want an enum to get a hint on what to do
+    events: Vec<String>, // names of known/stored events (local)
     event: Event,
 }
+
+#[derive(Default, Serialize, Deserialize)]
+enum UiState {
+    #[default]
+    NoEvent,
+    InStage,
+    Show,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct CmdUi {
+    cmd: String, // cmd prompt. Probably will want an enum to get a hint on what to do
+    mode: UiState,
+    stage: i8, // curent stage displayed
+}
+
+// #[derive(Serialize, Deserialize)]
+// struct Stage {
+//     num: i8,
+//     name: String,
+// }
 
 #[derive(Serialize, Deserialize)]
 struct Event {
     name: String,
-
-    times: Vec<RawScore>, // raw times, order of insertion
+    // stages: Vec<Stage>,                              // existing stages... meh
+    stages: HashSet<i8>,                             // existing stages... meh
+    times: Vec<RawScore>,                            // raw times, order of insertion
     scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
     classes: IndexSet<String>,                       // list of known classes. Order as per display
     entries: IndexMap<String, Entry>, // list of know entrants/drivers. Ordered by car number
@@ -72,7 +89,10 @@ impl Default for Event {
         // let d = b;
         let classes: IndexSet<String> = args;
         Self {
-            name: "Event TBA2".to_owned(),
+            // name: "Event TBA2".to_owned(),
+            // stages
+            name: Default::default(),
+            stages: Default::default(),
             times: Default::default(),
             scores: Default::default(),
             // classes: IndexSet::from_iter(vec!["Outright", "Female", "Junior" ]),
@@ -82,19 +102,6 @@ impl Default for Event {
             // entries: todo!(),
         }
     }
-}
-
-#[derive(Default, Serialize, Deserialize)]
-struct Data {
-    todos: IndexMap<TodoId, Todo>,
-    filter: TodoFilter,
-    new_todo_title: String,
-    editing_todo: Option<EditingTodo>,
-}
-
-#[derive(Default)]
-struct Refs {
-    editing_todo_input: ElRef<HtmlInputElement>,
 }
 
 // ------ Todo ------
@@ -161,149 +168,69 @@ struct Entry {
                      // order: f32, // sort order based on car oe.g. '0A', '00'.  User can edit, eg  handle seeding
 }
 
-// impl Entry {}
-
-// ------ Todo ------
-
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
-struct Todo {
-    title: String,
-    completed: bool,
-}
-
-// ------ EditingTodo ------
-
-#[derive(Serialize, Deserialize)]
-struct EditingTodo {
-    id: TodoId,
-    title: String,
-}
-
-// ------ TodoFilter ------
-
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-enum TodoFilter {
-    All,
-    Active,
-    Completed,
-}
-
-impl Default for TodoFilter {
-    fn default() -> Self {
-        Self::All
-    }
-}
-
-impl TodoFilter {
-    const fn to_url_path(self) -> &'static str {
-        match self {
-            Self::All => "",
-            Self::Active => "active",
-            Self::Completed => "completed",
-        }
-    }
-}
-
 // ------ ------
 //    Update
 // ------ ------
 
 enum Msg {
-    UrlChanged(subs::UrlChanged),
-
-    NewTodoTitleChanged(String),
-    ClearCompleted,
-    ToggleAll,
-
-    CreateNewTodo,
-    ToggleTodo(TodoId),
-    RemoveTodo(TodoId),
-
-    StartTodoEdit(TodoId),
-    EditingTodoTitleChanged(String),
-    SaveEditingTodo,
-    CancelTodoEdit,
+    DataEntry(String),
+    CreateEvent,
+    CancelEdit,
+    ShowStage,
+    AddTime,
 }
 
-fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
-    let data = &mut model.data;
+fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
     match msg {
-        Msg::UrlChanged(subs::UrlChanged(mut url)) => {
-            data.filter = match url.next_path_part() {
-                Some(path_part) if path_part == TodoFilter::Active.to_url_path() => {
-                    TodoFilter::Active
-                }
-                Some(path_part) if path_part == TodoFilter::Completed.to_url_path() => {
-                    TodoFilter::Completed
-                }
-                _ => TodoFilter::All,
-            };
+        // text box typing
+        Msg::DataEntry(value) => {
+            model.cmd.cmd = value;
         }
-        Msg::NewTodoTitleChanged(title) => {
-            data.new_todo_title = title;
+        Msg::CancelEdit => {
+            model.cmd.cmd.clear();
         }
-        Msg::ClearCompleted => {
-            data.todos.retain(|_, todo| !todo.completed);
+        Msg::CreateEvent => {
+            model.event.name = mem::take(&mut model.cmd.cmd);
+            model.cmd.mode = UiState::Show;
         }
-        Msg::ToggleAll => {
-            let all_todos_completed = data.todos.values().all(|todo| todo.completed);
-
-            for (_, todo) in &mut data.todos {
-                todo.completed = !all_todos_completed
-            }
+        Msg::ShowStage => {
+            // creates it if new.  Cmd is number space optional name
+            // switch  (no, name) = model.cmd.cmd.split_once(" "){
+            // ?;// whitespace();
+            // hmm need validation!
+            // model.event.stages. = mem::take(&mut model.cmd.cmd);
+            if let Ok(i) = model.cmd.cmd.parse() {
+                model.cmd.mode = UiState::InStage;
+                model.cmd.stage = i; // type from here. Sheesh turbofish ::<
+                model.event.stages.insert(i);
+            }; //; = model.cmd.cmd.to
         }
-
-        Msg::CreateNewTodo => {
-            data.todos.insert(
-                TodoId::new_v4(),
-                Todo {
-                    title: mem::take(&mut data.new_todo_title),
-                    completed: false,
-                },
-            );
-        }
-        Msg::ToggleTodo(todo_id) => {
-            if let Some(todo) = data.todos.get_mut(&todo_id) {
-                todo.completed = !todo.completed;
-            }
-        }
-        Msg::RemoveTodo(todo_id) => {
-            data.todos.shift_remove(&todo_id);
-        }
-
-        Msg::StartTodoEdit(todo_id) => {
-            if let Some(todo) = data.todos.get(&todo_id) {
-                data.editing_todo = Some({
-                    EditingTodo {
-                        id: todo_id,
-                        title: todo.title.clone(),
-                    }
-                });
-            }
-
-            let input = model.refs.editing_todo_input.clone();
-            orders.after_next_render(move |_| {
-                input.get().expect("get `editing_todo_input`").select();
-            });
-        }
-        Msg::EditingTodoTitleChanged(title) => {
-            if let Some(ref mut editing_todo) = data.editing_todo {
-                editing_todo.title = title
-            }
-        }
-        Msg::SaveEditingTodo => {
-            if let Some(editing_todo) = data.editing_todo.take() {
-                if let Some(todo) = data.todos.get_mut(&editing_todo.id) {
-                    todo.title = editing_todo.title;
-                }
-            }
-        }
-        Msg::CancelTodoEdit => {
-            data.editing_todo = None;
-        }
+        Msg::AddTime => todo!(),
     }
     // Note: It should be optimized in a real-world application.
-    LocalStorage::insert(STORAGE_KEY, &data).expect("save data to LocalStorage");
+    // LocalStorage::insert(UI_STORAGE_KEY, &model.cmd)
+    //     .expect("save UI stage to LocalStorage ... Session variables");
+    if !model.event.name.is_empty() {
+        let key = format!("{}{}", EVENT_PREFIX, model.event.name);
+        LocalStorage::insert(key, &model.event).expect("save data to LocalStorage");
+    }
+}
+
+/// list of known events in storage.  String is storage key, is the event name
+/// if it fails .. empty is fine
+fn list_events() -> Vec<String> {
+    let len = LocalStorage::len().unwrap_or_default();
+    let mut out: Vec<String> = Vec::new();
+    // ugly it up with map?
+    // out.push("dog".to_string());
+    (0..len).for_each(|i| {
+        if let Ok(name) = LocalStorage::key(i) {
+            if name.starts_with(EVENT_PREFIX) {
+                out.push(name[EVENT_PREFIX.len()..].to_string());
+            }
+        }
+    });
+    return out;
 }
 
 // ------ ------
@@ -311,241 +238,146 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
 // ------ ------
 
 fn view(model: &Model) -> impl IntoNodes<Msg> {
-    let data = &model.data;
-    nodes![
-        view_header(&data.new_todo_title),
-        if data.todos.is_empty() {
-            vec![]
-        } else {
-            vec![
-                view_main(
-                    &data.todos,
-                    data.filter,
-                    &data.editing_todo,
-                    &model.refs.editing_todo_input,
-                ),
-                view_footer(&data.todos, data.filter),
-                view_event(&model.event),
-            ]
-        },
-    ]
+    // let data = &model.data;
+    match model.cmd.mode {
+        UiState::NoEvent => view_no_event(&model),
+        UiState::Show => view_show_event(&model),
+        UiState::InStage => view_show_stage(&model),
+    }
+    // nodes![
+    //     vec![
+    //         view_header(&model.event.name),
+    //         view_main(
+    //             &data.todos,
+    //             data.filter,
+    //             &data.editing_todo,
+    //             &model.refs.editing_todo_input,
+    //         ),
+    //         view_footer(&data.todos, data.filter),
+    //         view_event(&model.event),
+    //     ]
+    // },]
+}
+
+fn view_rules() -> Vec<Node<Msg>> {
+    Node::from_markdown(RULES_MARKDOWN)
 }
 
 // ------ header ------
-
-fn view_header(new_todo_title: &str) -> Node<Msg> {
+fn view_no_event(model: &Model) -> Node<Msg> {
+    // let var`
     header![
-        C!["header"],
-        h1!["todos"],
+        // C!["header"],
+        h1!["KhanaTimingSystem"],
         input![
             C!["new-todo"],
             attrs! {
-                At::Placeholder => "What needs to be done?";
+                At::Placeholder => "New Event Name?"; // this changes
                 At::AutoFocus => true.as_at_value();
-                At::Value => new_todo_title;
+                At::Value => model.cmd.cmd;
             },
             keyboard_ev(Ev::KeyDown, |keyboard_event| {
-                IF!(keyboard_event.key_code() == ENTER_KEY => Msg::CreateNewTodo)
+                match keyboard_event.key_code() {
+                    ENTER_KEY => Some(Msg::CreateEvent),
+                    ESC_KEY => Some(Msg::CancelEdit),
+                    _ => None,
+                }
             }),
-            input_ev(Ev::Input, Msg::NewTodoTitleChanged),
+            input_ev(Ev::Input, Msg::DataEntry),
+        ],
+        view_event_links(&model),
+        view_rules(),
+    ]
+}
+
+fn view_show_event(model: &Model) -> Node<Msg> {
+    header![
+        C!["header"],
+        h1![format! {"KTS: {}" , model.event.name}],
+        view_stage_links(model),
+        input![
+            C!["new-todo"],
+            attrs! {
+                At::Placeholder => "stage to edit?"; // this changes
+                At::AutoFocus => true.as_at_value();
+                At::Value => model.cmd.cmd;
+            },
+            keyboard_ev(Ev::KeyDown, |keyboard_event| {
+                match keyboard_event.key_code() {
+                    ENTER_KEY => Some(Msg::ShowStage),
+                    ESC_KEY => Some(Msg::CancelEdit),
+                    _ => None,
+                }
+            }),
+            input_ev(Ev::Input, Msg::DataEntry),
         ]
     ]
 }
 
-// ------ main ------
-
-fn view_main(
-    todos: &IndexMap<TodoId, Todo>,
-    filter: TodoFilter,
-    editing_todo: &Option<EditingTodo>,
-    editing_todo_input: &ElRef<HtmlInputElement>,
-) -> Node<Msg> {
-    let all_todos_completed = todos.values().all(|todo| todo.completed);
-
-    section![
-        C!["main"],
+fn view_show_stage(model: &Model) -> Node<Msg> {
+    header![
+        C!["header"],
+        h1![format! {"IN thingy {}" , model.event.name}],
+        h1![format! {"KTS: {}" , model.event.name}],
+        view_stage_links(model),
         input![
-            id!("toggle-all"),
-            C!["toggle-all"],
+            C!["new-todo"],
             attrs! {
-                At::Type => "checkbox",
-                At::Checked => all_todos_completed.as_at_value(),
+                At::Placeholder => "stage to edit?"; // this changes
+                At::AutoFocus => true.as_at_value();
+                At::Value => model.cmd.cmd;
             },
-            ev(Ev::Click, |_| Msg::ToggleAll)
-        ],
-        label![attrs! {At::For => "toggle-all"}, "Mark all as complete"],
-        view_todos(todos, filter, editing_todo, editing_todo_input)
+            keyboard_ev(Ev::KeyDown, |keyboard_event| {
+                match keyboard_event.key_code() {
+                    ENTER_KEY => Some(Msg::AddTime),
+                    ESC_KEY => Some(Msg::CancelEdit),
+                    _ => None,
+                }
+            }),
+            input_ev(Ev::Input, Msg::DataEntry),
+        ]
     ]
 }
 
-fn view_event(event: &Event) -> Node<Msg> {
-    ul![div!("hello"), div!(event.name.clone())]
+fn view_event_links(model: &Model) -> Node<Msg> {
+    ul![
+        C!["events"],
+        model.events.iter().map(|name| {
+            // let current = *stage == model.cmd.stage;
+            view_event_link(&name)
+        })
+    ]
+}
+fn view_event_link(name: &String) -> Node<Msg> {
+    li![a![
+        attrs! {
+            At::Href => format!("/{}", name)
+        },
+        style! {St::Cursor => "pointer"},
+        format!("{}", name)
+    ]]
 }
 
-fn view_todos(
-    todos: &IndexMap<TodoId, Todo>,
-    filter: TodoFilter,
-    editing_todo: &Option<EditingTodo>,
-    editing_todo_input: &ElRef<HtmlInputElement>,
-) -> Node<Msg> {
+fn view_stage_links(model: &Model) -> Node<Msg> {
     ul![
-        C!["todo-list"],
-        todos.iter().filter_map(|(todo_id, todo)| {
-            let show_todo = match filter {
-                TodoFilter::All => true,
-                TodoFilter::Active => !todo.completed,
-                TodoFilter::Completed => todo.completed,
-            };
-            IF!(show_todo => view_todo(todo_id, todo, editing_todo, editing_todo_input))
+        C!["stages"],
+        model.event.stages.iter().map(|stage| {
+            let current = *stage == model.cmd.stage;
+            view_stage_link(*stage, current)
         })
     ]
 }
 
-#[allow(clippy::cognitive_complexity)]
-fn view_todo(
-    todo_id: &TodoId,
-    todo: &Todo,
-    editing_todo: &Option<EditingTodo>,
-    editing_todo_input: &ElRef<HtmlInputElement>,
-) -> Node<Msg> {
-    li![
-        C![
-            IF!(todo.completed => "completed"),
-            IF!(matches!(editing_todo, Some(editing_todo) if &editing_todo.id == todo_id) => "editing"),
-        ],
-        div![
-            C!["view"],
-            input![
-                C!["toggle"],
-                attrs! {
-                    At::Type => "checkbox",
-                    At::Checked => todo.completed.as_at_value()
-                },
-                ev(
-                    Ev::Change,
-                    enc!((todo_id) move |_| Msg::ToggleTodo(todo_id))
-                )
-            ],
-            label![
-                ev(
-                    Ev::DblClick,
-                    enc!((todo_id) move |_| Msg::StartTodoEdit(todo_id))
-                ),
-                &todo.title
-            ],
-            button![
-                C!["destroy"],
-                ev(Ev::Click, enc!((todo_id) move |_| Msg::RemoveTodo(todo_id)))
-            ]
-        ],
-        match editing_todo {
-            Some(editing_todo) if &editing_todo.id == todo_id => {
-                input![
-                    el_ref(editing_todo_input),
-                    C!["edit"],
-                    attrs! {At::Value => editing_todo.title},
-                    ev(Ev::Blur, |_| Msg::SaveEditingTodo),
-                    input_ev(Ev::Input, Msg::EditingTodoTitleChanged),
-                    keyboard_ev(Ev::KeyDown, |keyboard_event| {
-                        match keyboard_event.key_code() {
-                            ENTER_KEY => Some(Msg::SaveEditingTodo),
-                            ESC_KEY => Some(Msg::CancelTodoEdit),
-                            _ => None,
-                        }
-                    }),
-                ]
-            }
-            _ => empty![],
-        }
-    ]
-}
-
-// ------ footer ------
-
-fn view_footer(todos: &IndexMap<TodoId, Todo>, filter: TodoFilter) -> Node<Msg> {
-    let active_count = todos.values().filter(|todo| !todo.completed).count();
-
-    footer![
-        C!["footer"],
-        span![
-            C!["todo-count"],
-            strong![active_count.to_string()],
-            span![format!(
-                " item{} left",
-                if active_count == 1 { "" } else { "s" }
-            )]
-        ],
-        view_filters(filter),
-        view_clear_completed(todos),
-    ]
-}
-
-fn view_filters(filter: TodoFilter) -> Node<Msg> {
-    ul![
-        C!["filters"],
-        view_filter("All", TodoFilter::All, filter),
-        view_filter("Active", TodoFilter::Active, filter),
-        view_filter("Completed", TodoFilter::Completed, filter),
-    ]
-}
-
-fn view_filter(title: &str, filter: TodoFilter, current_filter: TodoFilter) -> Node<Msg> {
+fn view_stage_link(stage: i8, selected: bool) -> Node<Msg> {
     li![a![
-        C![IF!(filter == current_filter => "selected")],
+        C![IF!(selected => "selected")],
         attrs! {
-            At::Href => format!("/{}", filter.to_url_path())
+            At::Href => format!("/{}", stage)
         },
         style! {St::Cursor => "pointer"},
-        title
+        format!("{}", stage)
     ]]
 }
-
-fn view_clear_completed(todos: &IndexMap<TodoId, Todo>) -> Option<Node<Msg>> {
-    let completed_count = todos.values().filter(|todo| todo.completed).count();
-
-    IF!(completed_count > 0 => {
-        button![
-            C!["clear-completed"],
-            ev(Ev::Click, |_| Msg::ClearCompleted),
-            format!("Clear completed ({})", completed_count),
-        ]
-    })
-}
-
-// WD, wronmg direction
-// DNS, dis not start
-// FTS failed to stop
-// DNF did not finish
-
-// The application of penalties must be as follows for each infringement:
-// Penalty Condition Penalty Applied
-// (i) Wrong direction Slowest time plus five (5) seconds
-// (ii) Any other action that can be deemed as incorrectly
-// completing that course (such as reversing after exceed the
-// limits of a garage)
-// Slowest time plus five (5) seconds
-
-// (iii) Failure to complete a test Slowest time plus five (5) seconds
-// (iv) Running out of order (without the prior approval of the Clerk
-// of the Course)
-// Slowest time plus five (5) seconds
-
-// (v) Failing to stop completely within a mid-course garage Slowest time plus five (5) seconds
-// (vi) Failing to stop completely at the finish of a test Slowest time plus five (5) seconds
-// (vii) Finish a test with the car stopped but completely
-// outside the garage
-// Slowest time plus five (5) seconds
-
-// (viii) Finishing a test with part of the car outside the
-// garage boundaries (plus the penalty for striking any
-// flag/marker
-// Plus five (5) seconds plus any
-
-// flag/marker strike
-// (ix) Striking a course flag/marker(including garage boundary
-// flag/marker)
-// Plus five (5) seconds per flag/marker
-// (x) Failure to attempt a test Slowest time plus ten (10) seconds
 
 // ------ ------
 //     Start
