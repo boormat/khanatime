@@ -1,5 +1,6 @@
+mod page;
+
 use indexmap::{IndexMap, IndexSet};
-use kts::khana_rule::RULES_MARKDOWN;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -14,35 +15,40 @@ const ESC_KEY: u32 = 27;
 const UI_STORAGE_KEY: &str = "kts";
 const EVENT_PREFIX: &str = "EVENT:";
 
-// ------ ------
-//     Init
-// ------ ------
-
-fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
+fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
     Model {
-        events: list_events(),
         ui: SessionStorage::get(UI_STORAGE_KEY).unwrap_or_default(),
+        base_url: url.to_base_url(),
+        page: Page::Home, //init(url, orders),
+        menu_visible: false,
+        events: list_events(),
         event: Default::default(),
+        ctx: Default::default(),
     }
 }
 
-// ------ ------
-//     Models
-// ------ ------
-
-// ------ Model ------
-
 struct Model {
     ui: CmdUi, // cmd prompt. Probably will want an enum to get a hint on what to do
+    ctx: Context,
+    base_url: Url,
+    page: Page,
+    menu_visible: bool,
     events: HashSet<String>, // names of known/stored events (local)
-    event: Event, // active event
+    event: Event,            // active event
 }
 
+#[derive(Default)]
+struct Context {
+    user: Option<User>,
+}
+#[derive(Deserialize)]
+struct User {
+    // name: String,
+}
 #[derive(Default, Serialize, Deserialize)]
 struct CmdUi {
     // UI state.  Stored in session
-    cmd: String, // cmd prompt. Probably will want an enum to get a hint on what to do
-    page: Page,
+    cmd: String,   // cmd prompt. Probably will want an enum to get a hint on what to do
     event: String, // curent event displayed
     stage: i8,     // curent stage displayed
 }
@@ -50,6 +56,8 @@ struct CmdUi {
 enum Page {
     #[default]
     Home,
+    KhanaRules,
+    NotFound,
     InStage,
     InEvent,
 }
@@ -109,13 +117,6 @@ struct Entry {
 
 impl Default for Event {
     fn default() -> Self {
-        // let letters: IndexSet<_> = "a short treatise on fungi".chars().collect();
-
-        // let a: Vec<_> = vec!["Outright", "Female", "Junior"];
-        // a.t .map(|a|) {a. to_string};
-        // let b: IndexSet<_> = a.iter().collect(); // ndexSet::from_iter(a);
-        // let d = b;
-        // let classes = IndexSet::from_iter(default_classes());
         Self {
             // name: "Event TBA2".to_owned(),
             // stages
@@ -137,29 +138,17 @@ fn default_classes() -> Vec<String> {
         .collect::<_>()
 }
 
-// impl Default for Time {
-//     fn default() -> Self {
-//         Time::DNS
-//     }
-// }
-// need Class eventauuily.  Driver/car + outright.  Or just filter in/out.
-// Probably like spreadsheet .. posn vs class.
-// entrant gets all the classes y/n
-// calc posn of relevant class.
-// #[derive(Default, Serialize, Deserialize)]
-// ------ ------
-//    Update
-// ------ ------
-
 enum Msg {
     DataEntry(String),
     CreateEvent,
     CancelEdit,
     ShowStage,
     AddTime,
+    Show(Page),
+    // ShowHome,
 }
 
-fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
+fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg {
         // text box typing
         Msg::DataEntry(value) => {
@@ -170,7 +159,7 @@ fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
         }
         Msg::CreateEvent => {
             model.event.name = mem::take(&mut model.ui.cmd);
-            model.ui.page = Page::InEvent;
+            model.page = Page::InEvent;
         }
         Msg::ShowStage => {
             // creates it if new.  Cmd is number space optional name
@@ -179,12 +168,13 @@ fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
             // hmm need validation!
             // model.event.stages. = mem::take(&mut model.cmd.cmd);
             if let Ok(i) = model.ui.cmd.parse() {
-                model.ui.page = Page::InStage;
+                model.page = Page::InStage;
                 model.ui.stage = i; // type from here. Sheesh turbofish ::<
                 model.event.stages_count = max(i, model.event.stages_count);
             }; //; = model.cmd.cmd.to
         }
         Msg::AddTime => todo!(),
+        Msg::Show(p) => model.page = p,
     }
     // Note: It should be optimized in a real-world application.
     // LocalStorage::insert(UI_STORAGE_KEY, &model.cmd)
@@ -216,30 +206,58 @@ fn list_events() -> HashSet<String> {
 //     View
 // ------ ------
 
-fn view(model: &Model) -> impl IntoNodes<Msg> {
-    // let data = &model.data;
-    match model.ui.page {
-        Page::Home => view_no_event(&model),
-        Page::InEvent => view_show_event(&model),
-        Page::InStage => view_show_stage(&model),
-    }
-    // nodes![
-    //     vec![
-    //         view_header(&model.event.name),
-    //         view_main(
-    //             &data.todos,
-    //             data.filter,
-    //             &data.editing_todo,
-    //             &model.refs.editing_todo_input,
-    //         ),
-    //         view_footer(&data.todos, data.filter),
-    //         view_event(&model.event),
-    //     ]
-    // },]
+fn view(model: &Model) -> Vec<Node<Msg>> {
+    vec![
+        view_navbar(model.ctx.user.as_ref(), &model.page),
+        view_content(&model.page),
+    ]
 }
 
-fn view_rules() -> Vec<Node<Msg>> {
-    Node::from_markdown(RULES_MARKDOWN)
+// ----- view_content ------
+
+fn view_content(page: &Page) -> Node<Msg> {
+    div![
+        C!["container"],
+        match page {
+            Page::Home => page::home::view(),
+            Page::KhanaRules => page::khana_rule::view(),
+            Page::NotFound => page::not_found::view(),
+            Page::InEvent => span!("Oops"), //view_show_event(&model),
+            Page::InStage => span!("Oops"), //view_show_stage(&model),
+        }
+    ]
+}
+
+fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
+    nav![
+        C!["navbar", "is-link"],
+        attrs! {
+            At::from("role") => "navigation",
+            At::AriaLabel => "main navigation",
+        },
+        div![
+            C!["navbar-brand"],
+            a![
+                linky2(matches!(page, Page::Home)),
+                "KTS",
+                ev(Ev::Click, |_| Msg::Show(Page::Home)),
+            ],
+            a![
+                linky2(matches!(page, Page::KhanaRules)),
+                "Rules",
+                ev(Ev::Click, |_| Msg::Show(Page::KhanaRules)),
+            ],
+        ]
+    ]
+}
+
+fn linky2(active: bool) -> Attrs {
+    C![
+        "navbar-item",
+        "has-text-weight-bold",
+        "is-size-5",
+        IF!(active => "is-active"),
+    ]
 }
 
 // ------ header ------
@@ -265,7 +283,6 @@ fn view_no_event(model: &Model) -> Node<Msg> {
             input_ev(Ev::Input, Msg::DataEntry),
         ],
         view_event_links(&model),
-        view_rules(),
     ]
 }
 

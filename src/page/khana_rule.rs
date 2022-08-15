@@ -1,5 +1,17 @@
-pub const RULES_MARKDOWN: &str = r####"
-# Penalties
+// use crate::Urls;
+use seed::{prelude::*, *};
+
+pub fn view<Ms>() -> Node<Ms> {
+    div![
+        C!["hero-body", "content"],
+        Node::from_markdown(RULES_MARKDOWN),
+    ]
+}
+
+const RULES_MARKDOWN: &str = r####"
+
+Penalties
+===========
 
 ## Slowest time plus five (5) seconds
 1. **WD** Wrong direction
