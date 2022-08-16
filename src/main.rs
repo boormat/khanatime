@@ -24,6 +24,7 @@ fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
         events: list_events(),
         event: Default::default(),
         ctx: Default::default(),
+        stageModel: Default::default(),
     }
 }
 
@@ -35,6 +36,8 @@ struct Model {
     menu_visible: bool,
     events: HashSet<String>, // names of known/stored events (local)
     event: Event,            // active event
+
+    stageModel: page::stage::StageModel,
 }
 
 #[derive(Default)]
@@ -53,12 +56,12 @@ struct CmdUi {
     stage: i8,     // curent stage displayed
 }
 #[derive(Default, Serialize, Deserialize)]
-enum Page {
+pub enum Page {
     #[default]
     Home,
     KhanaRules,
     NotFound,
-    InStage,
+    Stage,
     InEvent,
 }
 
@@ -138,7 +141,7 @@ fn default_classes() -> Vec<String> {
         .collect::<_>()
 }
 
-enum Msg {
+pub enum Msg {
     DataEntry(String),
     CreateEvent,
     CancelEdit,
@@ -168,7 +171,7 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
             // hmm need validation!
             // model.event.stages. = mem::take(&mut model.cmd.cmd);
             if let Ok(i) = model.ui.cmd.parse() {
-                model.page = Page::InStage;
+                model.page = Page::Stage;
                 model.ui.stage = i; // type from here. Sheesh turbofish ::<
                 model.event.stages_count = max(i, model.event.stages_count);
             }; //; = model.cmd.cmd.to
@@ -209,21 +212,21 @@ fn list_events() -> HashSet<String> {
 fn view(model: &Model) -> Vec<Node<Msg>> {
     vec![
         view_navbar(model.ctx.user.as_ref(), &model.page),
-        view_content(&model.page),
+        view_content(&model),
     ]
 }
 
 // ----- view_content ------
 
-fn view_content(page: &Page) -> Node<Msg> {
+fn view_content(model: &Model) -> Node<Msg> {
     div![
         C!["container"],
-        match page {
+        match model.page {
             Page::Home => page::home::view(),
             Page::KhanaRules => page::khana_rule::view(),
             Page::NotFound => page::not_found::view(),
             Page::InEvent => span!("Oops"), //view_show_event(&model),
-            Page::InStage => span!("Oops"), //view_show_stage(&model),
+            Page::Stage => page::stage::view(&model.stageModel), //view_show_stage(&model),
         }
     ]
 }
@@ -246,6 +249,11 @@ fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
                 linky2(matches!(page, Page::KhanaRules)),
                 "Rules",
                 ev(Ev::Click, |_| Msg::Show(Page::KhanaRules)),
+            ],
+            a![
+                linky2(matches!(page, Page::Stage)),
+                "Stages",
+                ev(Ev::Click, |_| Msg::Show(Page::Stage)),
             ],
         ]
     ]
