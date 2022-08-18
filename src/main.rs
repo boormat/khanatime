@@ -8,36 +8,31 @@ use std::{
     collections::{HashMap, HashSet},
     mem,
 };
-// use uuid::Uuid;
 
 const ENTER_KEY: u32 = 13;
 const ESC_KEY: u32 = 27;
 const UI_STORAGE_KEY: &str = "kts";
 const EVENT_PREFIX: &str = "EVENT:";
 
-fn init(url: Url, orders: &mut impl Orders<Msg>) -> Model {
+fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
         ui: SessionStorage::get(UI_STORAGE_KEY).unwrap_or_default(),
-        base_url: url.to_base_url(),
-        page: Page::Home, //init(url, orders),
-        menu_visible: false,
+        page: Page::Home,
         events: list_events(),
         event: Default::default(),
         ctx: Default::default(),
-        stageModel: Default::default(),
+        stage_model: Default::default(),
     }
 }
 
 struct Model {
     ui: CmdUi, // cmd prompt. Probably will want an enum to get a hint on what to do
     ctx: Context,
-    base_url: Url,
     page: Page,
-    menu_visible: bool,
+    #[allow(dead_code)]
     events: HashSet<String>, // names of known/stored events (local)
-    event: Event,            // active event
-
-    stageModel: page::stage::StageModel,
+    event: Event, // active event
+    stage_model: page::stage::StageModel,
 }
 
 #[derive(Default)]
@@ -146,12 +141,10 @@ pub enum Msg {
     CreateEvent,
     CancelEdit,
     ShowStage,
-    AddTime,
     Show(Page),
-    // ShowHome,
+    StageMsg(page::stage::StageMsg),
 }
-
-fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
+fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
     match msg {
         // text box typing
         Msg::DataEntry(value) => {
@@ -176,8 +169,8 @@ fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
                 model.event.stages_count = max(i, model.event.stages_count);
             }; //; = model.cmd.cmd.to
         }
-        Msg::AddTime => todo!(),
         Msg::Show(p) => model.page = p,
+        Msg::StageMsg(stage_msg) => page::stage::update(stage_msg, &mut model.stage_model),
     }
     // Note: It should be optimized in a real-world application.
     // LocalStorage::insert(UI_STORAGE_KEY, &model.cmd)
@@ -226,7 +219,9 @@ fn view_content(model: &Model) -> Node<Msg> {
             Page::KhanaRules => page::khana_rule::view(),
             Page::NotFound => page::not_found::view(),
             Page::InEvent => span!("Oops"), //view_show_event(&model),
-            Page::Stage => page::stage::view(&model.stageModel), //view_show_stage(&model),
+            Page::Stage => {
+                page::stage::view(&model.stage_model).map_msg(Msg::StageMsg)
+            }
         }
     ]
 }
@@ -269,10 +264,9 @@ fn linky2(active: bool) -> Attrs {
 }
 
 // ------ header ------
+#[allow(dead_code)]
 fn view_no_event(model: &Model) -> Node<Msg> {
-    // let var`
     header![
-        // C!["header"],
         h1!["KhanaTimingSystem"],
         input![
             C!["new-todo"],
@@ -294,6 +288,7 @@ fn view_no_event(model: &Model) -> Node<Msg> {
     ]
 }
 
+#[allow(dead_code)]
 fn view_show_event(model: &Model) -> Node<Msg> {
     header![
         C!["header"],
@@ -318,6 +313,7 @@ fn view_show_event(model: &Model) -> Node<Msg> {
     ]
 }
 
+#[allow(dead_code)]
 fn view_show_stage(model: &Model) -> Node<Msg> {
     header![
         C!["header"],
@@ -333,7 +329,7 @@ fn view_show_stage(model: &Model) -> Node<Msg> {
             },
             keyboard_ev(Ev::KeyDown, |keyboard_event| {
                 match keyboard_event.key_code() {
-                    ENTER_KEY => Some(Msg::AddTime),
+                    // ENTER_KEY => Some(Msg::AddTime),
                     ESC_KEY => Some(Msg::CancelEdit),
                     _ => None,
                 }
@@ -343,15 +339,15 @@ fn view_show_stage(model: &Model) -> Node<Msg> {
     ]
 }
 
+#[allow(dead_code)]
 fn view_event_links(model: &Model) -> Node<Msg> {
     ul![
         C!["events"],
-        model.events.iter().map(|name| {
-            // let current = *stage == model.cmd.stage;
-            view_event_link(&name)
-        })
+        model.events.iter().map(|name| { view_event_link(&name) })
     ]
 }
+
+#[allow(dead_code)]
 fn view_event_link(name: &String) -> Node<Msg> {
     li![a![
         attrs! {
@@ -362,6 +358,7 @@ fn view_event_link(name: &String) -> Node<Msg> {
     ]]
 }
 
+#[allow(dead_code)]
 fn view_stage_links(model: &Model) -> Node<Msg> {
     ul![
         C!["stages"],
@@ -372,6 +369,7 @@ fn view_stage_links(model: &Model) -> Node<Msg> {
     ]
 }
 
+#[allow(dead_code)]
 fn view_stage_link(stage: i8, selected: bool) -> Node<Msg> {
     li![a![
         C![IF!(selected => "selected")],
