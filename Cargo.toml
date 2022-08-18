@@ -12,7 +12,8 @@ uuid = { version = "0.8", features = ["serde", "v4", "wasm-bindgen"] }
 indexmap = { version = "1", features = ["serde-1"] }
 enclose = "1"
 wasm-bindgen = "=0.2.74"
-parse-display-derive = "0.5"
+parse-display = "0.5.5"
+
 
 #[dev-dependencies]
 #trunk = "0.16.0"

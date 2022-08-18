@@ -5,34 +5,16 @@
 // strikeout old entries
 // Sort button. #, edit order, result
 // use crate::Msg;
+// use parse_display::FromStr;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
-    StageDataEntry(String), //this is the tricky one?
+    StageDataEntry(String),
     Bump,
     Command,
     CancelEdit,
-}
-
-pub fn update(msg: StageMsg, model: &mut StageModel) {
-    match msg {
-        StageMsg::StageDataEntry(value) => {
-            model.cmd = value; // typey typey
-        }
-        StageMsg::Bump => {
-            log!("bump");
-            model.cmd = model.cmd.clone() + ".";
-        }
-        StageMsg::Command => {
-            log!("cmd:", model.cmd);
-            model.cmd.clear();
-        }
-        StageMsg::CancelEdit => {
-            model.cmd.clear();
-        }
-    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -81,6 +63,25 @@ pub struct StageModel {
     event: String,
 }
 
+pub fn update(msg: StageMsg, model: &mut StageModel) {
+    match msg {
+        StageMsg::StageDataEntry(value) => {
+            model.cmd = value; // typey typey
+        }
+        StageMsg::Bump => {
+            log!("bump");
+            model.cmd = model.cmd.clone() + ".";
+        }
+        StageMsg::Command => {
+            log!("cmd:", model.cmd);
+            model.cmd.clear();
+        }
+        StageMsg::CancelEdit => {
+            model.cmd.clear();
+        }
+    }
+}
+
 pub fn view(model: &StageModel) -> Node<StageMsg> {
     div! {
         h1![format!("{} Stage {}", model.event, model.stage)],
@@ -123,4 +124,31 @@ fn input_box(val: &String) -> Node<StageMsg> {
         }),
         input_ev(Ev::Input, StageMsg::StageDataEntry),
     ]
+}
+
+// #[derive(parse_display::FromStr, PartialEq, Debug)]
+// #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
+// struct CmdStage {
+//     number: u8,
+// }
+// #[derive(parse_display::Display, PartialEq, Debug)]
+// //[#display("{0:?}")]
+#[derive(parse_display::FromStr, PartialEq, Debug)]
+enum CmdParse {
+    #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
+    Stage { number: u8 },
+    // #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
+    // Car { car: u8, time: f32, tokens: S },
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn stage() {
+        assert_eq!("s 1".parse(), Ok(CmdParse::Stage { number: 1 }));
+        assert_eq!("Stage 1".parse(), Ok(CmdParse::Stage { number: 1 }));
+        assert_eq!("s 200".parse(), Ok(CmdParse::Stage { number: 200 }));
+        assert_eq!("t".parse::<CmdParse>().is_err(), true);
+        assert_eq!("stagex 1".parse::<CmdParse>().is_err(), true);
+    }
 }
