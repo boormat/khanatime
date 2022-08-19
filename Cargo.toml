@@ -6,14 +6,16 @@ authors = ["Mathew Boorman <mathew.boorman@gmail.com>"]
 
 
 [dependencies]
+# seed, wasm-bindgen and uuid need to match
 seed = "0.8"
-serde = "1.0"
+wasm-bindgen = "=0.2.74"
 uuid = { version = "0.8", features = ["serde", "v4", "wasm-bindgen"] }
+
+serde = "1.0"
 indexmap = { version = "1", features = ["serde-1"] }
 enclose = "1"
-wasm-bindgen = "=0.2.74"
 parse-display = "0.5.5"
-
-
+regex = "1.6.0"
+lazy-regex = "2.3.0"
 #[dev-dependencies]
 #trunk = "0.16.0"
