@@ -159,26 +159,37 @@ enum Codes {
     Time(f32),
 }
 
+// #[derive(parse_display::Display, PartialEq, Debug)]
+#[derive(parse_display::FromStr, PartialEq, Debug)]
+#[display("{0}")]
+enum CmdParse {
+    #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
+    Stage {
+        number: u8,
+    },
+    Time(TimeCmd),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn stage() {
-        // assert_eq!("s 1".parse(), Ok(CmdParse::Stage { number: 1 }));
-        // assert_eq!("Stage 1".parse(), Ok(CmdParse::Stage { number: 1 }));
-        // assert_eq!("s 200".parse(), Ok(CmdParse::Stage { number: 200 }));
-        // assert_eq!("t".parse::<CmdParse>().is_err(), true);
-        // assert_eq!("stagex 1".parse::<CmdParse>().is_err(), true);
+        assert_eq!("s 1".parse(), Ok(CmdParse::Stage { number: 1 }));
+        assert_eq!("Stage 1".parse(), Ok(CmdParse::Stage { number: 1 }));
+        assert_eq!("S 200".parse(), Ok(CmdParse::Stage { number: 200 }));
+        assert_eq!("t".parse::<CmdParse>().is_err(), true);
+        assert_eq!("stagex 1".parse::<CmdParse>().is_err(), true);
 
         // times
         assert_eq!(
             "1 10.1 1F 1G".parse(),
-            Ok(TimeCmd {
+            Ok(CmdParse::Time(TimeCmd {
                 car: 1,
                 code: Codes::Time(10.1),
                 flags: 1,
                 garage: 1,
-            })
+            }))
         );
         assert_eq!(
             "2 10.1 1F 1G".parse(),
@@ -201,120 +212,3 @@ mod tests {
         );
     }
 }
-
-// fn parse_time(cmd: &str) -> Option<TimeCmd> {
-//     let re = regex!(
-//         r####"(?x)
-//         ^\s*(?P<car>[0-9]+)
-//         (?:\s+(?P<time>[0-9]+[.][0-9]*))?
-//         (?:\s+(?P<code>WD|NOSHO|FTS|DNF)?
-//         (?:\s+(?P<flags>[0-9]F)?
-//         (?:\s+(?P<garage>G)?
-//         "####,
-//     );
-
-//     if !re.is_match(cmd) {
-//         return None;
-//     }
-//     return None;
-
-//     // Ok(Default::default())
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     #[test]
-//     fn stage() {
-//         let a = TimeCmd {
-//             car: 1,
-//             flags: 4,
-//             garage: true,
-//             time: Some(2.3),
-//             code: Some(Codes::WD),
-//         };
-
-//         assert_eq!(parse_time("s 1"), Some(a));
-//         // assert_eq!("Stage 1".parse(), Ok(CmdParse::Stage { number: 1 }));
-//         // assert_eq!("s 200".parse(), Ok(CmdParse::Stage { number: 200 }));
-//         // assert_eq!("t".parse::<CmdParse>().is_err(), true);
-//         // assert_eq!("stagex 1".parse::<CmdParse>().is_err(), true);
-//     }
-// }
-
-// #[derive(parse_display::FromStr, PartialEq, Debug)]
-// #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
-// struct CmdStage {
-//     number: u8,
-// }
-// #[derive(parse_display::Display, PartialEq, Debug)]
-// //[#display("{0:?}")]
-// WD,
-// #[derive(parse_display::FromStr, PartialEq, Debug)]
-// enum CmdParse {
-//     #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
-//     Stage { number: u8 },
-//     #[from_str(regex = " *(?P<car>[0-9]+) +(?P<time>[0-9.]+)? (?P<flags>[0-9]+)F")]
-//     Time { car: u8, time: f32, flags: u8 },
-//     // #[from_str(regex = " (?P<toks>[0-9]+)F")]
-//     // Tokens { car: u8, toks: Vec<String> },
-//     #[from_str(regex = " *(?P<car>[0-9]+) +(?P<time>[^ ]+)? (?P<flags>[0-9]+)F")]
-//     TimeCode { car: u8, time: TimeCode, flags: u8 },
-//     #[from_str(regex = "TC2 *(?P<car>[0-9]+) +(?P<time>[^ ]+) (?P<flags>[0-9]+)F +")]
-//     TimeCode2 { car: u8, time: TimeCode, flags: u8 },
-// }
-
-// #[derive(parse_display::FromStr, PartialEq, Debug)]
-// enum T1 {
-//     #[from_str(regex = "(?:(?P<car[0-9]+) |(?P<flags>[0-9]+)F)+")]
-//     C1 { car: u8, flags: u8 },
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     #[test]
-//     fn stage() {
-//         assert_eq!("s 1".parse(), Ok(CmdParse::Stage { number: 1 }));
-//         assert_eq!("Stage 1".parse(), Ok(CmdParse::Stage { number: 1 }));
-//         assert_eq!("s 200".parse(), Ok(CmdParse::Stage { number: 200 }));
-//         assert_eq!("t".parse::<CmdParse>().is_err(), true);
-//         assert_eq!("stagex 1".parse::<CmdParse>().is_err(), true);
-
-//         // times
-//         assert_eq!(
-//             "2 10.1 1F".parse(),
-//             Ok(CmdParse::Time {
-//                 car: 2,
-//                 time: 10.1,
-//                 flags: 1
-//             })
-//         );
-
-//         assert_eq!(
-//             "22 1 22F".parse(),
-//             Ok(CmdParse::Time {
-//                 car: 22,
-//                 time: 1.0,
-//                 flags: 22
-//             })
-//         );
-//         assert_eq!("WD".parse(), Ok(TimeCode::WD));
-//         assert_eq!(
-//             "22 WD 22F".parse(),
-//             Ok(CmdParse::TimeCode {
-//                 car: 22,
-//                 time: TimeCode::WD,
-//                 flags: 22
-//             })
-//         );
-//         assert_eq!(
-//             "TC2 22 WD 22F".parse(),
-//             Ok(CmdParse::TimeCode2 {
-//                 car: 22,
-//                 time: TimeCode::WD,
-//                 flags: 22
-//             })
-//         );
-//     }
-// }
