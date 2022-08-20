@@ -19,54 +19,67 @@ pub enum StageMsg {
 
 #[derive(Default, Serialize, Deserialize)]
 struct ScoreData {
-    // keys
-    stage: i8,
+    // keys For moment only accept int car numbers? 00 0B 24TBC
+    stage: u8,
     car: String,
-
-    // date
-    time: f32, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
-    code: Code, // enter code and score (just in case WD gets changed later)
-    flags: i8,
-    garage: bool,
-
-    // edit info
-    official: Official,
-    signed: String, // sign of official
-    ts: u64,        // datetime of the data entry
-    ignore: bool,   // mark if edit/replaced or when official knows was a bad time.
-    primary: bool,  // if official/time was the primary timer.
+    time: KTime,
+    flags: u8,
+    garage: u8,
 }
 
-#[derive(Default, Serialize, Deserialize)]
-enum Code {
+// #[derive(Copy, Clone, Default, Deserialize, PartialEq, Debug)]
+#[derive(parse_display::FromStr, PartialEq, Debug, Serialize, Deserialize, Default)]
+#[display("{}")]
+enum KTime {
     #[default]
-    DNS,
+    NOSHO,
     WD,
     FTS,
     DNF,
+    #[display("{0}")]
+    Time(f32),
 }
-
 #[derive(Default, Serialize, Deserialize)]
 struct Official {
     official: String, //name
     pubkey: String,   // officials ring Ed25519
 }
 
-#[derive(Default)]
 pub struct StageModel {
     // edit box, list of times
-    #[allow(dead_code)]
+    // #[allow(dead_code)]
     scores: Vec<ScoreData>,
-    #[allow(dead_code)]
+    // #[allow(dead_code)]
     cmd: String,
-    stage: i8,
+    stage: u8,
     event: String,
+}
+
+pub fn init() -> StageModel {
+    StageModel {
+        scores: Default::default(),
+        cmd: Default::default(),
+        stage: 1,
+        event: "today.Khana".to_string(),
+    }
 }
 
 pub fn update(msg: StageMsg, model: &mut StageModel) {
     match msg {
         StageMsg::StageDataEntry(value) => {
             model.cmd = value; // typey typey
+            match model.cmd.parse() {
+                Ok(CmdParse::Time(tc)) => {
+                    log!("POSSIBLE time");
+                }
+                Ok(CmdParse::Stage { number }) => {
+                    log!("POSIBLE stage");
+                }
+                Ok(CmdParse::Event { event }) => {
+                    log!("POSIBLE event");
+                }
+                Err(_) => {}
+            };
         }
         StageMsg::Bump => {
             log!("bump");
@@ -74,7 +87,23 @@ pub fn update(msg: StageMsg, model: &mut StageModel) {
         }
         StageMsg::Command => {
             log!("cmd:", model.cmd);
-            model.cmd.clear();
+            match model.cmd.parse() {
+                Ok(CmdParse::Time(tc)) => {
+                    log!("time");
+                    model.cmd.clear();
+                }
+                Ok(CmdParse::Stage { number }) => {
+                    log!("stage set");
+                    model.stage = number;
+                    model.cmd.clear();
+                }
+                Ok(CmdParse::Event { event }) => {
+                    log!("event set");
+                    model.event = event;
+                    model.cmd.clear();
+                }
+                Err(_) => log!("parse nope"),
+            };
         }
         StageMsg::CancelEdit => {
             model.cmd.clear();
@@ -88,7 +117,7 @@ pub fn view(model: &StageModel) -> Node<StageMsg> {
         // sort buttons.
         // results list... here
         input_box_wrap(&model.cmd),
-        p!(model.cmd.to_string()),
+        // p!(model.cmd.to_string()),
     }
 }
 
@@ -139,24 +168,11 @@ fn input_box(val: &String) -> Node<StageMsg> {
 // #[display("{car} {code} {flags} {garage}")]
 #[from_str(default)]
 struct TimeCmd {
-    car: u8,
+    car: String,
     // time: Option<f32>,#        (?:\s+(?P<time>))?
-    code: Codes,
+    code: KTime,
     flags: u8,
     garage: u8,
-}
-
-// #[derive(Copy, Clone, Default, Deserialize, PartialEq, Debug)]
-#[derive(parse_display::FromStr, PartialEq, Debug, Default)]
-#[display("{}")]
-enum Codes {
-    #[default]
-    NOSHO,
-    WD,
-    FTS,
-    DNF,
-    #[display("{0}")]
-    Time(f32),
 }
 
 // #[derive(parse_display::Display, PartialEq, Debug)]
@@ -166,6 +182,10 @@ enum CmdParse {
     #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
     Stage {
         number: u8,
+    },
+    #[from_str(regex = "[eE](vent)? +(?P<event>.+) *$")]
+    Event {
+        event: String,
     },
     Time(TimeCmd),
 }
@@ -185,8 +205,8 @@ mod tests {
         assert_eq!(
             "1 10.1 1F 1G".parse(),
             Ok(CmdParse::Time(TimeCmd {
-                car: 1,
-                code: Codes::Time(10.1),
+                car: 1.to_string(),
+                code: KTime::Time(10.1),
                 flags: 1,
                 garage: 1,
             }))
@@ -194,8 +214,8 @@ mod tests {
         assert_eq!(
             "2 10.1 1F 1G".parse(),
             Ok(TimeCmd {
-                car: 2,
-                code: Codes::Time(10.1),
+                car: 2.to_string(),
+                code: KTime::Time(10.1),
                 flags: 1,
                 garage: 1,
             })
@@ -204,8 +224,8 @@ mod tests {
         assert_eq!(
             "3 WD 0F 0G".parse(),
             Ok(TimeCmd {
-                car: 3,
-                code: Codes::WD,
+                car: 3.to_string(),
+                code: KTime::WD,
                 flags: 0,
                 garage: 0,
             })

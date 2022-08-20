@@ -21,7 +21,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
         events: list_events(),
         event: Default::default(),
         ctx: Default::default(),
-        stage_model: Default::default(),
+        stage_model: page::stage::init(),
     }
 }
 
