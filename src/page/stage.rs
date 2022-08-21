@@ -36,7 +36,7 @@ struct ScoreData {
 // adds score from user entry in model
 fn add_score(model: &mut StageModel) {
     // hmmm probably should cope with error to avoid user funnies?
-    let mut s = match &model.preview {
+    let s = match &model.preview {
         Some(CmdParse::Time(cmd)) => to_score(model.stage, &cmd),
         _ => panic!(),
     };
@@ -187,18 +187,27 @@ pub fn view(model: &StageModel) -> Node<StageMsg> {
 }
 
 fn view_preview(model: &StageModel) -> Node<StageMsg> {
-    div![match &model.preview {
+    // let val = match &model.preview {
+    match &model.preview {
         Some(CmdParse::Time(tc)) => {
-            raw!("POSSIBLE time")
+            log!(tc);
+            // None
+            // raw!("POSSIBLE time")
         }
         Some(CmdParse::Stage { number }) => {
-            raw!("POSIBLE stage")
+            // raw!("POSIBLE stage")
+            log!(number);
+            // None
         }
         Some(CmdParse::Event { event }) => {
-            raw!("POSIBLE event")
+            log!(event);
+            // None
         }
-        None => raw!(""),
-    },]
+        None => {}
+    };
+
+    // div![if!( Some(val) => val)]
+    seed::empty()
 }
 
 fn view_list(model: &StageModel) -> Node<StageMsg> {
