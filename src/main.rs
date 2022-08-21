@@ -17,7 +17,7 @@ const EVENT_PREFIX: &str = "EVENT:";
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
         ui: SessionStorage::get(UI_STORAGE_KEY).unwrap_or_default(),
-        page: Page::Home,
+        page: Page::Stage,
         events: list_events(),
         event: Default::default(),
         ctx: Default::default(),
@@ -130,10 +130,14 @@ impl Default for Event {
 }
 
 fn default_classes() -> Vec<String> {
-    ["Outright", "Female", "Junior"]
-        .iter()
-        .map(|&s| s.into())
-        .collect::<_>()
+    // Yah rust.  The rusty way to convert static list into a vec
+    // using all the generics, automated type inferences and traits for conserions.
+    // noting the important bit, the actual code in the map
+    let classes = ["Outright", "Female", "Junior"];
+    classes.map(String::from).into()
+    //     .iter()
+    //     .map(|&s| s.into())
+    //     .collect::<_>()
 }
 
 pub enum Msg {
