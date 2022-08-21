@@ -25,18 +25,18 @@ jobs:
   #     - run: rustup component add clippy
   #     - run: cargo clippy --all-features -- -D clippy::all -D warnings
 
-  publish:
-    needs: cargo
-    name: Publish crate
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: cargo publish -p webpixels --token ${CRATES_TOKEN}
-        env:
-          CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}
+  # publish:
+  #   needs: cargo
+  #   name: Publish crate
+  #   runs-on: ubuntu-latest
+  #   if: startsWith(github.ref, 'refs/tags/')
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #     - uses: actions-rs/toolchain@v1
+  #       with:
+  #         profile: minimal
+  #         toolchain: stable
+  #         override: true
+  #     - run: cargo publish -p webpixels --token ${CRATES_TOKEN}
+  #       env:
+  #         CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}

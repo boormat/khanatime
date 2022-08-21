@@ -36,7 +36,7 @@ jobs:
           command: install
           args: trunk
       - name: Build
-        run: trunk build --release --public-url kts
+        run: trunk build --release --public-url khanatime
         working-directory: ./
       - name: Setup Pages
         uses: actions/configure-pages@v1
