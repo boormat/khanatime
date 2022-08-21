@@ -281,7 +281,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kts"
+name = "khanatime"
 version = "0.1.0"
 dependencies = [
  "enclose",

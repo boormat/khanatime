@@ -241,7 +241,7 @@ fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
             C!["navbar-brand"],
             a![
                 linky2(matches!(page, Page::Home)),
-                "KTS",
+                "Home",
                 ev(Ev::Click, |_| Msg::Show(Page::Home)),
             ],
             a![
