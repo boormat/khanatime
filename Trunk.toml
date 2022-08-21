@@ -1,3 +1,5 @@
 [build]
 target = "index.html"
 dist = "dist"
+# Trunk did not like, but was in tutorial. hmmm
+# public_url = "./"
