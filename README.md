@@ -2,6 +2,8 @@
 
 [![test](https://github.com/boormat/khanatime/actions/workflows/test.yml/badge.svg)](https://github.com/boormat/khanatime/actions/workflows/test.yml)
 
+Live App/Web Install: https://boormat.github.io/khanatime/
+
 Now Rust this time
 Rust WASM for client side
   - Building with trunk

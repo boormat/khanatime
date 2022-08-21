@@ -1,9 +1,10 @@
 var cacheName = 'khanatime-pwa';
+
+// pretty sure this list is only initial, still seems to 
+// work even when wrong.
 var filesToCache = [
     './',
     './index.html',
-    './pkg/bundle.js',
-    './pkg/yew_wasm_pack_minimal_bg.wasm'
 ];
 
 
