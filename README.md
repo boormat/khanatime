@@ -75,3 +75,12 @@ browser.
 
 
 
+## Testing and Deploy
+
+Currently manual triggered release build in github workers.
+https://github.com/boormat/khanatime/actions
+Run the deploy workflow to update  https://boormat.github.io/khanatime/
+
+When testing locally with trunk and chrome, the the WebWorkers seem to mess
+up when the reload comes from trunk, and you get a blank screen.
+A workaround is  developer tools -> Service Workers -> Update on Reload On
