@@ -1,3 +1,6 @@
+use crate::event::KTime;
+use crate::event::ScoreData;
+
 // Stage edit view.
 // List of times... generally in order of entry.
 // + big view of current last one
@@ -26,16 +29,6 @@ pub struct StageModel {
     event: String,
 }
 
-#[derive(Default, Serialize, Deserialize, Debug)]
-struct ScoreData {
-    // keys For moment only accept int car numbers? 00 0B 24TBC
-    stage: u8,
-    car: String,
-    time: KTime,
-    flags: u8,
-    garage: u8,
-}
-
 // adds score from user entry in model
 fn add_score(model: &mut StageModel) {
     // hmmm probably should cope with error to avoid user funnies?
@@ -58,27 +51,6 @@ fn to_score(stage: u8, cmd: &TimeCmd) -> ScoreData {
     }
 }
 
-// #[derive(Copy, Clone, Default, Deserialize, PartialEq, Debug)]
-#[derive(
-    parse_display::FromStr,
-    parse_display::Display,
-    PartialEq,
-    Debug,
-    Serialize,
-    Deserialize,
-    Default,
-    Clone,
-)]
-#[display("{}")]
-enum KTime {
-    #[default]
-    NOSHO,
-    WD,
-    FTS,
-    DNF,
-    #[display("{0}")]
-    Time(f32),
-}
 #[derive(Default, Serialize, Deserialize)]
 struct Official {
     official: String, //name

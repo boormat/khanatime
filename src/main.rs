@@ -1,3 +1,4 @@
+mod event;
 mod page;
 
 use indexmap::{IndexMap, IndexSet};
