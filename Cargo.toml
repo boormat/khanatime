@@ -17,7 +17,7 @@ enclose = "1"
 parse-display = "0.5.5"
 regex = "1.6.0"
 lazy-regex = "2.3.0"
-
+thiserror = "1.0.32"
 [dev-dependencies]
 #trunk = "0.16.0"
 wasm-bindgen-test = "0.2"
