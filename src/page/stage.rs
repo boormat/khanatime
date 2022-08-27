@@ -174,7 +174,7 @@ fn view_preview(model: &StageModel) -> Node<StageMsg> {
             return div![format!("Open event {}?", event)];
         }
         Err(CmdError::Nothing) => {
-            return div![":-)"];
+            return div!["Nothing to see here :-)"];
         }
         Err(CmdError::BadInput { value }) => {
             return div![value];
@@ -354,7 +354,7 @@ fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
         &_ => match timestr.parse::<f32>() {
             Ok(time) => {
                 let ktt = KTimeTime {
-                    time,
+                    time_ds: (10f32 * time) as u16,
                     flags,
                     garage,
                 };
@@ -626,7 +626,7 @@ mod tests {
             Ok(CmdParse::Time(TimeCmd {
                 car: 1.to_string(),
                 code: KTime::Time(KTimeTime {
-                    time: 10.1,
+                    time_ds: 101,
                     flags: 1,
                     garage: true,
                 }),
