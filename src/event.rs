@@ -97,6 +97,8 @@ pub struct ResultView<'a> {
     class: String,
     rows: IndexMap<&'a str, ResultRow<'a>>, // list of know entrants/drivers. Ordered by car number
     base_times_ds: Vec<u16>,                // base times
+
+                                            // can probably remove the Index map so we can sort by a separate vec of refs?
 }
 
 // results to render
@@ -114,7 +116,18 @@ pub struct Pos {
     score_ds: u16, // time in ds, after penalites
     pos: u8,       // cumulative pos in event. Not unique for equal times
     eq: bool,      // if pos is equal
-    change: u8,    // delta of last stage (cumulative only?)
+    change: i8,    // delta of last stage (cumulative only?)
+}
+
+impl Pos {
+    pub fn init(score_ds: u16) -> Self {
+        Self {
+            score_ds,
+            pos: 0,
+            eq: false,
+            change: 0,
+        }
+    }
 }
 
 // Result for a Driver in a Stage
@@ -238,47 +251,94 @@ pub fn calc_penalties(rv: &mut ResultView) {
         }
     }
 }
+
+pub fn calc_cumulative_times(rv: &mut ResultView) {
+    for row in rv.rows.values_mut() {
+        let mut score = 0;
+        let mut stage = 0;
+        while let Some(rs) = &mut row.columns[stage as usize] {
+            score = score + rs.stage_pos.score_ds;
+            rs.cum_pos = Some(Pos::init(score));
+            stage = stage + 1;
+        }
+    }
+}
+
+// helper to unpack nested cum_pos in ResultScore
+fn get_cum_pos(rs: &mut Option<ResultScore>) -> Option<&mut Pos> {
+    match rs {
+        None => None,
+        Some(rs) => match &mut rs.cum_pos {
+            None => None,
+            Some(pos) => Some(pos),
+        },
+    }
+}
+
+pub fn calc_pos_changes(rv: &mut ResultView) {
+    for row in rv.rows.values_mut() {
+        let mut last_rank = 1u8;
+        let mut stage = 0usize;
+        while let Some(cum_pos) = get_cum_pos(&mut row.columns[stage]) {
+            if stage > 0 {
+                // show no change in col 1?
+                cum_pos.change = last_rank as i8 - cum_pos.pos as i8;
+            }
+            last_rank = cum_pos.pos;
+            stage = stage + 1;
+        }
+    }
+}
+
 pub fn calc_stage_positions(rv: &mut ResultView) {
     for stage in 0..rv.event.stages_count {
         // collect pairs, rowkey (car) vs time
-        let mut car_scores = vec![];
-        for (rowkey, rr) in rv.rows.iter() {
-            if let Some(rs) = &rr.columns[stage as usize] {
-                car_scores.push((*rowkey, rs.stage_pos.score_ds));
+        // could collect a mut pos & too?
+        let mut car_scores: Vec<(&str, &mut Pos)> = vec![];
+        for (rowkey, rr) in rv.rows.iter_mut() {
+            if let Some(rs) = &mut rr.columns[stage as usize] {
+                // if let Some(cum_pos) = &mut rs.cum_pos {
+                car_scores.push((*rowkey, &mut rs.stage_pos));
             }
         }
 
-        // sort by score
-        car_scores.sort_unstable_by_key(|a| a.1);
+        calc_rank(&mut car_scores);
+    }
+}
 
-        // calc the ranks and eq
-        // (key, score, rank, eq)
-        let mut last_time = 0u16;
-        let mut rank = 1u8;
-        let ranked: Vec<(&str, u16, u8, bool)> = car_scores
-            .iter()
-            .enumerate()
-            .map(|(idx, (rowkey, score))| {
-                let eq = *score == last_time;
-                last_time = *score;
-                if !eq {
-                    rank = idx as u8 + 1
-                };
-                (*rowkey, *score, rank, eq)
-            })
-            .collect();
+fn calc_rank(car_scores: &mut Vec<(&str, &mut Pos)>) {
+    // sort by score
+    car_scores.sort_unstable_by_key(|a| a.1.score_ds);
 
-        // poke stage results back in rows
-        for (rowkey, score, rank, eq) in ranked.iter() {
-            let row = &mut rv.rows[rowkey];
-            let colo = &mut row.columns[stage as usize];
-            let rs = &mut colo.as_mut().unwrap();
-            // let a: &mut ResultScore = &mut rv.rows[cs.0].columns[stage as usize].as_mut().unwrap();
-            rs.stage_pos.pos = *rank;
-            rs.stage_pos.eq = *eq;
-            rs.stage_pos.score_ds = *score; // not sure need this.
+    // calc the ranks and eq and poke into the cum_pos Pos
+    let mut last_time = 0u16;
+    let mut rank = 1u8;
+    for (idx, (rowkey, pos)) in car_scores.iter_mut().enumerate() {
+        let score = pos.score_ds;
+        let eq = score == last_time;
+        last_time = score;
+        if !eq {
+            rank = idx as u8 + 1
+        };
+
+        pos.eq = eq;
+        pos.pos = rank;
+    }
+}
+
+pub fn calc_cumulative_positions(rv: &mut ResultView) {
+    for stage in 0..rv.event.stages_count {
+        // collect pairs, rowkey (car) vs time
+        // could collect a mut pos & too?
+        let mut car_scores: Vec<(&str, &mut Pos)> = vec![];
+        for (rowkey, rr) in rv.rows.iter_mut() {
+            if let Some(rs) = &mut rr.columns[stage as usize] {
+                if let Some(cum_pos) = &mut rs.cum_pos {
+                    car_scores.push((*rowkey, cum_pos));
+                }
+            }
         }
-        // car_scores.sort_unstable_by_key(|(_key, &val)| val);
+        calc_rank(&mut car_scores);
     }
 }
 
@@ -286,41 +346,11 @@ pub fn calc(rv: &mut ResultView) {
     calc_base_times(rv);
     calc_penalties(rv);
     calc_stage_positions(rv);
-    // calc cumulative times
-    // calc cum positions
+    calc_cumulative_times(rv);
+    calc_cumulative_positions(rv);
+    calc_pos_changes(rv);
 }
-// Walk each stage doing the calcs
-// for s in 0..rv.event.stages_count {
-//     rv.rows
 
-// }
-//     let raw_scores: Vec<&ScoreData> = find_scores(&event.scores, &cars[..]);
-//     let mut stage_res: Vec<Option<ResultScore>> = vec![None; cars.len()];
-
-//     // let sz: usize = s.into();
-//     let mut s_times = vec![0f32; cars.len()]; // cumulative time for calcs
-//     let mut s_scores = vec![KTime::NOSHO; cars.len()]; // cumulative time for calcs
-//     for caridx in 0..cars.len() {
-//         let car = cars[caridx];
-//         (s_times[caridx], s_scores[caridx]) =
-//             get_car_stage_score(&raw_scores[..], base_times[s as usize], car, s);
-//         cum_time[caridx] += time[caridx];
-//     }
-
-// now calc pos in stage
-// much simpler if use a struct or tuple so can sort easy
-// can prolly do the string label <= etc in render?  otherwise needs sort
-// then markup
-// }
-
-// let columns: Vec<ResultScore>,
-// let row = car_scores(&bases[..], &scores[..], car);
-// let bases = base_times(&scores[..], &cars[..], event.stages_count);
-
-// Inputs raw scores.  From scores page.
-// Entry list.  Name Vs Class.
-// Class
-// maybe a sort?  (Might be best later, pick a column, car, driver, score per stage)
 pub fn create_result_view<'a>(event: &'a EventInfo, class: &str) -> ResultView<'a> {
     // Calc min time per stage (for class)
     // loop raw results... list of cars eligible.  Find relevant results.
@@ -333,56 +363,6 @@ pub fn create_result_view<'a>(event: &'a EventInfo, class: &str) -> ResultView<'
     calc(&mut rv);
     rv
 }
-
-// calculate the score for a car in stage.  Return pair of score and code
-// marks car as dnf if no result. (REALLY should do that earlier and save pain?)
-// pub fn get_car_stage_score(
-//     scores: &[&ScoreData],
-//     base_time: f32,
-//     car: &str,
-//     stage: u8,
-// ) -> (f32, KTime) {
-//     let no_sho_time = base_time + 10f32;
-//     let wd_time = base_time + 5f32;
-
-//     match scores.iter().find(|s| s.car == car && s.stage == stage) {
-//         None => (no_sho_time, KTime::NOSHO),
-//         Some(s) => {
-//             let score = match s.time {
-//                 KTime::NOSHO => no_sho_time,
-//                 KTime::WD => wd_time,
-//                 KTime::FTS => wd_time,
-//                 KTime::DNF => wd_time,
-//                 KTime::Time(t) => t + (5 * (s.flags + s.garage)) as f32,
-//                 KTime::TODO => base_time,
-//             };
-//             (score, s.time)
-//         }
-//     }
-// }
-
-// // get base times for a stage
-// // calc base. min  min*2 max
-// pub fn calc_base_times<'a>(escores: &'a [&ScoreData], cars: &[&str], stages: u8) -> Vec<f32> {
-//     let mut min = vec![0f32; stages.into()];
-//     let mut max = vec![0f32; stages.into()];
-
-//     for s in scores.iter() {
-//         if let KTime::Time(time) = s.time {
-//             if (time.garage as u8 + time.flags) == 0 {
-//             // will panic if stage is out of range. meh
-//             let stage: usize = s.stage.into();
-//             min[stage] = min[stage].min(time.time);
-//             max[stage] = max[stage].max(time.time);
-//             }
-//         }
-//     }
-
-//     let out = std::iter::zip(min, max)
-//         .map(|(min, max)| max.min(2f32 * min))
-//         .collect();
-//     out
-// }
 
 // get entries  in class
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
@@ -421,13 +401,3 @@ pub fn find_scores<'a>(scores: &'a [ScoreData], cars: &[&str], stage: u8) -> Vec
 pub fn find_score<'a>(scores: &'a [ScoreData], car: &str, stage: u8) -> Option<&'a ScoreData> {
     scores.iter().find(|s| s.stage == stage && car == s.car)
 }
-
-// // get scores for the list of cars
-// pub fn find_scores<'a>(scores: &'a [ScoreData], cars: &[&str]) -> Vec<&'a ScoreData> {
-//     // &&s.car[..] ... uhhhh Ooookaaay
-//     let a = scores
-//         .iter()
-//         .filter(|s| cars.contains(&&s.car[..]))
-//         .collect();
-//     a
-// }
