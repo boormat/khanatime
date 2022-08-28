@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 // Event INFO.  Staticish
 #[derive(Default, Debug, Serialize, Deserialize)]
 pub struct EventInfo {
-    name: String,
+    pub name: String,
     stages_count: u8, // number of stages planned to run. 1 indexed
 
     // scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
