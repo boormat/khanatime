@@ -2,43 +2,30 @@
 // probably will do serialisation for long term storage
 
 use indexmap::IndexMap;
-// use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
 
-// #[derive(Serialize, Deserialize, Debug)]
-// struct Event {
-//     name: String,
-//     stages_count: u8, // number of stages to run. 1 indexed
-//     // stages: HashSet<i8>, // stage numbers/index (we might have to skip some?)
-//     // times: Vec<RawScore>,                            // raw times, order of insertion
-//     scores: HashMap<u8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
-//     classes: IndexSet<String>,                       // list of known classes. Order as per display
-//     entries: IndexMap<String, Entry>, // list of know entrants/drivers. Ordered by car number
-//                                       // 'base' times per class per stage.
-// }
-
 // Event INFO.  Staticish
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EventInfo {
     pub name: String,
-    stages_count: u8, // number of stages planned to run. 1 indexed
+    pub stages_count: u8, // number of stages planned to run. 1 indexed
 
     // scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
-    classes: Vec<String>, // list of known classes. Order as per display
-    entries: Vec<Entry>,  // list of know entrants/drivers. Ordered by something
+    pub classes: Vec<String>, // list of known classes. Order as per display
+    pub entries: Vec<Entry>,  // list of know entrants/drivers. Ordered by something
 
-    scores: Vec<ScoreData>, // the raw score log
+    pub scores: Vec<ScoreData>, // the raw score log TODO add official info layer
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Entry {
-    car: String,          // entry/car number
-    name: String,         // name
-    vehicle: String,      // description
-    classes: Vec<String>, // Classes. Count be an ID. meh
+    pub car: String,          // entry/car number
+    pub name: String,         // name
+    pub vehicle: String,      // description
+    pub classes: Vec<String>, // Classes. Count be an ID. meh
 }
 
-#[derive(Default, Serialize, Deserialize, Debug)]
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
 pub struct ScoreData {
     // keys For moment only accept int car numbers? 00 0B 24TBC
     pub stage: u8,
@@ -92,19 +79,19 @@ pub enum KTime {
 // is selected.
 // results to render
 #[derive(Debug)]
-pub struct ResultView<'a> {
-    event: &'a EventInfo,
+pub struct ResultView {
+    event: EventInfo,
     class: String,
-    rows: IndexMap<&'a str, ResultRow<'a>>, // list of know entrants/drivers. Ordered by car number
-    base_times_ds: Vec<u16>,                // base times
+    rows: IndexMap<String, ResultRow>, // list of know entrants/drivers. Ordered by car number
+    base_times_ds: Vec<u16>,           // base times
 
-                                            // can probably remove the Index map so we can sort by a separate vec of refs?
+                                       // can probably remove the Index map so we can sort by a separate vec of refs?
 }
 
 // results to render
 #[derive(Debug)]
-pub struct ResultRow<'a> {
-    entry: &'a Entry, //todo use from context &'a [Entry];
+pub struct ResultRow {
+    entry: Entry, //todo use from context &'a [Entry];
     columns: Vec<Option<ResultScore>>,
     //cum_pos: Option<Pos>, // current/last cumulative position. None after a missed a stage
 }
@@ -139,15 +126,101 @@ pub struct ResultScore {
     cum_pos: Option<Pos>, // pos in event.
 }
 
-impl<'a> ResultView<'a> {
+//////////////////////////////////////////////////////////////////////
+/// impl time
+impl Default for EventInfo {
+    fn default() -> Self {
+        let classes = ["Outright", "Female", "Junior"];
+        let classes = classes.map(String::from).into();
+        let name = "TBA".into();
+        let stages_count = 12.into();
+        let entries = vec![];
+        let scores = vec![];
+        Self {
+            name,
+            stages_count,
+            classes,
+            entries,
+            scores,
+        }
+    }
+}
+
+impl EventInfo {
+    // delete class, will ensure entries updated too
+    pub fn remove_class(&mut self, class: &String) -> bool {
+        if !self.classes.contains(class) {
+            return false;
+        }
+
+        self.classes.retain(|x| x != class);
+        for e in self.entries.iter_mut() {
+            e.classes.retain(|x| x != class);
+        }
+        return true;
+    }
+
+    // delete class, will ensure entries updated too
+    pub fn rename_class(&mut self, old: &String, new: &String) -> bool {
+        if !self.classes.contains(old) {
+            return false;
+        }
+
+        let c: &mut String = &mut self.classes.iter_mut().find(|x| *x == old).unwrap();
+        *c = new.clone();
+
+        for e in self.entries.iter_mut() {
+            if let Some(class) = e.classes.iter_mut().find(|x| *x == old) {
+                *class = new.clone();
+            }
+        }
+        return true;
+    }
+
+    // delete class, will ensure entries updated too
+    pub fn add_entry(&mut self, car: &str, name: &str) -> bool {
+        let found_car = self.entries.iter().find(|e| e.car == *car).is_some();
+        if found_car {
+            return false;
+        }
+
+        // Dupe driver. ... is OK-ish?  Nah
+        let found_driver = self.entries.iter().find(|e| e.name == *name).is_some();
+        if found_driver {
+            return false;
+        }
+
+        let entry = Entry::new(car, name);
+        self.entries.push(entry);
+        return true;
+    }
+}
+
+impl Entry {
+    pub fn new(car: &str, name: &str) -> Self {
+        let vehicle = Default::default();
+        let classes = ["Outright"];
+        let classes = classes.map(String::from).into();
+        let car = car.to_string();
+        let name = name.to_string();
+        Self {
+            vehicle,
+            classes,
+            car,
+            name,
+        }
+    }
+}
+
+impl<'a> ResultView {
     pub fn init(class: &str, event: &'a EventInfo) -> Self {
         //  entries: &'a [Entry]
         let entries = find_entries_in_class(&event.entries, class);
 
         // let rows: Vec<ResultRow> = entries
-        let rows: IndexMap<&'a str, ResultRow<'a>> = entries
+        let rows: IndexMap<String, ResultRow> = entries
             .iter()
-            .map(|e| (&e.car[..], ResultRow::init(e, event)))
+            .map(|e| (e.car.clone(), ResultRow::init(e, event)))
             .collect();
         let class = class.to_string();
 
@@ -155,14 +228,14 @@ impl<'a> ResultView<'a> {
         let base_times_ds = vec![0; event.stages_count as usize];
         Self {
             class,
-            event,
+            event: event.clone(),
             rows,
             base_times_ds,
         }
     }
 }
 
-impl<'a> ResultRow<'a> {
+impl<'a> ResultRow {
     pub fn init(entry: &'a Entry, event: &'a EventInfo) -> Self {
         let columns = (0..event.stages_count)
             .map(
@@ -173,7 +246,10 @@ impl<'a> ResultRow<'a> {
             )
             .collect();
 
-        Self { entry, columns }
+        Self {
+            entry: entry.clone(),
+            columns,
+        }
     }
 }
 
@@ -298,7 +374,7 @@ pub fn calc_stage_positions(rv: &mut ResultView) {
         for (rowkey, rr) in rv.rows.iter_mut() {
             if let Some(rs) = &mut rr.columns[stage as usize] {
                 // if let Some(cum_pos) = &mut rs.cum_pos {
-                car_scores.push((*rowkey, &mut rs.stage_pos));
+                car_scores.push((rowkey.as_str(), &mut rs.stage_pos));
             }
         }
 
@@ -334,7 +410,7 @@ pub fn calc_cumulative_positions(rv: &mut ResultView) {
         for (rowkey, rr) in rv.rows.iter_mut() {
             if let Some(rs) = &mut rr.columns[stage as usize] {
                 if let Some(cum_pos) = &mut rs.cum_pos {
-                    car_scores.push((*rowkey, cum_pos));
+                    car_scores.push((rowkey.as_str(), cum_pos));
                 }
             }
         }
@@ -351,7 +427,7 @@ pub fn calc(rv: &mut ResultView) {
     calc_pos_changes(rv);
 }
 
-pub fn create_result_view<'a>(event: &'a EventInfo, class: &str) -> ResultView<'a> {
+pub fn create_result_view<'a>(event: &'a EventInfo, class: &str) -> ResultView {
     // Calc min time per stage (for class)
     // loop raw results... list of cars eligible.  Find relevant results.
     // sort into stages.

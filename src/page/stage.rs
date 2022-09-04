@@ -305,7 +305,7 @@ fn input_box(val: &String) -> Node<StageMsg> {
 
 // Result Error class for UI feedback
 #[derive(thiserror::Error, Debug, Eq, PartialEq)]
-enum CmdError {
+pub enum CmdError {
     #[error("Invalid {value}")]
     BadInput { value: String },
     #[error("Ignoring")]
@@ -422,7 +422,7 @@ fn bad_input(msg: &str) -> CmdError {
 
 // find the car# at, return the rest as second field
 // if there is no car, its empty
-fn parse_car(cmd: &str) -> Result<(&str, &str), CmdError> {
+pub fn parse_car(cmd: &str) -> Result<(&str, &str), CmdError> {
     let re = regex!(r"^\d+");
     let s = cmd.trim_start();
     match re.find(s) {

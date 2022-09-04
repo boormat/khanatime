@@ -11,11 +11,13 @@ const EVENT_PREFIX: &str = "EVENT:";
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
-        page: Page::Stage,
+        page: Page::Event,
         events: list_events(),
         event: Default::default(),
         ctx: Default::default(),
         stage_model: page::stage::init(),
+        event_model: page::event::init(),
+        results_model: page::results::init(),
     }
 }
 
@@ -26,6 +28,8 @@ struct Model {
     events: HashSet<String>, // names of known/stored events (local)
     event: EventInfo,
     stage_model: page::stage::StageModel,
+    results_model: page::results::Model,
+    event_model: page::event::Model,
 }
 
 #[derive(Default)]
@@ -41,26 +45,26 @@ struct User {
 pub enum Page {
     #[default]
     Home,
+    Help,
     KhanaRules,
-    NotFound,
+    Results,
     Stage,
-    InEvent,
-}
-
-fn default_classes() -> Vec<String> {
-    let classes = ["Outright", "Female", "Junior"];
-    classes.map(String::from).into()
+    Event,
 }
 
 pub enum Msg {
     Show(Page),
     StageMsg(page::stage::StageMsg),
+    EventMsg(page::event::Msg),
+    ResultMsg(page::results::Msg),
 }
 
 fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
     match msg {
         Msg::Show(p) => model.page = p,
-        Msg::StageMsg(stage_msg) => page::stage::update(stage_msg, &mut model.stage_model),
+        Msg::StageMsg(msg) => page::stage::update(msg, &mut model.stage_model),
+        Msg::EventMsg(msg) => page::event::update(msg, &mut model.event_model),
+        Msg::ResultMsg(msg) => page::results::update(msg, &mut model.results_model),
     }
 
     if !model.event.name.is_empty() {
@@ -91,7 +95,7 @@ fn list_events() -> HashSet<String> {
 // ------ ------
 
 fn view(model: &Model) -> Vec<Node<Msg>> {
-    vec![
+    nodes![
         view_navbar(model.ctx.user.as_ref(), &model.page),
         view_content(&model),
     ]
@@ -104,12 +108,11 @@ fn view_content(model: &Model) -> Node<Msg> {
         C!["container"],
         match model.page {
             Page::Home => page::home::view(),
+            Page::Help => page::help::view(),
             Page::KhanaRules => page::khana_rule::view(),
-            Page::NotFound => page::not_found::view(),
-            Page::InEvent => span!("Oops"), //view_show_event(&model),
-            Page::Stage => {
-                page::stage::view(&model.stage_model).map_msg(Msg::StageMsg)
-            }
+            Page::Stage => page::stage::view(&model.stage_model).map_msg(Msg::StageMsg),
+            Page::Results => page::results::view(&model.results_model).map_msg(Msg::ResultMsg),
+            Page::Event => page::event::view(&model.event_model).map_msg(Msg::EventMsg),
         }
     ]
 }
@@ -129,14 +132,29 @@ fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
                 ev(Ev::Click, |_| Msg::Show(Page::Home)),
             ],
             a![
+                linky2(matches!(page, Page::Help)),
+                "Help",
+                ev(Ev::Click, |_| Msg::Show(Page::Help)),
+            ],
+            a![
                 linky2(matches!(page, Page::KhanaRules)),
                 "Rules",
                 ev(Ev::Click, |_| Msg::Show(Page::KhanaRules)),
             ],
             a![
                 linky2(matches!(page, Page::Stage)),
-                "Stages",
+                "Timing",
                 ev(Ev::Click, |_| Msg::Show(Page::Stage)),
+            ],
+            a![
+                linky2(matches!(page, Page::Event)),
+                "Event",
+                ev(Ev::Click, |_| Msg::Show(Page::Event)),
+            ],
+            a![
+                linky2(matches!(page, Page::Results)),
+                "Results",
+                ev(Ev::Click, |_| Msg::Show(Page::Results)),
             ],
         ]
     ]

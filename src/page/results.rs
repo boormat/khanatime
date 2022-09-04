@@ -17,12 +17,12 @@ pub enum Msg {
     ShowClass(String),
 }
 
-pub struct Model<'a> {
-    results: Option<ResultView<'a>>,
+pub struct Model {
+    results: Option<ResultView>,
     event: Option<EventInfo>,
 }
 
-pub fn init() -> Model<'static> {
+pub fn init() -> Model {
     let mut model = Model {
         results: None,
         event: None,
