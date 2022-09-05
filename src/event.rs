@@ -147,6 +147,13 @@ impl Default for EventInfo {
 }
 
 impl EventInfo {
+    pub fn add_class(&mut self, class: &String) {
+        if self.classes.contains(class) {
+            return;
+        }
+        self.classes.push(class.clone());
+    }
+
     // delete class, will ensure entries updated too
     pub fn remove_class(&mut self, class: &String) -> bool {
         if !self.classes.contains(class) {

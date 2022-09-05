@@ -1,45 +1,42 @@
 use crate::event::Entry;
 use crate::event::EventInfo;
-// use crate::event::ScoreData;
 
-//  Event edit view.
+// Event edit view.
 // List of Classes. = derived from users?
 // List of Entrants.
-// Import timing results... later
 use lazy_regex::regex;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 
-// use super::stage::parse_car;
+#[derive(Serialize, Deserialize, Clone)]
+pub enum InputMsg {
+    DoThing,
+    DataEntry(String),
+    CancelEdit,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Msg {
-    DataEntry(String),
-    CancelEdit,
     // classes
-    EditClass(Option<String>),
+    EditClass(String), // borkish
     DeleteClass(String),
-    UpdateClass(String),
+    ClassInput(InputMsg),
     // entry stuff
-    CreateEntry,
+    EntryInput(InputMsg),
     ToggleClass { car: String, class: String },
 }
+
 pub struct Model {
-    // new_entry: String,
-    input: InputModel,
+    class: InputModel,
+    entrant: InputModel,
     event: EventInfo,
-    input_class: InputModel,
-    edit_class: String,
-    edit_entry: String,
 }
 
 pub fn init() -> Model {
     let mut model = Model {
-        input: Default::default(),
+        class: Default::default(),
+        entrant: Default::default(),
         event: Default::default(),
-        edit_class: Default::default(),
-        input_class: Default::default(),
-        edit_entry: Default::default(),
     };
     load_ui(&mut model);
     load_event(&mut model);
@@ -76,42 +73,55 @@ fn save_ui(model: &Model) {
 pub fn update(msg: Msg, model: &mut Model) {
     // TODO Use a result to update the feedback?
     match msg {
-        Msg::DataEntry(value) => {
-            input_update(&mut model.input, value); // typey typey
+        Msg::ClassInput(InputMsg::DataEntry(value)) => {
+            input_update(&mut model.class, value); // typey typey
         }
-        Msg::CancelEdit => {
-            input_clear(&mut model.input);
+        Msg::ClassInput(InputMsg::CancelEdit) => {
+            input_clear(&mut model.class);
         }
-        Msg::CreateEntry => {
-            if let Some((car, name)) = parse_car_and(&model.input.input[..]) {
+        Msg::EntryInput(InputMsg::DataEntry(value)) => {
+            input_update(&mut model.entrant, value); // typey typey
+        }
+        Msg::EntryInput(InputMsg::CancelEdit) => {
+            input_clear(&mut model.entrant);
+        }
+        Msg::EntryInput(InputMsg::DoThing) => {
+            if let Some((car, name)) = parse_car_and(&model.entrant.input[..]) {
                 let ok = model.event.add_entry(car, name);
                 if ok {
                     save_event(model);
                     save_ui(model);
-                    input_clear(&mut model.input);
+                    input_clear(&mut model.entrant);
                 } else {
-                    input_feedback(&mut model.input, "Duplicate Entry.");
+                    input_feedback(&mut model.entrant, "Duplicate Entry.");
                 }
             } else {
-                input_feedback(&mut model.input, "Can't parse Entry. Car#<space>Name");
+                input_feedback(&mut model.entrant, "Can't parse Entry. Car#<space>Name");
             }
         }
-        Msg::EditClass(None) => model.edit_class.clear(),
-        Msg::EditClass(Some(class)) => {
-            model.edit_class = class.clone();
-            model.input_class.input = class;
+        Msg::EditClass(class) => {
+            model.class.input = format!("{class}");
+            model.class.feedback = format!("Editing class {class}");
         }
 
-        Msg::UpdateClass(class) => {
-            log!("rename", class);
-            let new = &model.input.input;
-            // can't remove without removing drivers first?
-            if model.event.rename_class(&class, &new) {
-                save_event(model);
-                save_ui(model);
+        Msg::ClassInput(InputMsg::DoThing) => {
+            // new or rename... if key not null?
+            let input = &model.class;
+            if input.key.is_empty() {
+                let new = &input.input;
+                model.event.add_class(&new);
+            } else {
+                // can't remove without removing drivers first?
+                let new = &input.input;
+                let old = &input.key;
+                if model.event.rename_class(&old, &new) {
+                    save_event(model);
+                    save_ui(model);
+                }
             }
-            input_clear(&mut model.input);
+            input_clear(&mut model.class);
         }
+
         Msg::DeleteClass(class) => {
             log!("delete", class);
             // can't remove without removing drivers first?
@@ -141,10 +151,9 @@ pub fn view(model: &Model) -> Node<Msg> {
         // sort buttons.
         // results list... here
         view_class_list(&model),
-        view_entrant_head(&model),
+        input_box(&model.class, "New Class?", Msg::ClassInput ),
         view_entrant_list(&model),
-        // input_box_wrap(&model.cmd),
-        // p!(model.cmd.to_string()),
+        input_box(&model.entrant, "New Entrant?",  Msg::EntryInput),
     }
 }
 
@@ -154,97 +163,77 @@ fn view_class_list(model: &Model) -> Node<Msg> {
         model.event.classes.iter().map(|class| {
             let class1 = class.to_string();
             let class2 = class.to_string();
-            // let id = todo.id;
-            let edit = class == &model.edit_class;
 
             li![
-                // C![IF!(todo.completed => "completed"), IF!(is_selected => "editing")],
                 el_key(&class),
-                div![
-                    C!["view"],
-                    // input![C!["toggle"],
-                    //     attrs!{At::Type => "checkbox", At::Checked => todo.completed.as_at_value()},
-                    //     ev(Ev::Change, move |_| Msg::ToggleTodo(id)),
-                    // ],
-                    // label![&class, ev(Ev::Click, move |_| Msg::EditClass(Some(class1))),],
-                    IF!( edit => {
-                        input_box(&model.input, "edit class", Msg::UpdateClass(class.clone()))
-                    }),
-                    IF!( !edit => {
-                        label![&class, ev(Ev::Click, move |_| Msg::EditClass(Some(class1))),]
-                    }),
+                span![
+                    C!["tag is-medium"],
+                    i![
+                        C!["fa fa-pen-to-square"],
+                        ev(Ev::Click, move |_| Msg::EditClass(class1)),
+                    ],
+                    &class,
                     button![
-                        C!["destroy"],
-                        "Delete",
+                        C!["delete is-danger"],
                         ev(Ev::Click, move |_| Msg::DeleteClass(class2))
                     ],
                 ],
-                // IF!(is_selected => {
-                //     let selected_todo = selected_todo.unwrap();
-                //     input![C!["edit"],
-                //         el_ref(&selected_todo.input_element),
-                //         attrs!{At::Value => selected_todo.title},
-                //         input_ev(Ev::Input, Msg::SelectedTodoTitleChanged),
-                //         keyboard_ev(Ev::KeyDown, |keyboard_event| {
-                //             Some(match keyboard_event.key().as_str() {
-                //                 ESCAPE_KEY => Msg::SelectTodo(None),
-                //                 ENTER_KEY => Msg::SaveSelectedTodo,
-                //                 _ => return None
-                //             })
-                //         }),
-                //         ev(Ev::Blur, |_| Msg::SaveSelectedTodo),
-                //     ]
-                // }),
             ]
         })
     ]
 }
-fn view_entrant_head(model: &Model) -> Node<Msg> {
-    let cmd = Msg::CreateEntry;
-    header![
-        h1!["Entrants"],
-        input_box(&model.input, "New Entrant?", cmd)
-    ]
-}
 
-fn view_entrant_list(model: &Model) -> Node<Msg> {
-    ul![model
-        .event
-        .entries
-        .iter()
-        .map(|entry| view_entry(model, &entry))]
-}
-
-fn view_time_header() -> Node<Msg> {
-    tr![th![""], th!["Car"], th!["Time"], th!["Flags"],]
+fn view_entrant_list(model: &Model) -> Vec<Node<Msg>> {
+    nodes! {
+        header![h1!["Entrants"]],
+        ul![model
+            .event
+            .entries
+            .iter()
+            .map(|entry| view_entry(model, &entry))],
+    }
 }
 
 fn view_entry(model: &Model, entry: &Entry) -> Node<Msg> {
     li![
-        label![&entry.name],
+        span![
+            C!["tag is-black"],
+            i!(
+                C!("fa fa-car"),
+                style!(
+                    St::Width => px(20)
+                ),
+            ),
+            style!(
+                St::Width => px(40)
+            ),
+            &entry.car
+        ],
+        span![
+            style!(
+                St::Width => px(80)
+                St::Margin => px(10)
+            ),
+            &entry.name,
+        ],
         model.event.classes.iter().map(|class| {
             let class_on = entry.classes.contains(class);
-            let class = class.to_string();
+            let class1 = class.to_string();
             let class2 = class.to_string();
-            let class3 = class.to_string();
-            let car = entry.car.clone();
-            let car2 = entry.car.clone();
-            div![
+            let car1 = entry.car.clone();
+            label![
+                C!["checkbox"],
                 input![
-                    C!["toggle"],
                     attrs! {
                         At::Type => "checkbox",
                         At::Checked => class_on.as_at_value()
                     },
-                    ev(Ev::Change, move |_| Msg::ToggleClass { car, class: class2 }),
+                    ev(Ev::Change, move |_| Msg::ToggleClass {
+                        car: car1,
+                        class: class2
+                    }),
                 ],
-                label![
-                    &class,
-                    ev(Ev::Click, move |_| Msg::ToggleClass {
-                        car: car2,
-                        class: class3
-                    })
-                ],
+                &class1,
             ]
         }),
     ]
@@ -256,32 +245,6 @@ fn view_car_number(car: &String) -> Node<Msg> {
         car
     }
 }
-
-// fn view_stage_links(model: &Model) -> Node<Msg> {
-// div![match &model.preview {
-//     Some(CmdParse::Time(tc)) => {
-//         raw!("POSSIBLE time")
-//     }
-//     Some(CmdParse:: { number }) => {
-//         raw!("POSIBLE stage")
-//     }
-//     Some(CmdParse::Event { event }) => {
-//         raw!("POSIBLE event")
-//     }
-//     None => raw!(""),
-// },]
-// }
-
-// fn input_box_wrap(val: &String) -> Node<Msg> {
-//     div![
-//         C!["pannel-block"],
-//         p![
-//             C!["control has-icons-left"],
-//             input_box(val),
-//             span![C!["icon is-left"], i![C!["fas fa-car"]]]
-//         ],
-//     ]
-// }
 
 pub fn parse_car_and(cmd: &str) -> Option<(&str, &str)> {
     let re = regex!(r"^\d+[A-Z]? ");
@@ -298,22 +261,19 @@ pub fn parse_car_and(cmd: &str) -> Option<(&str, &str)> {
 
 #[derive(Default)]
 pub struct InputModel {
+    pub key: String,
     pub input: String,
     pub feedback: String,
 }
 
-// fn editable_box(model: &InputModel, placeholder: &str, cmd: Msg, edit: bool) -> Vec<Node<Msg>> {
-//     if edit {
-//         input_box(model, placeholder, cmd)
-//     } else {
-//         label![&class, ev(Ev::Click, move |_| Msg::EditClass(Some(class1))),]
-//     }
-// }
-
-fn input_box(model: &InputModel, placeholder: &str, cmd: Msg) -> Vec<Node<Msg>> {
+fn input_box(model: &InputModel, placeholder: &str, base_msg: fn(InputMsg) -> Msg) -> Node<Msg> {
     const ENTER_KEY: u32 = 13;
     const ESC_KEY: u32 = 27;
-    nodes![
+    // so enums which take parameters are actually functions
+    let do_thing = base_msg(InputMsg::DoThing);
+    let cancel_edit: Msg = base_msg(InputMsg::CancelEdit);
+    let data_entry = move |x| base_msg(InputMsg::DataEntry(x));
+    div![
         div![&model.feedback],
         input![
             C!["input"],
@@ -324,17 +284,18 @@ fn input_box(model: &InputModel, placeholder: &str, cmd: Msg) -> Vec<Node<Msg>> 
             },
             keyboard_ev(Ev::KeyDown, |keyboard_event| {
                 match keyboard_event.key_code() {
-                    ENTER_KEY => Some(cmd),
-                    ESC_KEY => Some(Msg::CancelEdit),
+                    ENTER_KEY => Some(do_thing),
+                    ESC_KEY => Some(cancel_edit),
                     _ => None,
                 }
             }),
-            input_ev(Ev::Input, Msg::DataEntry),
+            input_ev(Ev::Input, data_entry),
         ],
     ]
 }
 
 fn input_clear(model: &mut InputModel) {
+    model.key.clear();
     model.input.clear();
     model.feedback.clear();
 }
