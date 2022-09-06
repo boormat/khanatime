@@ -1,19 +1,16 @@
 mod event;
 mod page;
 
-use event::EventInfo;
-use indexmap::IndexMap;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-const EVENT_PREFIX: &str = "EVENT:";
+// const EVENT_PREFIX: &str = "EVENT:";
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
         page: Page::Event,
-        events: list_events(),
-        event: Default::default(),
+        events: event::list_events(),
         ctx: Default::default(),
         stage_model: page::stage::init(),
         event_model: page::event::init(),
@@ -26,7 +23,6 @@ struct Model {
     page: Page,
     #[allow(dead_code)]
     events: HashSet<String>, // names of known/stored events (local)
-    event: EventInfo,
     stage_model: page::stage::StageModel,
     results_model: page::results::Model,
     event_model: page::event::Model,
@@ -66,30 +62,7 @@ fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
         Msg::EventMsg(msg) => page::event::update(msg, &mut model.event_model),
         Msg::ResultMsg(msg) => page::results::update(msg, &mut model.results_model),
     }
-
-    if !model.event.name.is_empty() {
-        let key = format!("{}{}", EVENT_PREFIX, model.event.name);
-        LocalStorage::insert(key, &model.event).expect("save data to LocalStorage");
-    }
 }
-
-/// list of known events in storage.  String is storage key, is the event name
-/// if it fails .. empty is fine
-fn list_events() -> HashSet<String> {
-    let len = LocalStorage::len().unwrap_or_default();
-    let mut out: HashSet<String> = Default::default();
-    // ugly it up with map?
-    // out.push("dog".to_string());
-    (0..len).for_each(|i| {
-        if let Ok(name) = LocalStorage::key(i) {
-            if name.starts_with(EVENT_PREFIX) {
-                out.insert(name[EVENT_PREFIX.len()..].to_string());
-            }
-        }
-    });
-    return out;
-}
-
 // ------ ------
 //     View
 // ------ ------
@@ -126,35 +99,35 @@ fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
         },
         div![
             C!["navbar-brand"],
-            a![
+            i![
+                C!["fa fa-bars"],
                 linky2(matches!(page, Page::Home)),
-                "Home",
                 ev(Ev::Click, |_| Msg::Show(Page::Home)),
             ],
-            a![
-                linky2(matches!(page, Page::Help)),
-                "Help",
-                ev(Ev::Click, |_| Msg::Show(Page::Help)),
-            ],
-            a![
-                linky2(matches!(page, Page::KhanaRules)),
-                "Rules",
-                ev(Ev::Click, |_| Msg::Show(Page::KhanaRules)),
-            ],
-            a![
-                linky2(matches!(page, Page::Stage)),
-                "Timing",
-                ev(Ev::Click, |_| Msg::Show(Page::Stage)),
-            ],
-            a![
+            i![
+                C!["fa fa-screwdriver-wrench"],
                 linky2(matches!(page, Page::Event)),
-                "Event",
                 ev(Ev::Click, |_| Msg::Show(Page::Event)),
             ],
-            a![
+            i![
+                C!["fa fa-stopwatch-20"],
+                linky2(matches!(page, Page::Stage)),
+                ev(Ev::Click, |_| Msg::Show(Page::Stage)),
+            ],
+            i![
+                C!["fa fa-trophy"],
                 linky2(matches!(page, Page::Results)),
-                "Results",
                 ev(Ev::Click, |_| Msg::Show(Page::Results)),
+            ],
+            i![
+                C!["fa fa-question"],
+                linky2(matches!(page, Page::Help)),
+                ev(Ev::Click, |_| Msg::Show(Page::Help)),
+            ],
+            i![
+                C!["fa fa-book"],
+                linky2(matches!(page, Page::KhanaRules)),
+                ev(Ev::Click, |_| Msg::Show(Page::KhanaRules)),
             ],
         ]
     ]

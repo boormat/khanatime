@@ -43,21 +43,15 @@ pub fn init() -> Model {
     model
 }
 
-const EVENTPAGE_PREFIX: &str = "eventpage:";
-
 fn load_event(model: &mut Model) {
     if !model.event.name.is_empty() {
-        let key = format!("{}{}", EVENTPAGE_PREFIX, model.event.name);
-        let s = LocalStorage::get(&key).unwrap_or_default();
-        model.event = s;
+        model.event = crate::event::load_event(&model.event.name);
     }
 }
 
 fn save_event(model: &Model) {
-    let key = format!("{}{}", EVENTPAGE_PREFIX, model.event.name);
-    LocalStorage::insert(&key, &model.event).expect("save data to LocalStorage");
+    crate::event::save_event(&model.event);
     save_ui(model);
-    log!("saving  event ", key);
 }
 
 fn load_ui(model: &mut Model) {

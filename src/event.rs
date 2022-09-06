@@ -1,7 +1,11 @@
 // Structure for in memory storage of event
 // probably will do serialisation for long term storage
 
+use std::collections::HashSet;
+
 use indexmap::IndexMap;
+use seed::prelude::LocalStorage;
+use seed::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // Event INFO.  Staticish
@@ -13,8 +17,6 @@ pub struct EventInfo {
     // scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
     pub classes: Vec<String>, // list of known classes. Order as per display
     pub entries: Vec<Entry>,  // list of know entrants/drivers. Ordered by something
-
-    pub scores: Vec<ScoreData>, // the raw score log TODO add official info layer
 }
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -80,19 +82,19 @@ pub enum KTime {
 // results to render
 #[derive(Debug)]
 pub struct ResultView {
-    event: EventInfo,
-    class: String,
-    rows: IndexMap<String, ResultRow>, // list of know entrants/drivers. Ordered by car number
-    base_times_ds: Vec<u16>,           // base times
+    pub event: EventInfo,
+    pub class: String,
+    pub rows: IndexMap<String, ResultRow>, // list of know entrants/drivers. Ordered by car number
+    pub base_times_ds: Vec<u16>,           // base times
 
-                                       // can probably remove the Index map so we can sort by a separate vec of refs?
+                                           // can probably remove the Index map so we can sort by a separate vec of refs?
 }
 
 // results to render
 #[derive(Debug)]
 pub struct ResultRow {
-    entry: Entry, //todo use from context &'a [Entry];
-    columns: Vec<Option<ResultScore>>,
+    pub entry: Entry, //todo use from context &'a [Entry];
+    pub columns: Vec<Option<ResultScore>>,
     //cum_pos: Option<Pos>, // current/last cumulative position. None after a missed a stage
 }
 
@@ -100,10 +102,10 @@ pub struct ResultRow {
 ///
 #[derive(Default, Debug, Clone)]
 pub struct Pos {
-    score_ds: u16, // time in ds, after penalites
-    pos: u8,       // cumulative pos in event. Not unique for equal times
-    eq: bool,      // if pos is equal
-    change: i8,    // delta of last stage (cumulative only?)
+    pub score_ds: u16, // time in ds, after penalites
+    pub pos: u8,       // cumulative pos in event. Not unique for equal times
+    pub eq: bool,      // if pos is equal
+    pub change: i8,    // delta of last stage (cumulative only?)
 }
 
 impl Pos {
@@ -121,9 +123,9 @@ impl Pos {
 #[derive(Default, Clone, Debug)]
 pub struct ResultScore {
     // raw result fields
-    time: KTime, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
-    stage_pos: Pos, // result within stage
-    cum_pos: Option<Pos>, // pos in event.
+    pub time: KTime, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
+    pub stage_pos: Pos, // result within stage
+    pub cum_pos: Option<Pos>, // pos in event.
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -135,13 +137,12 @@ impl Default for EventInfo {
         let name = "TBA".into();
         let stages_count = 12.into();
         let entries = vec![];
-        let scores = vec![];
         Self {
             name,
             stages_count,
             classes,
             entries,
-            scores,
+            // scores,
         }
     }
 }
@@ -220,14 +221,14 @@ impl Entry {
 }
 
 impl<'a> ResultView {
-    pub fn init(class: &str, event: &'a EventInfo) -> Self {
+    pub fn init(class: &str, event: &'a EventInfo, scores: &Vec<ScoreData>) -> Self {
         //  entries: &'a [Entry]
         let entries = find_entries_in_class(&event.entries, class);
 
         // let rows: Vec<ResultRow> = entries
         let rows: IndexMap<String, ResultRow> = entries
             .iter()
-            .map(|e| (e.car.clone(), ResultRow::init(e, event)))
+            .map(|e| (e.car.clone(), ResultRow::init(e, event, scores)))
             .collect();
         let class = class.to_string();
 
@@ -243,10 +244,10 @@ impl<'a> ResultView {
 }
 
 impl<'a> ResultRow {
-    pub fn init(entry: &'a Entry, event: &'a EventInfo) -> Self {
+    pub fn init(entry: &'a Entry, event: &'a EventInfo, scores: &Vec<ScoreData>) -> Self {
         let columns = (0..event.stages_count)
             .map(
-                |stage| match find_score(&event.scores[..], &entry.car[..], stage) {
+                |stage| match find_score(&scores[..], &entry.car[..], stage) {
                     None => None,
                     Some(rs) => Some(ResultScore::init(rs)),
                 },
@@ -434,7 +435,11 @@ pub fn calc(rv: &mut ResultView) {
     calc_pos_changes(rv);
 }
 
-pub fn create_result_view<'a>(event: &'a EventInfo, class: &str) -> ResultView {
+pub fn create_result_view<'a>(
+    event: &'a EventInfo,
+    scores: &Vec<ScoreData>,
+    class: &str,
+) -> ResultView {
     // Calc min time per stage (for class)
     // loop raw results... list of cars eligible.  Find relevant results.
     // sort into stages.
@@ -442,7 +447,7 @@ pub fn create_result_view<'a>(event: &'a EventInfo, class: &str) -> ResultView {
     // validate ? Complain about scores for non-existant cars
     // times for non-existant stages
 
-    let mut rv = ResultView::init(class, event);
+    let mut rv = ResultView::init(class, event, scores);
     calc(&mut rv);
     rv
 }
@@ -483,4 +488,67 @@ pub fn find_scores<'a>(scores: &'a [ScoreData], cars: &[&str], stage: u8) -> Vec
 // get available Raw scores for the list of cars in a stage
 pub fn find_score<'a>(scores: &'a [ScoreData], car: &str, stage: u8) -> Option<&'a ScoreData> {
     scores.iter().find(|s| s.stage == stage && car == s.car)
+}
+
+const EVENT_PREFIX: &str = "event:";
+const TIMES_PREFIX: &str = "times:";
+
+fn event_key(name: &String) -> String {
+    format!("{}{}", EVENT_PREFIX, name)
+}
+
+fn times_key(name: &String) -> String {
+    format!("{}{}", TIMES_PREFIX, name)
+}
+
+pub fn load_event(name: &String) -> EventInfo {
+    if !name.is_empty() {
+        let key = event_key(name);
+        let e = LocalStorage::get(&key).unwrap_or_default();
+        e
+    } else {
+        EventInfo {
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+}
+
+pub fn save_event(event: &EventInfo) {
+    let key = event_key(&event.name);
+    LocalStorage::insert(&key, &event).expect("save data to LocalStorage");
+    // log!("saving  event ", key);
+}
+
+/// list of known events in storage.  String is storage key, is the event name
+/// if it fails .. empty is fine
+pub fn list_events() -> HashSet<String> {
+    let len = LocalStorage::len().unwrap_or_default();
+    let mut out: HashSet<String> = Default::default();
+    // ugly it up with map?
+    // out.push("dog".to_string());
+    (0..len).for_each(|i| {
+        if let Ok(name) = LocalStorage::key(i) {
+            if name.starts_with(EVENT_PREFIX) {
+                out.insert(name[EVENT_PREFIX.len()..].to_string());
+            }
+        }
+    });
+    return out;
+}
+
+pub fn load_times(name: &String) -> Vec<ScoreData> {
+    if !name.is_empty() {
+        let key = times_key(name);
+        LocalStorage::get(&key).unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+pub fn save_times(name: &String, scores: &Vec<ScoreData>) {
+    if !name.is_empty() {
+        let key = times_key(name);
+        LocalStorage::insert(&key, &scores).expect("save data to LocalStorage");
+    }
 }

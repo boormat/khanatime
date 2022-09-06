@@ -6,12 +6,7 @@ use crate::event::ScoreData;
 // List of times... generally in order of entry.
 // + big view of current last one
 // + text field.
-// strikeout old entries
-// Sort button. #, edit order, result
-// use crate::Msg;
-// use parse_display::FromStr;
 use lazy_regex::regex;
-// use parse_display::ParseError;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +19,6 @@ pub enum StageMsg {
 pub struct StageModel {
     scores: Vec<ScoreData>,
     cmd: String,
-    // preview: Option<CmdParse>,
     preview: Result<CmdParse, CmdError>,
     stage: u8,
     event: String,
@@ -37,7 +31,6 @@ fn add_score(model: &mut StageModel) {
         Ok(CmdParse::Time(cmd)) => to_score(model.stage, &cmd),
         _ => panic!(),
     };
-    // to_score(model.stage, model.preview.unwrap())
     // todo invalidate existing score if replacing it... (should be in preview too!)
     model.scores.push(s);
 }
@@ -65,26 +58,19 @@ pub fn init() -> StageModel {
         preview: Err(CmdError::Nothing), // hmm rubish OK
     };
     load_ui(&mut model);
-    load_event(&mut model);
+    load_times(&mut model);
     model
 }
 
-const STAGEPAGE_PREFIX: &str = "stagepage:";
-// const STAGEPAGE_PREFIX: &str = "eventstagepage:";
-
-fn load_event(model: &mut StageModel) {
+fn load_times(model: &mut StageModel) {
     if !model.event.is_empty() {
-        let key = format!("{}{}", STAGEPAGE_PREFIX, model.event);
-        let s = LocalStorage::get(&key).unwrap_or_default();
-        model.scores = s;
+        model.scores = crate::event::load_times(&model.event);
     }
 }
 
-fn save_event(model: &StageModel) {
-    let key = format!("{}{}", STAGEPAGE_PREFIX, model.event);
-    LocalStorage::insert(&key, &model.scores).expect("save data to LocalStorage");
+fn save_times(model: &StageModel) {
+    crate::event::save_times(&model.event, &model.scores);
     save_ui(model);
-    log!("saving  event ", key);
 }
 
 fn load_ui(model: &mut StageModel) {
@@ -97,12 +83,6 @@ fn save_ui(model: &StageModel) {
     SessionStorage::insert("event", &model.event).expect("save data to SessionStorage");
 }
 
-// /// list of known events in storage.  String is storage key, is the event name
-// /// if it fails .. empty is fine
-// fn list_events() -> HashSet<String> {
-//     let len = LocalStorage::len().unwrap_or_default();
-//     let mut out: HashSet<String> = Default::default();
-// }
 pub fn update(msg: StageMsg, model: &mut StageModel) {
     match msg {
         StageMsg::StageDataEntry(value) => {
@@ -110,10 +90,6 @@ pub fn update(msg: StageMsg, model: &mut StageModel) {
 
             // Show preview of what is about to happen on enter/save
             model.preview = parse_command(&model.cmd);
-            // model.preview  = parse_command(&model.cmd) {
-            //     model.preview = cmd;
-            //     // todo add more feedback for
-            // };
         }
         StageMsg::Command => {
             log!("cmd:", model.cmd);
@@ -121,7 +97,7 @@ pub fn update(msg: StageMsg, model: &mut StageModel) {
                 Ok(CmdParse::Time(_tc)) => {
                     log!("time");
                     add_score(model);
-                    save_event(model);
+                    save_times(model);
 
                     clear_cmd(model);
                 }
@@ -132,7 +108,7 @@ pub fn update(msg: StageMsg, model: &mut StageModel) {
                 Ok(CmdParse::Event { event }) => {
                     model.event = event.clone();
                     save_ui(model);
-                    load_event(model);
+                    load_times(model);
                     clear_cmd(model);
                 }
                 Err(_) => log!("parse nope"),
@@ -157,12 +133,10 @@ pub fn view(model: &StageModel) -> Node<StageMsg> {
         view_list(&model),
         view_preview(&model),
         input_box_wrap(&model.cmd),
-        // p!(model.cmd.to_string()),
     }
 }
 
 fn view_preview(model: &StageModel) -> Node<StageMsg> {
-    // let val = match &model.preview {
     match &model.preview {
         Ok(CmdParse::Time(tc)) => {
             return div![format!("Confirm time {:?}?", tc)];
@@ -194,80 +168,24 @@ fn view_time_header() -> Node<StageMsg> {
     tr![th!["Stage"], th!["Car"], th!["Time"], th!["Flags"],]
 }
 fn view_time(score: &ScoreData) -> Node<StageMsg> {
-    // log!(score.car);
-    // log!(score);
     tr![
         td![score.stage.to_string()],
         td![view_car_number(&score.car)],
         td![view_time_score(&score.time)],
-        // td![
-        //     IF! {score.flags > 0 => format!("{} Flags", score.flags)},
-        //     IF! {score.garage > 0 => "Garage"},
-        // ],
     ]
 }
 
 fn view_time_score(time: &KTime) -> Node<StageMsg> {
-    // tr![th!["Stage"], th!["Car"], th!["Time"], th!["Flags"],]
     log!(time.to_string());
     div!(time.to_string())
-    // div!("Yolo".to_string())
 }
-// }
-// tr![
-//     td!{a!{i! C!["fa-solid fa-wrench"]]></i> ] }
-//     <td><a><i className="icon-wrench edit"></i></a>}
-//     <td><EntrantLabel car={this.props.car} name={this.props.name} /></td>
-//     <td>{this.props.time}</td>
-//     <td>{this.props.flags}F</td>
-//     ]
-// <span  key={car} className="label label-default"
-// onClick={this.props.onClick.bind(null,car)}>
-//     {car} {name}
-// </span>
 
 fn view_car_number(car: &String) -> Node<StageMsg> {
     span! {
         C!["label label-default"],
         car
     }
-    //     {car} {name}
-    // </span>
 }
-
-// nodes![
-//     //
-//     "yolo",
-//     "yolo2",
-//     // model.scores.iter()
-//     // .map(|&score| => {
-//     //     score
-//     // }
-//     // .collect::<_>()
-//     // // model.scores.iter().collect( |score| =>
-//     // )
-// ]
-// div![for score in model.scores.iter() {
-//     // x.
-//     raw!("yolo"),
-//     //p!(raw!(format!("{}", score)))
-// },]
-// empty!
-
-// fn view_stage_links(model: &Model) -> Node<Msg> {
-// div![match &model.preview {
-//     Some(CmdParse::Time(tc)) => {
-//         raw!("POSSIBLE time")
-//     }
-//     Some(CmdParse::Stage { number }) => {
-//         raw!("POSIBLE stage")
-//     }
-//     Some(CmdParse::Event { event }) => {
-//         raw!("POSIBLE event")
-//     }
-//     None => raw!(""),
-// },]
-// }
 
 fn input_box_wrap(val: &String) -> Node<StageMsg> {
     div![
@@ -316,13 +234,6 @@ pub enum CmdError {
 /// Hide whichever matching is selected to parse
 /// probably needs to start returning user feedback on errors?
 fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
-    // TODO insert trying the nice variations/easy to type eg 1 65.1, 2 WD
-    // recar = Regex::new(r"^\d+").unwrap();
-    // let m = recar.find(cmd.trim_start());
-    // if
-    // if let Ok(res) = cmd.parse::<CmdParse>() {
-    //     return Ok(res);
-
     match parse_stage_cmd(cmd) {
         Err(CmdError::Nothing) => {}
         // xx => return xx,
@@ -336,12 +247,6 @@ fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
         Ok(scmd) => return Ok(scmd),
         Err(x) => return Err(x),
     }
-
-    // #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
-    // Stage { number: u8 },
-    // TODO use hand rolled parsed to just use simple enum instead of structs
-    // #[from_str(regex = "[eE](vent)? +(?P<event>.+) *$")]
-    // Event { event: String },
 
     let (car, cmd) = parse_car(cmd)?;
     let (timestr, cmd) = parse_time_str(cmd)?;
@@ -394,8 +299,6 @@ fn parse_stage_cmd(cmd: &str) -> Result<CmdParse, CmdError> {
 }
 
 fn parse_event_cmd(cmd: &str) -> Result<CmdParse, CmdError> {
-    // let re = regex!(r"^\d+");
-    // "[eE](vent)? +(?P<event>.+) *$")]
     let re1 = regex!("^[eE](vent)? +");
     let s = cmd.trim_start();
     let extra = match re1.find(s) {
@@ -426,23 +329,10 @@ pub fn parse_car(cmd: &str) -> Result<(&str, &str), CmdError> {
     let re = regex!(r"^\d+");
     let s = cmd.trim_start();
     match re.find(s) {
-        // None => (&s[0..0], &s[0..]),
-        // if car.len() == 0 {
         None => Err(bad_input("No car #number")),
         Some(m) => Ok((&s[0..m.end()], &s[m.end()..])),
     }
 }
-
-// fn parse_time(cmd: &str) -> Result<KTime, CmdError> {
-//     Some(m) => match m.as_str().to_uppercase().parse::<KTime>() {
-//         Err(_) => Err(CmdError("Invalid time or code".to_string())),
-//         Ok(t) => {
-//             let rest = &s[m.end()..];
-//             Ok((t, rest))
-//         }
-//     },
-
-// }
 
 // find the timecode at start, return the rest as second field
 // We are not checking for a valid code, so outer layer can give user
@@ -474,7 +364,6 @@ fn parse_flags_garages(cmd: &str) -> Result<(u8, bool), CmdError> {
     let mut s: &str = cmd.trim_start();
     while let Some(caps) = re.captures(s) {
         let mut tags = 1; //default
-                          // None => Err(CmdError("Invalid Flag or Garage String".to_string())),
         if let Some(numm) = caps.get(1) {
             let numstr = numm.as_str();
             if numstr.len() > 0 {
@@ -509,61 +398,17 @@ fn parse_flags_garages(cmd: &str) -> Result<(u8, bool), CmdError> {
     }
     Ok((flags, garages == 1))
 }
-//             match u8::from_str(numstr) {
-//                 None =>
-//                 Ok(v) => {
-//                     count = v;
-//                 }
-//                         Err => {
-//                             return Err(CmdError("Invalid Flag or Garage Count".to_string()));
-//                         }
-//                     }
-//                 }
-//             }
-//         }
 
-//         println!("Movie: {:?}, Released: {:?}", &caps["title"], &caps["year"]);
-//     }
-//     let s = cmd.trim_start();
-//     match re.find(s) {
-//         None => Err(CmdError("Invalid Flag or Garage String".to_string())),
-//         Some(num, "g") => match m.as_str().parse::<KTime>() {
-//             Err() => Err(CmdError("Invalid time or code".to_string())),
-//             Ok(KTime(t)) => {
-//                 let rest = &s[m.end()..];
-//                 Ok((t, rest))
-//             }
-//         },
-//     }
-// }
-
-// probably time to do in 2 phases, one to pull out as strings,
-// especially for F and G flags.
 #[derive(PartialEq, Debug, Default)]
-// #[from_str(regex = r####"(?x)
-//         ^\s*(?P<car>[0-9]+)
-//         (?:\s+(?P<code>WD|NOSHO|FTS|DNF|[0-9]+[.][0-9]*))?
-//         (?:\s+(?P<flags>[0-9])F)?
-//         (?:\s+(?P<garage>[0-9])G)?
-//         "####)]
-// #[display("{0}")]
-// #[derive(parse_display::FromStr, PartialEq, Debug, Default)]
-// #[display("{car} {code} {flags} {garage}")]
-// #[from_str(default)]
+
 struct TimeCmd {
     car: String,
     code: KTime,
 }
 
-// #[derive(parse_display::Display, PartialEq, Debug)]
-// #[derive(parse_display::FromStr, PartialEq, Debug)]
 #[derive(PartialEq, Debug)]
-// #[display("{0}")]
 enum CmdParse {
-    // #[from_str(regex = "[sS](tage)? *(?P<number>[0-9]+)")]
     Stage { number: u8 },
-    // TODO use hand rolled parsed to just use simple enum instead of structs
-    // #[from_str(regex = "[eE](vent)? +(?P<event>.+) *$")]
     Event { event: String },
     Time(TimeCmd),
 }
@@ -585,10 +430,6 @@ mod tests {
             parse_time_str(" NOSHO 1212"),
             Ok(("NOSHO".to_string(), " 1212"))
         );
-        // assert_eq!(parse_time("WD"), Ok((KTime::WD, "")));
-        // assert_eq!(parse_time("wD"), Ok((KTime::WD, "")));
-        // assert_eq!(parse_time(" 1.23 XX"), Ok((KTime::Time(1.23), " XX")));
-        // assert_eq!(parse_time(" NOSHO 1212"), Ok((KTime::NOSHO, " 1212")));
 
         assert_eq!(parse_flags_garages(" 1F1G"), Ok((1, true)));
         assert_eq!(parse_flags_garages(" FFG "), Ok((2, true)));

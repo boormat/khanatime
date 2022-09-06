@@ -1,5 +1,10 @@
+use std::collections::HashSet;
+
+use crate::event::create_result_view;
+use crate::event::load_times;
 use crate::event::EventInfo;
 use crate::event::KTime;
+use crate::event::ResultScore;
 use crate::event::ResultView;
 use crate::event::ScoreData;
 
@@ -9,7 +14,6 @@ use crate::event::ScoreData;
 // Change Class
 use seed::{prelude::*, *};
 
-// #[derive(Serialize, Deserialize, Clone)]
 pub enum Msg {
     SortStage,
     SortEvent,
@@ -18,39 +22,32 @@ pub enum Msg {
 }
 
 pub struct Model {
+    events: HashSet<String>, // names of known/stored events (local)
     results: Option<ResultView>,
-    event: Option<EventInfo>,
 }
 
 pub fn init() -> Model {
+    let name: String = match SessionStorage::get("event") {
+        Ok(x) => x,
+        Err(_) => "TBA".to_string(),
+    };
+    let events = crate::event::list_events();
+
     let mut model = Model {
         results: None,
-        event: None,
+        events,
     };
-    load_ui(&mut model);
-    load_event(&mut model);
+    load(&mut model, &name);
     model
 }
 
-const STAGEPAGE_PREFIX: &str = "stagepage:";
-// const STAGEPAGE_PREFIX: &str = "eventstagepage:";
-
-fn load_event(model: &mut Model) {
-    // if !model.event.is_empty() {
-    //     let key = format!("{}{}", STAGEPAGE_PREFIX, model.event);
-    //     let s = LocalStorage::get(&key).unwrap_or_default();
-    //     model.scores = s;
-    // }
-}
-
-fn load_ui(model: &mut Model) {
-    if let Ok(event) = SessionStorage::get("event") {
-        model.event = event;
-    }
-}
-
-fn save_ui(model: &Model) {
-    SessionStorage::insert("event", &model.event).expect("save data to SessionStorage");
+fn load(model: &mut Model, name: &String) {
+    let scores = crate::event::load_times(&name);
+    let event = crate::event::load_event(&name);
+    let class = event.classes[0].clone();
+    let results = create_result_view(&event, &scores, &class);
+    model.results = Some(results);
+    log!("loaded", name, class);
 }
 
 pub fn update(msg: Msg, model: &mut Model) {
@@ -58,29 +55,83 @@ pub fn update(msg: Msg, model: &mut Model) {
         Msg::SortStage => todo!(),
         Msg::SortEvent => todo!(),
         Msg::SortDriver => todo!(),
-        Msg::ShowClass(_) => todo!(),
+        Msg::ShowClass(class) => {
+            //load is overkill... will do for moment.
+            load(model, &class);
+        }
     }
 }
 
 pub fn view(model: &Model) -> Node<Msg> {
-    div! {
-        // h1![format!("Event: {} Stage:{}", model.event, model.stage)],
-        // sort buttons.
-        // results list... here
-        view_list(&model),
+    if let Some(results) = &model.results {
+        view_results(&results)
+    } else {
+        div![view_event_links(model)]
     }
 }
 
-fn view_list(model: &Model) -> Node<Msg> {
-    let mut v = vec![view_time_header()];
-    // for a in model.scores.iter() {
-    //     v.push(view_time(&a));
-    // }
-    table![v]
+fn view_event_links(model: &Model) -> Vec<Node<Msg>> {
+    model
+        .events
+        .iter()
+        .map(|event| button![format!("{}", event),])
+        .collect()
 }
 
-fn view_time_header() -> Node<Msg> {
-    tr![th!["Stage"], th!["Car"], th!["Time"], th!["Flags"],]
+fn view_results(results: &ResultView) -> Node<Msg> {
+    let mut v = vec![];
+    for rr in results.rows.values() {
+        v.push(tr![
+            td!(&rr.entry.car),
+            td!(&rr.entry.name),
+            rr.columns.iter().map(|rs| show_rs(&rs))
+        ]);
+    }
+
+    div![
+        clasess(results),
+        table![C!["table is-bordered"], table_header(results), v]
+    ]
+}
+
+fn show_rs(rso: &Option<ResultScore>) -> Vec<Node<Msg>> {
+    match rso {
+        Some(rs) => {
+            nodes![
+                // td!(format!("{}", rs.time)),
+                td!(format!("{}", rs.stage_pos.pos)),
+                td!(format!("{}", rs.stage_pos.score_ds)),
+                // td!(format!("{}", rs.cum_pos)),
+            ]
+        }
+        None => nodes![td!(""), td!("")],
+    }
+}
+
+fn clasess(results: &ResultView) -> Vec<Node<Msg>> {
+    results
+        .event
+        .classes
+        .iter()
+        .map(|class| {
+            let class = class.to_owned();
+            button![
+                C!["button is-primary"],
+                &class,
+                ev(Ev::Click, |_| Msg::ShowClass(class))
+            ]
+        })
+        .collect()
+}
+fn table_header(results: &ResultView) -> Vec<Node<Msg>> {
+    nodes![
+        tr![
+            th!["Entry", attrs! {At::ColSpan => 2,},],
+            th!["Test1", attrs! {At::ColSpan => 2,},],
+            th!["Test2", attrs! {At::ColSpan => 2,},],
+        ],
+        tr![th!["#"], th!["Driver"], th!["time"], th!["pos"],],
+    ]
 }
 fn view_time(score: &ScoreData) -> Node<Msg> {
     tr![
@@ -98,6 +149,6 @@ fn view_time_score(time: &KTime) -> Node<Msg> {
 fn view_car_number(car: &String) -> Node<Msg> {
     span! {
         C!["label label-default"],
-        car
+        car,
     }
 }
