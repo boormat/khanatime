@@ -171,13 +171,32 @@ fn view_time(score: &ScoreData) -> Node<StageMsg> {
     tr![
         td![score.stage.to_string()],
         td![view_car_number(&score.car)],
-        td![view_time_score(&score.time)],
+        td![show_ktime(&score.time)],
     ]
 }
 
-fn view_time_score(time: &KTime) -> Node<StageMsg> {
-    log!(time.to_string());
-    div!(time.to_string())
+pub fn show_ktime(time: &KTime) -> Vec<Node<StageMsg>> {
+    // nodes![
+    let text = match time {
+        KTime::Time(t) => return nodes!(show_ktimetime(t)),
+        KTime::NOSHO => "DNS",
+        KTime::WD => "WD",
+        KTime::FTS => "FTS",
+        KTime::DNF => "DNF",
+    };
+    nodes![div!(C!["tag is-black"], text)]
+}
+
+pub fn show_ktimetime(time: &KTimeTime) -> Node<StageMsg> {
+    // nodes![
+    let f = i![C!["fa fa-flag"]];
+    let g = i![C!["fa fa-warehouse"]];
+    let fl = vec![f; time.flags as usize];
+    let gl = vec![g; time.garage as usize];
+
+    let ts = format!("{:.1}", time.time_ds as f32 / 10.0);
+    let t = span!(ts);
+    div!(nodes![t, gl, fl])
 }
 
 fn view_car_number(car: &String) -> Node<StageMsg> {
