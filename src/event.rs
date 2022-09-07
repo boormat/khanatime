@@ -247,7 +247,7 @@ impl<'a> ResultRow {
     pub fn init(entry: &'a Entry, event: &'a EventInfo, scores: &Vec<ScoreData>) -> Self {
         let columns = (0..event.stages_count)
             .map(
-                |stage| match find_score(&scores[..], &entry.car[..], stage) {
+                |col| match find_score(&scores[..], &entry.car[..], col + 1) {
                     None => None,
                     Some(rs) => Some(ResultScore::init(rs)),
                 },

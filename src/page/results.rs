@@ -4,6 +4,7 @@ use crate::event::create_result_view;
 use crate::event::load_times;
 use crate::event::EventInfo;
 use crate::event::KTime;
+use crate::event::Pos;
 use crate::event::ResultScore;
 use crate::event::ResultView;
 use crate::event::ScoreData;
@@ -84,6 +85,7 @@ fn view_results(results: &ResultView) -> Node<Msg> {
         v.push(tr![
             td!(&rr.entry.car),
             td!(&rr.entry.name),
+            td!(&"TBA"),
             rr.columns.iter().map(|rs| show_rs(&rs))
         ]);
     }
@@ -95,16 +97,23 @@ fn view_results(results: &ResultView) -> Node<Msg> {
 }
 
 fn show_rs(rso: &Option<ResultScore>) -> Vec<Node<Msg>> {
+    let cols_per_test = 5;
     match rso {
         Some(rs) => {
+            // let t = Pos::default();
+            let or: Pos = match &rs.cum_pos {
+                Some(pos) => pos.clone(),
+                None => Pos::default(),
+            };
             nodes![
-                // td!(format!("{}", rs.time)),
+                td!(format!("{}", rs.time)),
+                td!(format!("{}", rs.stage_pos.score_ds as f32 / 10.0)),
                 td!(format!("{}", rs.stage_pos.pos)),
-                td!(format!("{}", rs.stage_pos.score_ds)),
-                // td!(format!("{}", rs.cum_pos)),
+                td!(format!("{}", or.score_ds as f32 / 10.0)),
+                td!(format!("{}", or.pos)),
             ]
         }
-        None => nodes![td!(""), td!("")],
+        None => (1..=cols_per_test).map(|i| td![]).collect(),
     }
 }
 
@@ -123,16 +132,37 @@ fn clasess(results: &ResultView) -> Vec<Node<Msg>> {
         })
         .collect()
 }
+
 fn table_header(results: &ResultView) -> Vec<Node<Msg>> {
+    let cols_per_test = 5;
     nodes![
         tr![
-            th!["Entry", attrs! {At::ColSpan => 2,},],
-            th!["Test1", attrs! {At::ColSpan => 2,},],
-            th!["Test2", attrs! {At::ColSpan => 2,},],
+            th!["Entry", attrs! {At::ColSpan => 3}],
+            (1..=results.event.stages_count).map(|stage| {
+                th![
+                    format!("Test {stage}"),
+                    attrs! {At::ColSpan => cols_per_test,},
+                ]
+            }),
         ],
-        tr![th!["#"], th!["Driver"], th!["time"], th!["pos"],],
+        //Time	Flags	Score	Pos	Total	Out
+        tr![
+            th!["#"],
+            th!["Driver"],
+            th!["O/R pos"],
+            (1..=results.event.stages_count).map(|_| {
+                nodes![
+                    th!["Time"],
+                    th!["Score"],
+                    th!["Pos"],
+                    th!["Cum"],
+                    th!["O/R"],
+                ]
+            }),
+        ],
     ]
 }
+
 fn view_time(score: &ScoreData) -> Node<Msg> {
     tr![
         td![score.stage.to_string()],
