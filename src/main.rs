@@ -3,14 +3,10 @@ mod page;
 
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-
-// const EVENT_PREFIX: &str = "EVENT:";
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
     Model {
         page: Page::Event,
-        events: event::list_events(),
         ctx: Default::default(),
         stage_model: page::stage::init(),
         event_model: page::event::init(),
@@ -21,8 +17,6 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
 struct Model {
     ctx: Context,
     page: Page,
-    #[allow(dead_code)]
-    events: HashSet<String>, // names of known/stored events (local)
     stage_model: page::stage::StageModel,
     results_model: page::results::Model,
     event_model: page::event::Model,
@@ -140,25 +134,6 @@ fn linky2(active: bool) -> Attrs {
         "is-size-5",
         IF!(active => "is-active"),
     ]
-}
-
-#[allow(dead_code)]
-fn view_event_links(model: &Model) -> Node<Msg> {
-    ul![
-        C!["events"],
-        model.events.iter().map(|name| { view_event_link(&name) })
-    ]
-}
-
-#[allow(dead_code)]
-fn view_event_link(name: &String) -> Node<Msg> {
-    li![a![
-        attrs! {
-            At::Href => format!("/{}", name)
-        },
-        style! {St::Cursor => "pointer"},
-        format!("{}", name)
-    ]]
 }
 
 // ------ ------

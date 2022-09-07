@@ -1,13 +1,9 @@
 use std::collections::HashSet;
 
 use crate::event::create_result_view;
-use crate::event::load_times;
-use crate::event::EventInfo;
-use crate::event::KTime;
 use crate::event::Pos;
 use crate::event::ResultScore;
 use crate::event::ResultView;
-use crate::event::ScoreData;
 
 // Results view.
 // Render ResultView
@@ -113,7 +109,7 @@ fn show_rs(rso: &Option<ResultScore>) -> Vec<Node<Msg>> {
                 td!(format!("{}", or.pos)),
             ]
         }
-        None => (1..=cols_per_test).map(|i| td![]).collect(),
+        None => (1..=cols_per_test).map(|_| td![]).collect(),
     }
 }
 
@@ -161,24 +157,4 @@ fn table_header(results: &ResultView) -> Vec<Node<Msg>> {
             }),
         ],
     ]
-}
-
-fn view_time(score: &ScoreData) -> Node<Msg> {
-    tr![
-        td![score.stage.to_string()],
-        td![view_car_number(&score.car)],
-        td![view_time_score(&score.time)],
-    ]
-}
-
-fn view_time_score(time: &KTime) -> Node<Msg> {
-    log!(time.to_string());
-    div!(time.to_string())
-}
-
-fn view_car_number(car: &String) -> Node<Msg> {
-    span! {
-        C!["label label-default"],
-        car,
-    }
 }

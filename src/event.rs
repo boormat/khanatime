@@ -397,7 +397,7 @@ fn calc_rank(car_scores: &mut Vec<(&str, &mut Pos)>) {
     // calc the ranks and eq and poke into the cum_pos Pos
     let mut last_time = 0u16;
     let mut rank = 1u8;
-    for (idx, (rowkey, pos)) in car_scores.iter_mut().enumerate() {
+    for (idx, (_, pos)) in car_scores.iter_mut().enumerate() {
         let score = pos.score_ds;
         let eq = score == last_time;
         last_time = score;
@@ -459,28 +459,6 @@ pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a E
     let a = entries
         .iter()
         .filter(|e| e.classes.contains(&class))
-        .collect();
-    a
-}
-
-// get car #s in class
-pub fn find_cars_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a str> {
-    //    return vec![&scores[0]];
-    let class = class.to_string();
-    let a = entries
-        .iter()
-        .filter(|e| e.classes.contains(&class))
-        .map(|e| &e.car[..])
-        .collect();
-    a
-}
-
-// get available Raw scores for the list of cars in a stage
-pub fn find_scores<'a>(scores: &'a [ScoreData], cars: &[&str], stage: u8) -> Vec<&'a ScoreData> {
-    // &&s.car[..] ... uhhhh Ooookaaay
-    let a = scores
-        .iter()
-        .filter(|s| s.stage == stage && cars.contains(&&s.car[..]))
         .collect();
     a
 }

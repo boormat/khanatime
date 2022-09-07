@@ -233,13 +233,6 @@ fn view_entry(model: &Model, entry: &Entry) -> Node<Msg> {
     ]
 }
 
-fn view_car_number(car: &String) -> Node<Msg> {
-    span! {
-        C!["label label-default"],
-        car
-    }
-}
-
 pub fn parse_car_and(cmd: &str) -> Option<(&str, &str)> {
     let re = regex!(r"^\d+[A-Z]? ");
     let s = cmd.trim();
