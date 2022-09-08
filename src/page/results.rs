@@ -26,27 +26,34 @@ pub struct Model {
 }
 
 pub fn init() -> Model {
-    let name: String = match SessionStorage::get("event") {
-        Ok(x) => x,
-        Err(_) => "TBA".to_string(),
-    };
     let events = crate::event::list_events();
 
     let mut model = Model {
         results: None,
         events,
     };
-    load(&mut model, &name);
+    load(&mut model);
     model
 }
 
-fn load(model: &mut Model, name: &String) {
-    let scores = crate::event::load_times(&name);
+fn load(model: &mut Model) {
+    let name: String = match SessionStorage::get("event") {
+        Ok(x) => x,
+        Err(_) => "TBA".to_string(),
+    };
+
     let event = crate::event::load_event(&name);
     let class = event.classes[0].clone();
+    show(model, name, &class);
+}
+
+fn show(model: &mut Model, name: String, class: &String) {
+    let scores = crate::event::load_times(&name);
+    let event = crate::event::load_event(&name);
     let results = create_result_view(&event, &scores, &class);
     model.results = Some(results);
     log!("loaded", name, class);
+    // }
 }
 
 pub fn update(msg: Msg, model: &mut Model) {
@@ -56,7 +63,9 @@ pub fn update(msg: Msg, model: &mut Model) {
         Msg::SortDriver => todo!(),
         Msg::ShowClass(class) => {
             //load is overkill... will do for moment.
-            load(model, &class);
+            if let Some(results) = &model.results {
+                show(model, results.event.name.clone(), &class);
+            }
         }
     }
 }
