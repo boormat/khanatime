@@ -1,6 +1,11 @@
 use crate::event::KTime;
 use crate::event::KTimeTime;
 use crate::event::ScoreData;
+use crate::input::input_box;
+use crate::input::input_clear;
+use crate::input::input_update;
+use crate::input::InputModel;
+use crate::input::InputMsg;
 use crate::view as show;
 
 // Stage edit view.
@@ -13,13 +18,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
-    StageDataEntry(String),
-    Command,
-    CancelEdit,
+    CmdInput(InputMsg),
 }
 pub struct StageModel {
     scores: Vec<ScoreData>,
-    cmd: String,
+    cmd: InputModel,
     preview: Result<CmdParse, CmdError>,
     stage: u8,
     event: String,
@@ -86,14 +89,18 @@ fn save_ui(model: &StageModel) {
 
 pub fn update(msg: StageMsg, model: &mut StageModel) {
     match msg {
-        StageMsg::StageDataEntry(value) => {
-            model.cmd = value; // typey typey
-
+        StageMsg::CmdInput(InputMsg::DataEntry(value)) => {
+            // typey typey
+            input_update(&mut model.cmd, value);
             // Show preview of what is about to happen on enter/save
-            model.preview = parse_command(&model.cmd);
+            model.preview = parse_command(&model.cmd.input);
         }
-        StageMsg::Command => {
-            log!("cmd:", model.cmd);
+        StageMsg::CmdInput(InputMsg::CancelEdit) => {
+            input_clear(&mut model.cmd);
+            clear_cmd(model);
+        }
+
+        StageMsg::CmdInput(InputMsg::DoThing) => {
             match &model.preview {
                 Ok(CmdParse::Time(_tc)) => {
                     log!("time");
@@ -115,15 +122,12 @@ pub fn update(msg: StageMsg, model: &mut StageModel) {
                 Err(_) => log!("parse nope"),
             };
         }
-        StageMsg::CancelEdit => {
-            clear_cmd(model);
-        }
     }
 }
 
 fn clear_cmd(model: &mut StageModel) {
     model.preview = Err(CmdError::Nothing); // hmm rubish OK
-    model.cmd.clear();
+    input_clear(&mut model.cmd);
 }
 
 pub fn view(model: &StageModel) -> Node<StageMsg> {
@@ -176,37 +180,18 @@ fn view_time(score: &ScoreData) -> Node<StageMsg> {
     ]
 }
 
-fn input_box_wrap(val: &String) -> Node<StageMsg> {
+fn input_box_wrap(model: &InputModel) -> Node<StageMsg> {
     div![
         C!["pannel-block"],
         p![
             C!["control has-icons-left"],
-            input_box(val),
+            input_box(
+                model,
+                "enter times. stage to change stage",
+                StageMsg::CmdInput
+            ),
             span![C!["icon is-left"], i![C!["fas fa-car"]]]
         ],
-    ]
-}
-
-fn input_box(val: &String) -> Node<StageMsg> {
-    // copy here to avoid bogus unused warnings
-    const ENTER_KEY: u32 = 13;
-    const ESC_KEY: u32 = 27;
-    // empty![]
-    input![
-        C!["input"],
-        attrs! {
-            At::Value => val;
-            At::AutoFocus => true.as_at_value();
-            At::Placeholder => "enter times. stage to change stage";
-        },
-        keyboard_ev(Ev::KeyDown, |keyboard_event| {
-            match keyboard_event.key_code() {
-                ENTER_KEY => Some(StageMsg::Command),
-                ESC_KEY => Some(StageMsg::CancelEdit),
-                _ => None,
-            }
-        }),
-        input_ev(Ev::Input, StageMsg::StageDataEntry),
     ]
 }
 

@@ -1,4 +1,5 @@
 mod event;
+mod input;
 mod page;
 mod view;
 

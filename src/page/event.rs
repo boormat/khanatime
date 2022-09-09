@@ -1,5 +1,7 @@
 use crate::event::Entry;
 use crate::event::EventInfo;
+use crate::input::InputModel;
+use crate::input::*;
 
 // Event edit view.
 // List of Classes. = derived from users?
@@ -7,13 +9,6 @@ use crate::event::EventInfo;
 use lazy_regex::regex;
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize, Clone)]
-pub enum InputMsg {
-    DoThing,
-    DataEntry(String),
-    CancelEdit,
-}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Msg {
@@ -244,54 +239,4 @@ pub fn parse_car_and(cmd: &str) -> Option<(&str, &str)> {
             Some((number, rest))
         }
     }
-}
-
-#[derive(Default)]
-pub struct InputModel {
-    pub key: String,
-    pub input: String,
-    pub feedback: String,
-}
-
-fn input_box(model: &InputModel, placeholder: &str, base_msg: fn(InputMsg) -> Msg) -> Node<Msg> {
-    const ENTER_KEY: u32 = 13;
-    const ESC_KEY: u32 = 27;
-    // so enums which take parameters are actually functions
-    let do_thing = base_msg(InputMsg::DoThing);
-    let cancel_edit: Msg = base_msg(InputMsg::CancelEdit);
-    let data_entry = move |x| base_msg(InputMsg::DataEntry(x));
-    div![
-        div![&model.feedback],
-        input![
-            C!["input"],
-            attrs! {
-                At::Value => model.input;
-                At::AutoFocus => true.as_at_value();
-                At::Placeholder => placeholder;
-            },
-            keyboard_ev(Ev::KeyDown, |keyboard_event| {
-                match keyboard_event.key_code() {
-                    ENTER_KEY => Some(do_thing),
-                    ESC_KEY => Some(cancel_edit),
-                    _ => None,
-                }
-            }),
-            input_ev(Ev::Input, data_entry),
-        ],
-    ]
-}
-
-fn input_clear(model: &mut InputModel) {
-    model.key.clear();
-    model.input.clear();
-    model.feedback.clear();
-}
-
-fn input_update(model: &mut InputModel, msg: String) {
-    model.input = msg;
-    model.feedback.clear();
-}
-
-fn input_feedback(model: &mut InputModel, msg: &str) {
-    model.feedback = msg.to_string();
 }
