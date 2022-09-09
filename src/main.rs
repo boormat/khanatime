@@ -1,5 +1,6 @@
 mod event;
 mod page;
+mod view;
 
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};

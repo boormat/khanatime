@@ -1,6 +1,7 @@
 use crate::event::KTime;
 use crate::event::KTimeTime;
 use crate::event::ScoreData;
+use crate::view as show;
 
 // Stage edit view.
 // List of times... generally in order of entry.
@@ -170,40 +171,9 @@ fn view_time_header() -> Node<StageMsg> {
 fn view_time(score: &ScoreData) -> Node<StageMsg> {
     tr![
         td![score.stage.to_string()],
-        td![view_car_number(&score.car)],
-        td![show_ktime(&score.time)],
+        td![show::car_number(&score.car)],
+        td![show::ktime(&score.time)],
     ]
-}
-
-pub fn show_ktime(time: &KTime) -> Vec<Node<StageMsg>> {
-    // nodes![
-    let text = match time {
-        KTime::Time(t) => return nodes!(show_ktimetime(t)),
-        KTime::NOSHO => "DNS",
-        KTime::WD => "WD",
-        KTime::FTS => "FTS",
-        KTime::DNF => "DNF",
-    };
-    nodes![div!(C!["tag is-black"], text)]
-}
-
-pub fn show_ktimetime(time: &KTimeTime) -> Node<StageMsg> {
-    // nodes![
-    let f = i![C!["fa fa-flag"]];
-    let g = i![C!["fa fa-warehouse"]];
-    let fl = vec![f; time.flags as usize];
-    let gl = vec![g; time.garage as usize];
-
-    let ts = format!("{:.1}", time.time_ds as f32 / 10.0);
-    let t = span!(ts);
-    div!(nodes![t, gl, fl])
-}
-
-fn view_car_number(car: &String) -> Node<StageMsg> {
-    span! {
-        C!["label label-default"],
-        car
-    }
 }
 
 fn input_box_wrap(val: &String) -> Node<StageMsg> {
