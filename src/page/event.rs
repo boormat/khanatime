@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Msg {
+    SetEvent(String),
+    Reload,
     // classes
     EditClass(String), // borkish
     DeleteClass(String),
@@ -27,39 +29,25 @@ pub struct Model {
     event: EventInfo,
 }
 
-pub fn init() -> Model {
+pub fn init(event_name: &String) -> Model {
     let mut model = Model {
         class: Default::default(),
         entrant: Default::default(),
         event: Default::default(),
     };
-    load_ui(&mut model);
-    load_event(&mut model);
+    load_event(&mut model, event_name);
     model
 }
 
-fn load_event(model: &mut Model) {
-    if !model.event.name.is_empty() {
-        model.event = crate::event::load_event(&model.event.name);
-    }
+fn load_event(model: &mut Model, event_name: &String) {
+    model.event = crate::event::load_event(event_name);
 }
 
 fn save_event(model: &Model) {
     crate::event::save_event(&model.event);
-    save_ui(model);
 }
 
-fn load_ui(model: &mut Model) {
-    if let Ok(event) = SessionStorage::get("event") {
-        model.event.name = event;
-    }
-}
-
-fn save_ui(model: &Model) {
-    SessionStorage::insert("event", &model.event.name).expect("save data to SessionStorage");
-}
-
-pub fn update(msg: Msg, model: &mut Model) {
+pub fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<crate::Msg>) {
     // TODO Use a result to update the feedback?
     match msg {
         Msg::ClassInput(InputMsg::DataEntry(value)) => {
@@ -79,7 +67,6 @@ pub fn update(msg: Msg, model: &mut Model) {
                 let ok = model.event.add_entry(car, name);
                 if ok {
                     save_event(model);
-                    save_ui(model);
                     input_clear(&mut model.entrant);
                 } else {
                     input_feedback(&mut model.entrant, "Duplicate Entry.");
@@ -105,7 +92,6 @@ pub fn update(msg: Msg, model: &mut Model) {
                 let old = &input.key;
                 if model.event.rename_class(&old, &new) {
                     save_event(model);
-                    save_ui(model);
                 }
             }
             input_clear(&mut model.class);
@@ -116,7 +102,6 @@ pub fn update(msg: Msg, model: &mut Model) {
             // can't remove without removing drivers first?
             if model.event.remove_class(&class) {
                 save_event(model);
-                save_ui(model);
             }
         }
         Msg::ToggleClass { car, class } => {
@@ -128,9 +113,11 @@ pub fn update(msg: Msg, model: &mut Model) {
                     entry.classes.push(class);
                 }
                 save_event(model);
-                save_ui(model);
             }
         }
+
+        Msg::SetEvent(event_name) => load_event(model, &event_name),
+        Msg::Reload => load_event(model, &model.event.name.to_owned()),
     }
 }
 

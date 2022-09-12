@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
+    SetEvent(String),
+    Reload,
     CmdInput(InputMsg),
 }
 pub struct StageModel {
@@ -53,15 +55,14 @@ struct Official {
     pubkey: String,   // officials ring Ed25519
 }
 
-pub fn init() -> StageModel {
+pub fn init(event_name: &String) -> StageModel {
     let mut model = StageModel {
         scores: Default::default(),
         cmd: Default::default(),
         stage: 1,
-        event: "today.Khana".to_string(),
+        event: event_name.clone(),
         preview: Err(CmdError::Nothing), // hmm rubish OK
     };
-    load_ui(&mut model);
     load_times(&mut model);
     model
 }
@@ -74,20 +75,9 @@ fn load_times(model: &mut StageModel) {
 
 fn save_times(model: &StageModel) {
     crate::event::save_times(&model.event, &model.scores);
-    save_ui(model);
 }
 
-fn load_ui(model: &mut StageModel) {
-    if let Ok(event) = SessionStorage::get("event") {
-        model.event = event;
-    }
-}
-
-fn save_ui(model: &StageModel) {
-    SessionStorage::insert("event", &model.event).expect("save data to SessionStorage");
-}
-
-pub fn update(msg: StageMsg, model: &mut StageModel) {
+pub fn update(msg: StageMsg, model: &mut StageModel, orders: &mut impl Orders<crate::Msg>) {
     match msg {
         StageMsg::CmdInput(InputMsg::DataEntry(value)) => {
             // typey typey
@@ -101,28 +91,37 @@ pub fn update(msg: StageMsg, model: &mut StageModel) {
         }
 
         StageMsg::CmdInput(InputMsg::DoThing) => {
-            match &model.preview {
+            let cmd = parse_command(&model.cmd.input);
+            match cmd {
                 Ok(CmdParse::Time(_tc)) => {
                     log!("time");
                     add_score(model);
                     save_times(model);
+                    orders.send_msg(crate::Msg::Reload);
 
                     clear_cmd(model);
                 }
                 Ok(CmdParse::Stage { number }) => {
-                    model.stage = *number;
+                    model.stage = number;
                     clear_cmd(model);
                 }
                 Ok(CmdParse::Event { event }) => {
-                    model.event = event.clone();
-                    save_ui(model);
-                    load_times(model);
-                    clear_cmd(model);
+                    orders.send_msg(crate::Msg::SetEvent(event));
                 }
+
                 Err(_) => log!("parse nope"),
             };
         }
+        StageMsg::SetEvent(name) => set_event(model, &name),
+        StageMsg::Reload => load_times(model),
     }
+}
+
+fn set_event(model: &mut StageModel, name: &String) {
+    model.event = name.clone();
+    // save_ui(model);
+    load_times(model);
+    clear_cmd(model);
 }
 
 fn clear_cmd(model: &mut StageModel) {

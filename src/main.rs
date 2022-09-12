@@ -7,12 +7,17 @@ use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
+    let event: String = match SessionStorage::get("event") {
+        Ok(x) => x,
+        Err(_) => "TBA".to_string(),
+    };
+
     Model {
         page: Page::Event,
         ctx: Default::default(),
-        stage_model: page::stage::init(),
-        event_model: page::event::init(),
-        results_model: page::results::init(),
+        stage_model: page::stage::init(&event),
+        event_model: page::event::init(&event),
+        results_model: page::results::init(&event),
     }
 }
 
@@ -46,17 +51,47 @@ pub enum Page {
 
 pub enum Msg {
     Show(Page),
+    SetEvent(String), // new event name to load
+    Reload,           // event or score data changed (in storage)
     StageMsg(page::stage::StageMsg),
     EventMsg(page::event::Msg),
     ResultMsg(page::results::Msg),
 }
 
-fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<Msg>) {
+fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg {
         Msg::Show(p) => model.page = p,
-        Msg::StageMsg(msg) => page::stage::update(msg, &mut model.stage_model),
-        Msg::EventMsg(msg) => page::event::update(msg, &mut model.event_model),
-        Msg::ResultMsg(msg) => page::results::update(msg, &mut model.results_model),
+
+        Msg::StageMsg(msg) => page::stage::update(msg, &mut model.stage_model, orders),
+        Msg::EventMsg(msg) => page::event::update(msg, &mut model.event_model, orders),
+        Msg::ResultMsg(msg) => page::results::update(msg, &mut model.results_model, orders),
+        Msg::SetEvent(name) => {
+            page::stage::update(
+                page::stage::StageMsg::SetEvent(name.clone()),
+                &mut model.stage_model,
+                orders,
+            );
+            page::event::update(
+                page::event::Msg::SetEvent(name.clone()),
+                &mut model.event_model,
+                orders,
+            );
+            page::results::update(
+                page::results::Msg::SetEvent(name.clone()),
+                &mut model.results_model,
+                orders,
+            );
+            SessionStorage::insert("event", &name).expect("save data to SessionStorage");
+        }
+        Msg::Reload => {
+            page::stage::update(
+                page::stage::StageMsg::Reload,
+                &mut model.stage_model,
+                orders,
+            );
+            page::event::update(page::event::Msg::Reload, &mut model.event_model, orders);
+            page::results::update(page::results::Msg::Reload, &mut model.results_model, orders);
+        }
     }
 }
 // ------ ------

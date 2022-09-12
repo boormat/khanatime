@@ -10,6 +10,8 @@ use crate::view as show;
 use seed::{prelude::*, *};
 
 pub enum Msg {
+    SetEvent(String),
+    Reload,
     SortStage,
     SortEvent,
     SortDriver,
@@ -19,40 +21,35 @@ pub enum Msg {
 pub struct Model {
     events: HashSet<String>, // names of known/stored events (local)
     results: Option<ResultView>,
+    // event: String, // current event
+    // class: String, // class to show
 }
 
-pub fn init() -> Model {
+pub fn init(event: &String) -> Model {
     let events = crate::event::list_events();
-
     let mut model = Model {
         results: None,
         events,
     };
-    load(&mut model);
+    load(&mut model, &event);
     model
 }
 
-fn load(model: &mut Model) {
-    let name: String = match SessionStorage::get("event") {
-        Ok(x) => x,
-        Err(_) => "TBA".to_string(),
-    };
-
-    let event = crate::event::load_event(&name);
+fn load(model: &mut Model, name: &String) {
+    let event = crate::event::load_event(name);
     let class = event.classes[0].clone();
     load_class(model, name, &class);
 }
 
-fn load_class(model: &mut Model, name: String, class: &String) {
-    let scores = crate::event::load_times(&name);
-    let event = crate::event::load_event(&name);
+fn load_class(model: &mut Model, name: &String, class: &String) {
+    let scores = crate::event::load_times(name);
+    let event = crate::event::load_event(name);
     let results = create_result_view(&event, &scores, &class);
     model.results = Some(results);
     log!("loaded", name, class);
-    // }
 }
 
-pub fn update(msg: Msg, model: &mut Model) {
+pub fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<crate::Msg>) {
     match msg {
         Msg::SortStage => todo!(),
         Msg::SortEvent => todo!(),
@@ -60,7 +57,18 @@ pub fn update(msg: Msg, model: &mut Model) {
         Msg::ShowClass(class) => {
             //load is overkill... will do for moment.
             if let Some(results) = &model.results {
-                load_class(model, results.event.name.clone(), &class);
+                let name = results.event.name.clone();
+                load_class(model, &name, &class);
+            }
+        }
+        Msg::SetEvent(name) => {
+            load(model, &name);
+        }
+        Msg::Reload => {
+            if let Some(results) = &model.results {
+                let name = results.event.name.clone();
+                let class = results.class.clone();
+                load_class(model, &name, &class);
             }
         }
     }

@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
+use seed::prelude::LocalStorage;
 use seed::prelude::*;
-use seed::{log, prelude::LocalStorage};
 use serde::{Deserialize, Serialize};
 
 // Event INFO.  Staticish
@@ -498,7 +498,8 @@ fn times_key(name: &String) -> String {
 pub fn load_event(name: &String) -> EventInfo {
     if !name.is_empty() {
         let key = event_key(name);
-        let e = LocalStorage::get(&key).unwrap_or_default();
+        let mut e: EventInfo = LocalStorage::get(&key).unwrap_or_default();
+        e.name = name.to_string(); // change if default, just fix
         e
     } else {
         EventInfo {
