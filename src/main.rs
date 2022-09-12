@@ -88,7 +88,7 @@ fn view_content(model: &Model) -> Node<Msg> {
 
 fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
     nav![
-        C!["navbar", "is-link"],
+        C!["navbar", "is-link", "is-hidden-print"],
         attrs! {
             At::from("role") => "navigation",
             At::AriaLabel => "main navigation",
