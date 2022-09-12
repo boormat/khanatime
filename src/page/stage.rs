@@ -228,7 +228,7 @@ fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
         "WD" => KTime::WD,
         "NOSHO" => KTime::NOSHO,
         "FTS" => KTime::FTS,
-        "DNF" => KTime::WD,
+        "DNF" => KTime::DNF,
         &_ => match timestr.parse::<f32>() {
             Ok(time) => {
                 let ktt = KTimeTime {
