@@ -4,8 +4,8 @@
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
-use seed::prelude::LocalStorage;
 use seed::prelude::*;
+use seed::{log, prelude::LocalStorage};
 use serde::{Deserialize, Serialize};
 
 // Event INFO.  Staticish
@@ -222,17 +222,14 @@ impl Entry {
 
 impl<'a> ResultView {
     pub fn init(class: &str, event: &'a EventInfo, scores: &Vec<ScoreData>) -> Self {
-        //  entries: &'a [Entry]
         let entries = find_entries_in_class(&event.entries, class);
 
-        // let rows: Vec<ResultRow> = entries
         let rows: IndexMap<String, ResultRow> = entries
             .iter()
             .map(|e| (e.car.clone(), ResultRow::init(e, event, scores)))
             .collect();
         let class = class.to_string();
 
-        // let base_times = calc_base_times(event);
         let base_times_ds = vec![0; event.stages_count as usize];
         Self {
             class,
@@ -271,6 +268,14 @@ impl ResultScore {
     }
 }
 
+impl KTimeTime {
+    pub fn score_ds(&self) -> u32 {
+        let flag_ds = 5 * 10u16; // 5 seconds
+        let score = self.time_ds + (flag_ds * (self.flags as u16 + self.garage as u16));
+        score as u32
+    }
+}
+
 impl std::fmt::Display for KTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -293,25 +298,36 @@ impl std::fmt::Display for KTime {
 // calc base. min  min*2 max
 pub fn calc_base_times(rv: &mut ResultView) {
     for stage in 0..rv.event.stages_count {
-        let mut min = 0;
-        let mut max = 0;
+        let mut fastest: u32 = u16::MAX as u32;
+        let mut slowest: u32 = 0;
         for row in rv.rows.values() {
             match &row.columns[stage as usize] {
                 Some(ResultScore {
                     time: KTime::Time(kt),
                     ..
                 }) => {
-                    // if let KTime::Time(time) = rs{
-                    if kt.garage as u8 + kt.flags == 0 {
-                        min = min.min(kt.time_ds);
-                        max = max.max(kt.time_ds);
-                    }
+                    // regs are unclear, but only thing that makes sense/fair
+                    // is the slowest time includes penalties.
+                    // (what is everyone got a penalty)
+                    fastest = fastest.min(kt.score_ds());
+                    slowest = slowest.max(kt.score_ds());
+                    // log!(stage + 1, fastest, slowest, kt.time_ds, row.entry.car);
                 }
                 _ => {}
             }
-            let base_time = max.min(2 * min);
-            rv.base_times_ds[stage as usize] = base_time;
         }
+        let base_time = slowest.min(fastest * 2);
+        rv.base_times_ds[stage as usize] = base_time as u16;
+        // log!(
+        //     "stage",
+        //     stage + 1,
+        //     "base time",
+        //     base_time,
+        //     "min",
+        //     fastest,
+        //     "max",
+        //     slowest
+        // );
     }
 }
 
