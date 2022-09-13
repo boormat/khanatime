@@ -10,7 +10,6 @@ use crate::view as show;
 use seed::{prelude::*, *};
 
 pub enum Msg {
-    SetEvent(String),
     Reload,
     SortStage,
     SortEvent,
@@ -21,64 +20,48 @@ pub enum Msg {
 pub struct Model {
     events: HashSet<String>, // names of known/stored events (local)
     results: Option<ResultView>,
-    // event: String, // current event
-    // class: String, // class to show
 }
 
-pub fn init(event: &String) -> Model {
+pub fn init(event: &EventInfo, scores: &Vec<ScoreData>) -> Model {
     let events = crate::event::list_events();
-    let mut model = Model {
-        results: None,
-        events,
-    };
-    load(&mut model, &event);
-    model
-}
-
-fn load(model: &mut Model, name: &String) {
-    let event = crate::event::load_event(name);
     let class = event.classes[0].clone();
-    load_class(model, name, &class);
+
+    let results = Some(create_result_view(event, scores, &class));
+    let submodel = Model { results, events };
+    submodel
 }
 
-fn load_class(model: &mut Model, name: &String, class: &String) {
-    let scores = crate::event::load_times(name);
-    let event = crate::event::load_event(name);
-    let results = create_result_view(&event, &scores, &class);
-    model.results = Some(results);
-    log!("loaded", name, class);
+fn load_class(model: &mut crate::Model, class: &String) {
+    let results = create_result_view(&model.event, &model.scores, &class);
+    model.results_model.results = Some(results);
 }
 
-pub fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<crate::Msg>) {
+pub fn update(msg: Msg, model: &mut crate::Model, _orders: &mut impl Orders<crate::Msg>) {
     match msg {
         Msg::SortStage => todo!(),
         Msg::SortEvent => todo!(),
         Msg::SortDriver => todo!(),
         Msg::ShowClass(class) => {
             //load is overkill... will do for moment.
-            if let Some(results) = &model.results {
-                let name = results.event.name.clone();
-                load_class(model, &name, &class);
+            if let Some(_results) = &model.results_model.results {
+                load_class(model, &class);
             }
         }
-        Msg::SetEvent(name) => {
-            load(model, &name);
-        }
+
         Msg::Reload => {
-            if let Some(results) = &model.results {
-                let name = results.event.name.clone();
+            if let Some(results) = &model.results_model.results {
                 let class = results.class.clone();
-                load_class(model, &name, &class);
+                load_class(model, &class);
             }
         }
     }
 }
 
-pub fn view(model: &Model) -> Node<Msg> {
-    if let Some(results) = &model.results {
+pub fn view(model: &crate::Model) -> Node<Msg> {
+    if let Some(results) = &model.results_model.results {
         view_results(&results)
     } else {
-        div![view_event_links(model)]
+        div![view_event_links(&model.results_model)]
     }
 }
 

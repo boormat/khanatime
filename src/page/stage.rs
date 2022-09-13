@@ -7,6 +7,7 @@ use crate::input::input_update;
 use crate::input::InputModel;
 use crate::input::InputMsg;
 use crate::view as show;
+use crate::Model;
 
 // Stage edit view.
 // List of times... generally in order of entry.
@@ -18,26 +19,21 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
-    SetEvent(String),
-    Reload,
     CmdInput(InputMsg),
 }
 pub struct StageModel {
-    scores: Vec<ScoreData>,
     cmd: InputModel,
     preview: Result<CmdParse, CmdError>,
     stage: u8,
-    event: String,
 }
 
 // adds score from user entry in model
-fn add_score(model: &mut StageModel) {
+fn add_score(model: &mut Model) {
     // hmmm probably should cope with error to avoid user funnies?
-    let s = match &model.preview {
-        Ok(CmdParse::Time(cmd)) => to_score(model.stage, &cmd),
+    let s = match &model.stage_model.preview {
+        Ok(CmdParse::Time(cmd)) => to_score(model.stage_model.stage, &cmd),
         _ => panic!(),
     };
-    // todo invalidate existing score if replacing it... (should be in preview too!)
     model.scores.push(s);
 }
 
@@ -55,43 +51,39 @@ struct Official {
     pubkey: String,   // officials ring Ed25519
 }
 
-pub fn init(event_name: &String) -> StageModel {
-    let mut model = StageModel {
-        scores: Default::default(),
+pub fn init() -> StageModel {
+    let model = StageModel {
         cmd: Default::default(),
         stage: 1,
-        event: event_name.clone(),
         preview: Err(CmdError::Nothing), // hmm rubish OK
     };
-    load_times(&mut model);
     model
 }
 
-fn load_times(model: &mut StageModel) {
-    if !model.event.is_empty() {
-        model.scores = crate::event::load_times(&model.event);
-    }
+fn save_times(model: &Model) {
+    crate::event::save_times(&model.event.name, &model.scores.as_ref());
 }
 
-fn save_times(model: &StageModel) {
-    crate::event::save_times(&model.event, &model.scores);
-}
-
-pub fn update(msg: StageMsg, model: &mut StageModel, orders: &mut impl Orders<crate::Msg>) {
+pub fn update(msg: StageMsg, model: &mut Model, orders: &mut impl Orders<crate::Msg>) {
     match msg {
         StageMsg::CmdInput(InputMsg::DataEntry(value)) => {
             // typey typey
-            input_update(&mut model.cmd, value);
+            input_update(&mut model.stage_model.cmd, value);
             // Show preview of what is about to happen on enter/save
-            model.preview = parse_command(&model.cmd.input);
+            let cmd = parse_command(&model.stage_model.cmd.input);
+            if let Ok(CmdParse::Time(_tc)) = cmd {
+                // if tc.car in model.event.unw
+                // todo! check is in event...
+            }
+            model.stage_model.preview = parse_command(&model.stage_model.cmd.input);
         }
         StageMsg::CmdInput(InputMsg::CancelEdit) => {
-            input_clear(&mut model.cmd);
-            clear_cmd(model);
+            input_clear(&mut model.stage_model.cmd);
+            clear_cmd(&mut model.stage_model);
         }
 
         StageMsg::CmdInput(InputMsg::DoThing) => {
-            let cmd = parse_command(&model.cmd.input);
+            let cmd = parse_command(&model.stage_model.cmd.input);
             match cmd {
                 Ok(CmdParse::Time(_tc)) => {
                     log!("time");
@@ -99,29 +91,21 @@ pub fn update(msg: StageMsg, model: &mut StageModel, orders: &mut impl Orders<cr
                     save_times(model);
                     orders.send_msg(crate::Msg::Reload);
 
-                    clear_cmd(model);
+                    clear_cmd(&mut model.stage_model);
                 }
                 Ok(CmdParse::Stage { number }) => {
-                    model.stage = number;
-                    clear_cmd(model);
+                    model.stage_model.stage = number;
+                    clear_cmd(&mut model.stage_model);
                 }
                 Ok(CmdParse::Event { event }) => {
                     orders.send_msg(crate::Msg::SetEvent(event));
+                    clear_cmd(&mut model.stage_model);
                 }
 
                 Err(_) => log!("parse nope"),
             };
         }
-        StageMsg::SetEvent(name) => set_event(model, &name),
-        StageMsg::Reload => load_times(model),
     }
-}
-
-fn set_event(model: &mut StageModel, name: &String) {
-    model.event = name.clone();
-    // save_ui(model);
-    load_times(model);
-    clear_cmd(model);
 }
 
 fn clear_cmd(model: &mut StageModel) {
@@ -129,14 +113,14 @@ fn clear_cmd(model: &mut StageModel) {
     input_clear(&mut model.cmd);
 }
 
-pub fn view(model: &StageModel) -> Node<StageMsg> {
+pub fn view(model: &Model) -> Node<StageMsg> {
     div! {
-        h1![format!("Event: {} Stage:{}", model.event, model.stage)],
+        h1![format!("Event: {} Stage:{}", model.event.name, model.stage_model.stage)],
         // sort buttons.
         // results list... here
         view_list(&model),
-        view_preview(&model),
-        input_box_wrap(&model.cmd),
+        view_preview(&model.stage_model),
+        input_box_wrap(&model.stage_model.cmd),
     }
 }
 
@@ -160,7 +144,7 @@ fn view_preview(model: &StageModel) -> Node<StageMsg> {
     }
 }
 
-fn view_list(model: &StageModel) -> Node<StageMsg> {
+fn view_list(model: &Model) -> Node<StageMsg> {
     let mut v = vec![view_time_header()];
     for a in model.scores.iter() {
         v.push(view_time(&a));
@@ -299,7 +283,7 @@ fn bad_input(msg: &str) -> CmdError {
 // find the car# at, return the rest as second field
 // if there is no car, its empty
 pub fn parse_car(cmd: &str) -> Result<(&str, &str), CmdError> {
-    let re = regex!(r"^\d+");
+    let re = regex!(r"^\d+[A-Za-z]*");
     let s = cmd.trim_start();
     match re.find(s) {
         None => Err(bad_input("No car #number")),
@@ -312,7 +296,7 @@ pub fn parse_car(cmd: &str) -> Result<(&str, &str), CmdError> {
 // feedback
 fn parse_time_str(cmd: &str) -> Result<(String, &str), CmdError> {
     // let re = regex!(r"^(:WD|NOSHO|FTS|DNF|[0-9]+[.]?[0-9]*)");
-    let re = regex!(r"^([A-Za-z]+|[0-9]+[.]?[0-9]*)");
+    let re = regex!(r"^([A-Za-z]+|[0-9]+[.]?[0-9]*|[0-9]+:[0-9]+[.]?[0-9])");
     let s = cmd.trim_start();
     match re.find(s) {
         None => Err(bad_input("Invalid time or unexpected code")),
@@ -398,6 +382,7 @@ mod tests {
 
         assert_eq!(parse_time_str("WD"), Ok(("WD".to_string(), "")));
         assert_eq!(parse_time_str("wD"), Ok(("WD".to_string(), "")));
+        // assert_eq!(parse_time_str(" 1:1.23"), Ok(("61.23".to_string(), " XX")));
         assert_eq!(parse_time_str(" 1.23 XX"), Ok(("1.23".to_string(), " XX")));
         assert_eq!(
             parse_time_str(" NOSHO 1212"),

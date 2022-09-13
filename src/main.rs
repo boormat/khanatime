@@ -3,30 +3,18 @@ mod input;
 mod page;
 mod view;
 
+use event::{EventInfo, ScoreData};
 use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
 
-fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
-    let event: String = match SessionStorage::get("event") {
-        Ok(x) => x,
-        Err(_) => "TBA".to_string(),
-    };
-
-    Model {
-        page: Page::Event,
-        ctx: Default::default(),
-        stage_model: page::stage::init(&event),
-        event_model: page::event::init(&event),
-        results_model: page::results::init(&event),
-    }
-}
-
-struct Model {
+pub struct Model {
     ctx: Context,
     page: Page,
-    stage_model: page::stage::StageModel,
-    results_model: page::results::Model,
-    event_model: page::event::Model,
+    pub scores: Vec<ScoreData>,
+    pub event: EventInfo,
+    pub stage_model: page::stage::StageModel,
+    pub results_model: page::results::Model,
+    pub event_model: page::event::Model,
 }
 
 #[derive(Default)]
@@ -60,40 +48,50 @@ pub enum Msg {
 
 fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
     match msg {
+        Msg::Show(Page::Results) => {
+            model.page = Page::Results;
+            let submsg = page::results::Msg::Reload;
+            page::results::update(submsg, model, orders);
+        }
         Msg::Show(p) => model.page = p,
 
-        Msg::StageMsg(msg) => page::stage::update(msg, &mut model.stage_model, orders),
-        Msg::EventMsg(msg) => page::event::update(msg, &mut model.event_model, orders),
-        Msg::ResultMsg(msg) => page::results::update(msg, &mut model.results_model, orders),
+        Msg::StageMsg(msg) => page::stage::update(msg, model, orders),
+        Msg::EventMsg(msg) => page::event::update(msg, model, orders),
+        Msg::ResultMsg(msg) => page::results::update(msg, model, orders),
         Msg::SetEvent(name) => {
-            page::stage::update(
-                page::stage::StageMsg::SetEvent(name.clone()),
-                &mut model.stage_model,
-                orders,
-            );
-            page::event::update(
-                page::event::Msg::SetEvent(name.clone()),
-                &mut model.event_model,
-                orders,
-            );
-            page::results::update(
-                page::results::Msg::SetEvent(name.clone()),
-                &mut model.results_model,
-                orders,
-            );
+            let scores = crate::event::load_times(&name);
+            let event = crate::event::load_event(&name);
+            model.scores = scores;
+            model.event = event;
             SessionStorage::insert("event", &name).expect("save data to SessionStorage");
+            page::results::update(page::results::Msg::Reload, model, orders);
         }
         Msg::Reload => {
-            page::stage::update(
-                page::stage::StageMsg::Reload,
-                &mut model.stage_model,
-                orders,
-            );
-            page::event::update(page::event::Msg::Reload, &mut model.event_model, orders);
-            page::results::update(page::results::Msg::Reload, &mut model.results_model, orders);
+            page::results::update(page::results::Msg::Reload, model, orders);
         }
     }
 }
+
+fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
+    let event_name: String = match SessionStorage::get("event") {
+        Ok(x) => x,
+        Err(_) => "TBA".to_string(),
+    };
+
+    let scores = crate::event::load_times(&event_name);
+    let event = crate::event::load_event(&event_name);
+
+    Model {
+        page: Page::Event,
+        ctx: Default::default(),
+        results_model: page::results::init(&event, &scores),
+        scores: scores.clone(),
+        event,
+        stage_model: page::stage::init(),
+        event_model: page::event::init(),
+    }
+}
+
 // ------ ------
 //     View
 // ------ ------
@@ -114,9 +112,9 @@ fn view_content(model: &Model) -> Node<Msg> {
             Page::Home => page::home::view(),
             Page::Help => page::help::view(),
             Page::KhanaRules => page::khana_rule::view(),
-            Page::Stage => page::stage::view(&model.stage_model).map_msg(Msg::StageMsg),
-            Page::Results => page::results::view(&model.results_model).map_msg(Msg::ResultMsg),
-            Page::Event => page::event::view(&model.event_model).map_msg(Msg::EventMsg),
+            Page::Stage => page::stage::view(&model).map_msg(Msg::StageMsg),
+            Page::Results => page::results::view(&model).map_msg(Msg::ResultMsg),
+            Page::Event => page::event::view(&model).map_msg(Msg::EventMsg),
         }
     ]
 }

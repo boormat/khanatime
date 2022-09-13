@@ -1,5 +1,4 @@
 use crate::event::Entry;
-use crate::event::EventInfo;
 use crate::input::InputModel;
 use crate::input::*;
 
@@ -12,8 +11,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Msg {
-    SetEvent(String),
-    Reload,
     // classes
     EditClass(String), // borkish
     DeleteClass(String),
@@ -26,63 +23,59 @@ pub enum Msg {
 pub struct Model {
     class: InputModel,
     entrant: InputModel,
-    event: EventInfo,
 }
 
-pub fn init(event_name: &String) -> Model {
-    let mut model = Model {
+pub fn init() -> Model {
+    let model = Model {
         class: Default::default(),
         entrant: Default::default(),
-        event: Default::default(),
     };
-    load_event(&mut model, event_name);
     model
 }
 
-fn load_event(model: &mut Model, event_name: &String) {
-    model.event = crate::event::load_event(event_name);
-}
-
-fn save_event(model: &Model) {
+fn save_event(model: &crate::Model) {
     crate::event::save_event(&model.event);
 }
 
-pub fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<crate::Msg>) {
+pub fn update(msg: Msg, model: &mut crate::Model, _orders: &mut impl Orders<crate::Msg>) {
     // TODO Use a result to update the feedback?
     match msg {
         Msg::ClassInput(InputMsg::DataEntry(value)) => {
-            input_update(&mut model.class, value); // typey typey
+            input_update(&mut model.event_model.class, value); // typey typey
         }
         Msg::ClassInput(InputMsg::CancelEdit) => {
-            input_clear(&mut model.class);
+            input_clear(&mut model.event_model.class);
         }
         Msg::EntryInput(InputMsg::DataEntry(value)) => {
-            input_update(&mut model.entrant, value); // typey typey
+            input_update(&mut model.event_model.entrant, value); // typey typey
         }
         Msg::EntryInput(InputMsg::CancelEdit) => {
-            input_clear(&mut model.entrant);
+            input_clear(&mut model.event_model.entrant);
         }
         Msg::EntryInput(InputMsg::DoThing) => {
-            if let Some((car, name)) = parse_car_and(&model.entrant.input[..]) {
+            if let Some((car, name)) = parse_car_and(&model.event_model.entrant.input[..]) {
                 let ok = model.event.add_entry(car, name);
                 if ok {
                     save_event(model);
-                    input_clear(&mut model.entrant);
+                    input_clear(&mut model.event_model.entrant);
                 } else {
-                    input_feedback(&mut model.entrant, "Duplicate Entry.");
+                    input_feedback(&mut model.event_model.entrant, "Duplicate Entry.");
                 }
             } else {
-                input_feedback(&mut model.entrant, "Can't parse Entry. Car#<space>Name");
+                input_feedback(
+                    &mut model.event_model.entrant,
+                    "Can't parse Entry. Car#<space>Name",
+                );
             }
         }
         Msg::EditClass(class) => {
-            model.class.input = format!("{class}");
-            model.class.feedback = format!("Editing class {class}");
+            model.event_model.class.input = format!("{class}");
+            model.event_model.class.feedback = format!("Editing class {class}");
         }
 
         Msg::ClassInput(InputMsg::DoThing) => {
             // new or rename... if key not null?
-            let input = &model.class;
+            let input = &model.event_model.class;
             if input.key.is_empty() {
                 let new = &input.input;
                 model.event.add_class(&new);
@@ -94,7 +87,7 @@ pub fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<crate::Msg>
                     save_event(model);
                 }
             }
-            input_clear(&mut model.class);
+            input_clear(&mut model.event_model.class);
         }
 
         Msg::DeleteClass(class) => {
@@ -115,25 +108,22 @@ pub fn update(msg: Msg, model: &mut Model, _orders: &mut impl Orders<crate::Msg>
                 save_event(model);
             }
         }
-
-        Msg::SetEvent(event_name) => load_event(model, &event_name),
-        Msg::Reload => load_event(model, &model.event.name.to_owned()),
     }
 }
 
-pub fn view(model: &Model) -> Node<Msg> {
+pub fn view(model: &crate::Model) -> Node<Msg> {
     div! {
         h1![format!("Event: {} Stages:{}", model.event.name, model.event.stages_count)],
         // sort buttons.
         // results list... here
         view_class_list(&model),
-        input_box(&model.class, "New Class?", Msg::ClassInput ),
+        input_box(&model.event_model.class, "New Class?", Msg::ClassInput ),
         view_entrant_list(&model),
-        input_box(&model.entrant, "New Entrant?",  Msg::EntryInput),
+        input_box(&model.event_model.entrant, "New Entrant?",  Msg::EntryInput),
     }
 }
 
-fn view_class_list(model: &Model) -> Node<Msg> {
+fn view_class_list(model: &crate::Model) -> Node<Msg> {
     ul![
         C!["todo-list"],
         model.event.classes.iter().map(|class| {
@@ -159,7 +149,7 @@ fn view_class_list(model: &Model) -> Node<Msg> {
     ]
 }
 
-fn view_entrant_list(model: &Model) -> Vec<Node<Msg>> {
+fn view_entrant_list(model: &crate::Model) -> Vec<Node<Msg>> {
     nodes! {
         header![h1!["Entrants"]],
         ul![model
@@ -170,7 +160,7 @@ fn view_entrant_list(model: &Model) -> Vec<Node<Msg>> {
     }
 }
 
-fn view_entry(model: &Model, entry: &Entry) -> Node<Msg> {
+fn view_entry(model: &crate::Model, entry: &Entry) -> Node<Msg> {
     li![
         span![
             C!["tag is-black"],
