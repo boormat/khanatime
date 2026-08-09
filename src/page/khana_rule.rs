@@ -1,11 +1,14 @@
-// use crate::Urls;
-use seed::{prelude::*, *};
+use sycamore::prelude::*;
 
-pub fn view<Ms>() -> Node<Ms> {
-    div![
-        C!["hero-body", "content"],
-        Node::from_markdown(RULES_MARKDOWN),
-    ]
+use pulldown_cmark::{html, Options};
+
+pub fn view() -> View {
+    let md = pulldown_cmark::Parser::new_ext(RULES_MARKDOWN, Options::empty());
+    let mut body = String::new();
+    html::push_html(&mut body, md);
+    view! {
+        div(class="hero-body content", dangerously_set_inner_html=body)
+    }
 }
 
 const RULES_MARKDOWN: &str = r####"

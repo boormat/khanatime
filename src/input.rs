@@ -1,64 +1,61 @@
-use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
+use sycamore::prelude::*;
 
-#[derive(Default)]
+/// Text input state, held as signals so two-way `bind:value` works.
+#[derive(Clone, Copy)]
 pub struct InputModel {
-    pub key: String,
-    pub input: String,
-    pub feedback: String,
+    pub key: Signal<String>,
+    pub input: Signal<String>,
+    pub feedback: Signal<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-// #[derive(Clone)]
+pub fn init() -> InputModel {
+    InputModel {
+        key: create_signal(String::new()),
+        input: create_signal(String::new()),
+        feedback: create_signal(String::new()),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum InputMsg {
     DoThing,
-    DataEntry(String),
     CancelEdit,
 }
 
-pub fn input_box<Msg: std::clone::Clone + 'static>(
-    model: &InputModel,
-    placeholder: &str,
-    base_msg: fn(InputMsg) -> Msg,
-) -> Node<Msg> {
-    const ENTER_KEY: u32 = 13;
-    const ESC_KEY: u32 = 27;
-    // so enums which take parameters are actually functions
-    let do_thing = base_msg(InputMsg::DoThing);
-    let cancel_edit: Msg = base_msg(InputMsg::CancelEdit);
-    let data_entry = move |x| base_msg(InputMsg::DataEntry(x));
-    div![
-        div![&model.feedback],
-        input![
-            C!["input"],
-            attrs! {
-                At::Value => model.input;
-                At::AutoFocus => true.as_at_value();
-                At::Placeholder => placeholder;
-            },
-            keyboard_ev(Ev::KeyDown, |keyboard_event| {
-                match keyboard_event.key_code() {
-                    ENTER_KEY => Some(do_thing),
-                    ESC_KEY => Some(cancel_edit),
-                    _ => None,
-                }
-            }),
-            input_ev(Ev::Input, data_entry),
-        ],
-    ]
+/// A keyboard-friendly single line input.
+/// Enter dispatches `DoThing`, Escape dispatches `CancelEdit`.
+/// The text is two-way bound to `model.input`.
+pub fn input_box(
+    model: InputModel,
+    placeholder: &'static str,
+    dispatch: impl Fn(InputMsg) + 'static,
+) -> View {
+    view! {
+        div {
+            div { (move || model.feedback.get_clone()) }
+            input(
+                class="input",
+                placeholder=placeholder,
+                bind:value=model.input,
+                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                    match ev.key_code() {
+                        13 => dispatch(InputMsg::DoThing),
+                        27 => dispatch(InputMsg::CancelEdit),
+                        _ => {}
+                    }
+                },
+            )
+        }
+    }
 }
 
-pub fn input_clear(model: &mut InputModel) {
-    model.key.clear();
-    model.input.clear();
-    model.feedback.clear();
+pub fn input_clear(model: InputModel) {
+    model.key.set(String::new());
+    model.input.set(String::new());
+    model.feedback.set(String::new());
 }
 
-pub fn input_update(model: &mut InputModel, msg: String) {
-    model.input = msg;
-    model.feedback.clear();
-}
-
-pub fn input_feedback(model: &mut InputModel, msg: &str) {
-    model.feedback = msg.to_string();
+pub fn input_feedback(model: InputModel, msg: &str) {
+    model.feedback.set(msg.to_string());
 }

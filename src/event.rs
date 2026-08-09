@@ -4,8 +4,6 @@
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
-use seed::prelude::LocalStorage;
-use seed::prelude::*;
 use serde::{Deserialize, Serialize};
 
 // Event INFO.  Staticish
@@ -55,6 +53,7 @@ pub struct KTimeTime {
     pub garage: bool,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(
     // parse_display::FromStr,
     // parse_display::Display,
@@ -80,7 +79,7 @@ pub enum KTime {
 // Maybe we should have a Display Score focussing on class? ie. regen after filter
 // is selected.
 // results to render
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResultView {
     pub event: EventInfo,
     pub class: String,
@@ -91,7 +90,7 @@ pub struct ResultView {
 }
 
 // results to render
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResultRow {
     pub entry: Entry, //todo use from context &'a [Entry];
     pub columns: Vec<Option<ResultScore>>,
@@ -135,7 +134,7 @@ impl Default for EventInfo {
         let classes = ["Outright", "Female", "Junior"];
         let classes = classes.map(String::from).into();
         let name = "TBA".into();
-        let stages_count = 12.into();
+        let stages_count = 12;
         let entries = vec![];
         Self {
             name,
@@ -165,24 +164,24 @@ impl EventInfo {
         for e in self.entries.iter_mut() {
             e.classes.retain(|x| x != class);
         }
-        return true;
+        true
     }
 
     // delete class, will ensure entries updated too
-    pub fn rename_class(&mut self, old: &String, new: &String) -> bool {
-        if !self.classes.contains(old) {
+    pub fn rename_class(&mut self, old: &str, new: &str) -> bool {
+        if !self.classes.iter().any(|c| c == old) {
             return false;
         }
 
-        let c: &mut String = &mut self.classes.iter_mut().find(|x| *x == old).unwrap();
-        *c = new.clone();
+        let c: &mut String = self.classes.iter_mut().find(|x| *x == old).unwrap();
+        *c = new.to_string();
 
         for e in self.entries.iter_mut() {
             if let Some(class) = e.classes.iter_mut().find(|x| *x == old) {
-                *class = new.clone();
+                *class = new.to_string();
             }
         }
-        return true;
+        true
     }
 
     // delete class, will ensure entries updated too
@@ -200,7 +199,7 @@ impl EventInfo {
 
         let entry = Entry::new(car, name);
         self.entries.push(entry);
-        return true;
+        true
     }
 }
 
@@ -221,7 +220,7 @@ impl Entry {
 }
 
 impl<'a> ResultView {
-    pub fn init(class: &str, event: &'a EventInfo, scores: &Vec<ScoreData>) -> Self {
+    pub fn init(class: &str, event: &'a EventInfo, scores: &[ScoreData]) -> Self {
         let entries = find_entries_in_class(&event.entries, class);
 
         let rows: IndexMap<String, ResultRow> = entries
@@ -241,14 +240,9 @@ impl<'a> ResultView {
 }
 
 impl<'a> ResultRow {
-    pub fn init(entry: &'a Entry, event: &'a EventInfo, scores: &Vec<ScoreData>) -> Self {
+    pub fn init(entry: &'a Entry, event: &'a EventInfo, scores: &[ScoreData]) -> Self {
         let columns = (0..event.stages_count)
-            .map(
-                |col| match find_score(&scores[..], &entry.car[..], col + 1) {
-                    None => None,
-                    Some(rs) => Some(ResultScore::init(rs)),
-                },
-            )
+            .map(|col| find_score(scores, &entry.car[..], col + 1).map(ResultScore::init))
             .collect();
 
         Self {
@@ -301,19 +295,17 @@ pub fn calc_base_times(rv: &mut ResultView) {
         let mut fastest: u32 = u16::MAX as u32;
         let mut slowest: u32 = 0;
         for row in rv.rows.values() {
-            match &row.columns[stage as usize] {
-                Some(ResultScore {
-                    time: KTime::Time(kt),
-                    ..
-                }) => {
-                    // regs are unclear, but only thing that makes sense/fair
-                    // is the slowest time includes penalties.
-                    // (what is everyone got a penalty)
-                    fastest = fastest.min(kt.score_ds());
-                    slowest = slowest.max(kt.score_ds());
-                    // log!(stage + 1, fastest, slowest, kt.time_ds, row.entry.car);
-                }
-                _ => {}
+            if let Some(ResultScore {
+                time: KTime::Time(kt),
+                ..
+            }) = &row.columns[stage as usize]
+            {
+                // regs are unclear, but only thing that makes sense/fair
+                // is the slowest time includes penalties.
+                // (what is everyone got a penalty)
+                fastest = fastest.min(kt.score_ds());
+                slowest = slowest.max(kt.score_ds());
+                // log!(stage + 1, fastest, slowest, kt.time_ds, row.entry.car);
             }
         }
         let base_time = slowest.min(fastest * 2);
@@ -357,9 +349,9 @@ pub fn calc_cumulative_times(rv: &mut ResultView) {
         let mut score = 0;
         let mut stage = 0;
         while let Some(rs) = &mut row.columns[stage as usize] {
-            score = score + rs.stage_pos.score_ds;
+            score += rs.stage_pos.score_ds;
             rs.cum_pos = Some(Pos::init(score));
-            stage = stage + 1;
+            stage += 1;
         }
     }
 }
@@ -385,7 +377,7 @@ pub fn calc_pos_changes(rv: &mut ResultView) {
                 cum_pos.change = last_rank as i8 - cum_pos.pos as i8;
             }
             last_rank = cum_pos.pos;
-            stage = stage + 1;
+            stage += 1;
         }
     }
 }
@@ -451,11 +443,7 @@ pub fn calc(rv: &mut ResultView) {
     calc_pos_changes(rv);
 }
 
-pub fn create_result_view<'a>(
-    event: &'a EventInfo,
-    scores: &Vec<ScoreData>,
-    class: &str,
-) -> ResultView {
+pub fn create_result_view(event: &EventInfo, scores: &[ScoreData], class: &str) -> ResultView {
     // Calc min time per stage (for class)
     // loop raw results... list of cars eligible.  Find relevant results.
     // sort into stages.
@@ -486,6 +474,7 @@ pub fn find_score<'a>(scores: &'a [ScoreData], car: &str, stage: u8) -> Option<&
 
 const EVENT_PREFIX: &str = "event:";
 const TIMES_PREFIX: &str = "times:";
+const EVENT_SESSION: &str = "event";
 
 fn event_key(name: &String) -> String {
     format!("{}{}", EVENT_PREFIX, name)
@@ -495,10 +484,32 @@ fn times_key(name: &String) -> String {
     format!("{}{}", TIMES_PREFIX, name)
 }
 
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
+fn session_storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.session_storage().ok().flatten()
+}
+
+fn get_json<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
+    storage()?
+        .get_item(key)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn set_json<T: Serialize>(key: &str, value: &T) {
+    if let Some(st) = storage() {
+        let _ = st.set_item(key, &serde_json::to_string(value).unwrap());
+    }
+}
+
 pub fn load_event(name: &String) -> EventInfo {
     if !name.is_empty() {
         let key = event_key(name);
-        let mut e: EventInfo = LocalStorage::get(&key).unwrap_or_default();
+        let mut e: EventInfo = get_json(&key).unwrap_or_default();
         e.name = name.to_string(); // change if default, just fix
         e
     } else {
@@ -511,31 +522,31 @@ pub fn load_event(name: &String) -> EventInfo {
 
 pub fn save_event(event: &EventInfo) {
     let key = event_key(&event.name);
-    LocalStorage::insert(&key, &event).expect("save data to LocalStorage");
-    // log!("saving  event ", key);
+    set_json(&key, event);
 }
 
 /// list of known events in storage.  String is storage key, is the event name
 /// if it fails .. empty is fine
 pub fn list_events() -> HashSet<String> {
-    let len = LocalStorage::len().unwrap_or_default();
     let mut out: HashSet<String> = Default::default();
-    // ugly it up with map?
-    // out.push("dog".to_string());
-    (0..len).for_each(|i| {
-        if let Ok(name) = LocalStorage::key(i) {
-            if name.starts_with(EVENT_PREFIX) {
-                out.insert(name[EVENT_PREFIX.len()..].to_string());
-            }
+    if let Some(st) = storage() {
+        if let Ok(len) = st.length() {
+            (0..len).for_each(|i| {
+                if let Ok(Some(name)) = st.key(i) {
+                    if let Some(rest) = name.strip_prefix(EVENT_PREFIX) {
+                        out.insert(rest.to_string());
+                    }
+                }
+            });
         }
-    });
-    return out;
+    }
+    out
 }
 
 pub fn load_times(name: &String) -> Vec<ScoreData> {
     if !name.is_empty() {
         let key = times_key(name);
-        LocalStorage::get(&key).unwrap_or_default()
+        get_json(&key).unwrap_or_default()
     } else {
         vec![]
     }
@@ -544,6 +555,18 @@ pub fn load_times(name: &String) -> Vec<ScoreData> {
 pub fn save_times(name: &String, scores: &Vec<ScoreData>) {
     if !name.is_empty() {
         let key = times_key(name);
-        LocalStorage::insert(&key, &scores).expect("save data to LocalStorage");
+        set_json(&key, scores);
+    }
+}
+
+pub fn session_event_name() -> String {
+    session_storage()
+        .and_then(|st| st.get_item(EVENT_SESSION).ok().flatten())
+        .unwrap_or_else(|| "TBA".to_string())
+}
+
+pub fn session_set_event(name: &str) {
+    if let Some(st) = session_storage() {
+        let _ = st.set_item(EVENT_SESSION, name);
     }
 }

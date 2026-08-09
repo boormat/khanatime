@@ -4,29 +4,10 @@ mod page;
 mod view;
 
 use event::{EventInfo, ScoreData};
-use seed::{prelude::*, *};
-use serde::{Deserialize, Serialize};
+use sycamore::prelude::*;
+use sycamore::render;
 
-pub struct Model {
-    ctx: Context,
-    page: Page,
-    pub scores: Vec<ScoreData>,
-    pub event: EventInfo,
-    pub stage_model: page::stage::StageModel,
-    pub results_model: page::results::Model,
-    pub event_model: page::event::Model,
-}
-
-#[derive(Default)]
-struct Context {
-    user: Option<User>,
-}
-#[derive(Deserialize)]
-struct User {
-    // name: String,
-}
-
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Page {
     #[default]
     Home,
@@ -46,129 +27,126 @@ pub enum Msg {
     ResultMsg(page::results::Msg),
 }
 
-fn update(msg: Msg, model: &mut Model, orders: &mut impl Orders<Msg>) {
-    match msg {
-        Msg::Show(Page::Results) => {
-            model.page = Page::Results;
-            let submsg = page::results::Msg::Reload;
-            page::results::update(submsg, model, orders);
-        }
-        Msg::Show(p) => model.page = p,
+#[derive(Clone, Copy)]
+pub struct Model {
+    pub page: Signal<Page>,
+    pub scores: Signal<Vec<ScoreData>>,
+    pub event: Signal<EventInfo>,
+    pub stage_model: page::stage::StageModel,
+    pub results_model: page::results::Model,
+    pub event_model: page::event::Model,
+}
 
-        Msg::StageMsg(msg) => page::stage::update(msg, model, orders),
-        Msg::EventMsg(msg) => page::event::update(msg, model, orders),
-        Msg::ResultMsg(msg) => page::results::update(msg, model, orders),
-        Msg::SetEvent(name) => {
-            let scores = crate::event::load_times(&name);
-            let event = crate::event::load_event(&name);
-            model.scores = scores;
-            model.event = event;
-            SessionStorage::insert("event", &name).expect("save data to SessionStorage");
-            page::results::update(page::results::Msg::Reload, model, orders);
-        }
-        Msg::Reload => {
-            page::results::update(page::results::Msg::Reload, model, orders);
+impl Model {
+    fn init() -> Model {
+        let event_name = event::session_event_name();
+        let scores = event::load_times(&event_name);
+        let event_info = event::load_event(&event_name);
+        let results_model = page::results::init(&event_info, &scores);
+
+        Model {
+            page: create_signal(Page::Event),
+            scores: create_signal(scores),
+            event: create_signal(event_info),
+            stage_model: page::stage::init(),
+            results_model,
+            event_model: page::event::init(),
         }
     }
 }
 
-fn init(_: Url, _: &mut impl Orders<Msg>) -> Model {
-    let event_name: String = match SessionStorage::get("event") {
-        Ok(x) => x,
-        Err(_) => "TBA".to_string(),
-    };
+pub fn update(model: Model, msg: Msg) {
+    match msg {
+        Msg::Show(Page::Results) => {
+            model.page.set(Page::Results);
+            let submsg = page::results::Msg::Reload;
+            page::results::update(model, submsg);
+        }
+        Msg::Show(p) => model.page.set(p),
 
-    let scores = crate::event::load_times(&event_name);
-    let event = crate::event::load_event(&event_name);
-
-    Model {
-        page: Page::Event,
-        ctx: Default::default(),
-        results_model: page::results::init(&event, &scores),
-        scores: scores.clone(),
-        event,
-        stage_model: page::stage::init(),
-        event_model: page::event::init(),
+        Msg::StageMsg(msg) => page::stage::update(model, msg),
+        Msg::EventMsg(msg) => page::event::update(model, msg),
+        Msg::ResultMsg(msg) => page::results::update(model, msg),
+        Msg::SetEvent(name) => {
+            let scores = event::load_times(&name);
+            let event = event::load_event(&name);
+            model.scores.set(scores);
+            model.event.set(event);
+            event::session_set_event(&name);
+            page::results::update(model, page::results::Msg::Reload);
+        }
+        Msg::Reload => {
+            page::results::update(model, page::results::Msg::Reload);
+        }
     }
+}
+
+fn setup_effects(model: Model) {
+    // stage command preview: re-parse whenever the input text changes
+    create_effect(move || {
+        let input = model.stage_model.cmd.input.get_clone();
+        let cmd = page::stage::parse_command(&input);
+        model.stage_model.preview.set(cmd);
+    });
 }
 
 // ------ ------
 //     View
 // ------ ------
 
-fn view(model: &Model) -> Vec<Node<Msg>> {
-    nodes![
-        view_navbar(model.ctx.user.as_ref(), &model.page),
-        view_content(&model),
-    ]
+fn app(model: Model) -> View {
+    view! {
+        div {
+            (move || view_navbar(model))
+            (move || view_content(model))
+        }
+    }
 }
 
 // ----- view_content ------
 
-fn view_content(model: &Model) -> Node<Msg> {
-    div![
-        C!["container"],
-        match model.page {
-            Page::Home => page::home::view(),
-            Page::Help => page::help::view(),
-            Page::KhanaRules => page::khana_rule::view(),
-            Page::Stage => page::stage::view(&model).map_msg(Msg::StageMsg),
-            Page::Results => page::results::view(&model).map_msg(Msg::ResultMsg),
-            Page::Event => page::event::view(&model).map_msg(Msg::EventMsg),
+fn view_content(model: Model) -> View {
+    view! {
+        div(class="container") {
+            (match model.page.get() {
+                Page::Home => page::home::view(),
+                Page::Help => page::help::view(),
+                Page::KhanaRules => page::khana_rule::view(),
+                Page::Stage => page::stage::view(model),
+                Page::Results => page::results::view(model),
+                Page::Event => page::event::view(model),
+            })
         }
-    ]
+    }
 }
 
-fn view_navbar(_user: Option<&User>, page: &Page) -> Node<Msg> {
-    nav![
-        C!["navbar", "is-link", "is-hidden-print"],
-        attrs! {
-            At::from("role") => "navigation",
-            At::AriaLabel => "main navigation",
-        },
-        div![
-            C!["navbar-brand"],
-            i![
-                C!["fa fa-bars"],
-                linky2(matches!(page, Page::Home)),
-                ev(Ev::Click, |_| Msg::Show(Page::Home)),
-            ],
-            i![
-                C!["fa fa-screwdriver-wrench"],
-                linky2(matches!(page, Page::Event)),
-                ev(Ev::Click, |_| Msg::Show(Page::Event)),
-            ],
-            i![
-                C!["fa fa-stopwatch-20"],
-                linky2(matches!(page, Page::Stage)),
-                ev(Ev::Click, |_| Msg::Show(Page::Stage)),
-            ],
-            i![
-                C!["fa fa-trophy"],
-                linky2(matches!(page, Page::Results)),
-                ev(Ev::Click, |_| Msg::Show(Page::Results)),
-            ],
-            i![
-                C!["fa fa-question"],
-                linky2(matches!(page, Page::Help)),
-                ev(Ev::Click, |_| Msg::Show(Page::Help)),
-            ],
-            i![
-                C!["fa fa-book"],
-                linky2(matches!(page, Page::KhanaRules)),
-                ev(Ev::Click, |_| Msg::Show(Page::KhanaRules)),
-            ],
-        ]
-    ]
-}
-
-fn linky2(active: bool) -> Attrs {
-    C![
-        "navbar-item",
-        "has-text-weight-bold",
-        "is-size-5",
-        IF!(active => "is-active"),
-    ]
+fn view_navbar(model: Model) -> View {
+    let mut brand: Vec<View> = vec![];
+    for (page, icon) in [
+        (Page::Home, "fa fa-bars"),
+        (Page::Event, "fa fa-screwdriver-wrench"),
+        (Page::Stage, "fa fa-stopwatch-20"),
+        (Page::Results, "fa fa-trophy"),
+        (Page::Help, "fa fa-question"),
+        (Page::KhanaRules, "fa fa-book"),
+    ] {
+        let active = model.page.get() == page;
+        let class = format!(
+            "navbar-item has-text-weight-bold is-size-5{}",
+            if active { " is-active" } else { "" }
+        );
+        brand.push(view! {
+            i(
+                class=format!("{icon} {class}"),
+                on:click=move |_| { update(model, Msg::Show(page)) },
+            )
+        });
+    }
+    view! {
+        nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
+            div(class="navbar-brand") { (brand) }
+        }
+    }
 }
 
 // ------ ------
@@ -176,5 +154,22 @@ fn linky2(active: bool) -> Attrs {
 // ------ ------
 
 fn main() {
-    App::start("app", init, update, view);
+    std::panic::set_hook(Box::new(|info| {
+        let js_stack = js_sys::Reflect::get(&js_sys::Error::new("panic"), &"stack".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "no stack".to_string());
+        let msg = format!("PANIC: {info}\nJS STACK:\n{js_stack}");
+        khanatime::web_log(&msg);
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            if let Some(body) = doc.body() {
+                body.set_inner_html(&format!("<pre>{}</pre>", msg.replace('<', "&lt;")));
+            }
+        }
+    }));
+    render(move || {
+        let model = Model::init();
+        setup_effects(model);
+        app(model)
+    });
 }

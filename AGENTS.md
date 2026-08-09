@@ -15,8 +15,6 @@ trunk build --release
 
 # Tests
 cargo test
-# CI also runs wasm-pack tests headless (Chrome + Firefox):
-#   wasm-pack test --headless --chrome --firefox
 
 # Format
 cargo fmt
@@ -30,7 +28,7 @@ https://boormat.github.io/khanatime/ — run it from the Actions tab.
 
 ## Framework notes
 
-- **Sycamore 0.9** reactive framework (README still says Seed; it is stale).
+- **Sycamore 0.9** reactive framework.
   State via `Signal<T>`; views via `view! { ... }` macro.
 - **Trunk** for the WASM build (see `Trunk.toml`); styling is SASS/Bulma in
   `styles/`, FontAwesome icons.

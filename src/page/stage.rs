@@ -3,7 +3,6 @@ use crate::event::KTimeTime;
 use crate::event::ScoreData;
 use crate::input::input_box;
 use crate::input::input_clear;
-use crate::input::input_update;
 use crate::input::InputModel;
 use crate::input::InputMsg;
 use crate::view as show;
@@ -14,27 +13,29 @@ use crate::Model;
 // + big view of current last one
 // + text field.
 use lazy_regex::regex;
-use seed::{prelude::*, *};
 use serde::{Deserialize, Serialize};
+use sycamore::prelude::*;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
     CmdInput(InputMsg),
 }
+
+#[derive(Clone, Copy)]
 pub struct StageModel {
-    cmd: InputModel,
-    preview: Result<CmdParse, CmdError>,
-    stage: u8,
+    pub cmd: InputModel,
+    pub preview: Signal<Result<CmdParse, CmdError>>,
+    pub stage: Signal<u8>,
 }
 
 // adds score from user entry in model
-fn add_score(model: &mut Model) {
+fn add_score(model: Model) {
     // hmmm probably should cope with error to avoid user funnies?
-    let s = match &model.stage_model.preview {
-        Ok(CmdParse::Time(cmd)) => to_score(model.stage_model.stage, &cmd),
-        _ => panic!(),
-    };
-    model.scores.push(s);
+    let s = model.stage_model.preview.with(|p| match p {
+        Ok(CmdParse::Time(cmd)) => to_score(model.stage_model.stage.get(), cmd),
+        _ => panic!("add_score called without a parsed time command"),
+    });
+    model.scores.update(|v| v.push(s));
 }
 
 fn to_score(stage: u8, cmd: &TimeCmd) -> ScoreData {
@@ -45,137 +46,153 @@ fn to_score(stage: u8, cmd: &TimeCmd) -> ScoreData {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
-struct Official {
-    official: String, //name
-    pubkey: String,   // officials ring Ed25519
-}
-
 pub fn init() -> StageModel {
-    let model = StageModel {
-        cmd: Default::default(),
-        stage: 1,
-        preview: Err(CmdError::Nothing), // hmm rubish OK
-    };
-    model
+    StageModel {
+        cmd: crate::input::init(),
+        stage: create_signal(1),
+        preview: create_signal(Err(CmdError::Nothing)),
+    }
 }
 
-fn save_times(model: &Model) {
-    crate::event::save_times(&model.event.name, &model.scores.as_ref());
+fn save_times(model: Model) {
+    let name = model.event.with(|e| e.name.clone());
+    let scores = model.scores.get_clone();
+    crate::event::save_times(&name, &scores);
 }
 
-pub fn update(msg: StageMsg, model: &mut Model, orders: &mut impl Orders<crate::Msg>) {
+pub fn update(model: Model, msg: StageMsg) {
     match msg {
-        StageMsg::CmdInput(InputMsg::DataEntry(value)) => {
-            // typey typey
-            input_update(&mut model.stage_model.cmd, value);
-            // Show preview of what is about to happen on enter/save
-            let cmd = parse_command(&model.stage_model.cmd.input);
-            if let Ok(CmdParse::Time(_tc)) = cmd {
-                // if tc.car in model.event.unw
-                // todo! check is in event...
-            }
-            model.stage_model.preview = parse_command(&model.stage_model.cmd.input);
-        }
         StageMsg::CmdInput(InputMsg::CancelEdit) => {
-            input_clear(&mut model.stage_model.cmd);
-            clear_cmd(&mut model.stage_model);
+            clear_cmd(model);
         }
 
         StageMsg::CmdInput(InputMsg::DoThing) => {
-            let cmd = parse_command(&model.stage_model.cmd.input);
+            let input = model.stage_model.cmd.input.get_clone();
+            let cmd = parse_command(&input);
             match cmd {
                 Ok(CmdParse::Time(_tc)) => {
-                    log!("time");
+                    khanatime::log!("time");
                     add_score(model);
                     save_times(model);
-                    orders.send_msg(crate::Msg::Reload);
+                    crate::update(model, crate::Msg::Reload);
 
-                    clear_cmd(&mut model.stage_model);
+                    clear_cmd(model);
                 }
                 Ok(CmdParse::Stage { number }) => {
-                    model.stage_model.stage = number;
-                    clear_cmd(&mut model.stage_model);
+                    model.stage_model.stage.set(number);
+                    clear_cmd(model);
                 }
                 Ok(CmdParse::Event { event }) => {
-                    orders.send_msg(crate::Msg::SetEvent(event));
-                    clear_cmd(&mut model.stage_model);
+                    crate::update(model, crate::Msg::SetEvent(event));
+                    clear_cmd(model);
                 }
 
-                Err(_) => log!("parse nope"),
+                Err(_) => khanatime::log!("parse nope"),
             };
         }
     }
 }
 
-fn clear_cmd(model: &mut StageModel) {
-    model.preview = Err(CmdError::Nothing); // hmm rubish OK
-    input_clear(&mut model.cmd);
+fn clear_cmd(model: Model) {
+    model.stage_model.preview.set(Err(CmdError::Nothing)); // hmm rubish OK
+    input_clear(model.stage_model.cmd);
 }
 
-pub fn view(model: &Model) -> Node<StageMsg> {
-    div! {
-        h1![format!("Event: {} Stage:{}", model.event.name, model.stage_model.stage)],
-        // sort buttons.
-        // results list... here
-        view_list(&model),
-        view_preview(&model.stage_model),
-        input_box_wrap(&model.stage_model.cmd),
-    }
-}
-
-fn view_preview(model: &StageModel) -> Node<StageMsg> {
-    match &model.preview {
-        Ok(CmdParse::Time(tc)) => {
-            return div![format!("Confirm time {:?}?", tc)];
-        }
-        Ok(CmdParse::Stage { number }) => {
-            return div![format!("Edit stage {}?", number)];
-        }
-        Ok(CmdParse::Event { event }) => {
-            return div![format!("Open event {}?", event)];
-        }
-        Err(CmdError::Nothing) => {
-            return div!["Nothing to see here :-)"];
-        }
-        Err(CmdError::BadInput { value }) => {
-            return div![value];
+pub fn view(model: Model) -> View {
+    view! {
+        div {
+            h1 {
+                (move || {
+                    format!(
+                        "Event: {} Stage:{}",
+                        model.event.with(|e| e.name.clone()),
+                        model.stage_model.stage.get()
+                    )
+                })
+            }
+            (move || view_list(model))
+            (move || view_preview(model))
+            (input_box_wrap(model))
         }
     }
 }
 
-fn view_list(model: &Model) -> Node<StageMsg> {
+fn view_preview(model: Model) -> View {
+    view! {
+        div {
+            (move || {
+                model.stage_model.preview.with(|p| match p {
+                    Ok(CmdParse::Time(tc)) => {
+                        let msg = format!("Confirm time {:?}?", tc);
+                        view! { div { (msg) } }
+                    }
+                    Ok(CmdParse::Stage { number }) => {
+                        let msg = format!("Edit stage {}?", number);
+                        view! { div { (msg) } }
+                    }
+                    Ok(CmdParse::Event { event }) => {
+                        let msg = format!("Open event {}?", event);
+                        view! { div { (msg) } }
+                    }
+                    Err(CmdError::Nothing) => view! { div { "Nothing to see here :-)" } },
+                    Err(CmdError::BadInput { value }) => {
+                        let value = value.clone();
+                        view! { div { (value) } }
+                    }
+                })
+            })
+        }
+    }
+}
+
+fn view_list(model: Model) -> View {
     let mut v = vec![view_time_header()];
-    for a in model.scores.iter() {
-        v.push(view_time(&a));
+    model.scores.with(|scores| {
+        for a in scores.iter() {
+            v.push(view_time(a));
+        }
+    });
+    view! { table { (v) } }
+}
+
+fn view_time_header() -> View {
+    view! {
+        tr {
+            th { "Stage" }
+            th { "Car" }
+            th { "Time" }
+            th { "Flags" }
+        }
     }
-    table![v]
+}
+fn view_time(score: &ScoreData) -> View {
+    let stage = score.stage.to_string();
+    let car = show::car_number(score.car.clone());
+    let time = show::ktime(&score.time);
+    view! {
+        tr {
+            td { (stage) }
+            td { (car) }
+            td { (time) }
+        }
+    }
 }
 
-fn view_time_header() -> Node<StageMsg> {
-    tr![th!["Stage"], th!["Car"], th!["Time"], th!["Flags"],]
-}
-fn view_time(score: &ScoreData) -> Node<StageMsg> {
-    tr![
-        td![score.stage.to_string()],
-        td![show::car_number(&score.car)],
-        td![show::ktime(&score.time)],
-    ]
-}
-
-fn input_box_wrap(model: &InputModel) -> Node<StageMsg> {
-    div![
-        C!["pannel-block"],
-        p![
-            C!["control has-icons-left"],
-            input_box(
-                model,
-                "enter times. stage to change stage",
-                StageMsg::CmdInput
-            ),
-            span![C!["icon is-left"], i![C!["fas fa-car"]]]
-        ],
-    ]
+fn input_box_wrap(model: Model) -> View {
+    let dispatch =
+        move |msg: InputMsg| crate::update(model, crate::Msg::StageMsg(StageMsg::CmdInput(msg)));
+    view! {
+        div(class="pannel-block") {
+            p(class="control has-icons-left") {
+                (input_box(
+                    model.stage_model.cmd,
+                    "enter times. stage to change stage",
+                    dispatch,
+                ))
+                span(class="icon is-left") { i(class="fas fa-car") }
+            }
+        }
+    }
 }
 
 // Result Error class for UI feedback
@@ -190,7 +207,7 @@ pub enum CmdError {
 /// Parse a string into a Command enum
 /// Hide whichever matching is selected to parse
 /// probably needs to start returning user feedback on errors?
-fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
+pub fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
     match parse_stage_cmd(cmd) {
         Err(CmdError::Nothing) => {}
         // xx => return xx,
@@ -226,10 +243,10 @@ fn parse_command(cmd: &str) -> Result<CmdParse, CmdError> {
         },
     };
 
-    return Ok(CmdParse::Time(TimeCmd {
+    Ok(CmdParse::Time(TimeCmd {
         car: car.to_string(),
         code,
-    }));
+    }))
 }
 
 fn parse_stage_cmd(cmd: &str) -> Result<CmdParse, CmdError> {
@@ -323,7 +340,7 @@ fn parse_flags_garages(cmd: &str) -> Result<(u8, bool), CmdError> {
         let mut tags = 1; //default
         if let Some(numm) = caps.get(1) {
             let numstr = numm.as_str();
-            if numstr.len() > 0 {
+            if !numstr.is_empty() {
                 match numstr.parse() {
                     Ok(v) => {
                         tags = v;
@@ -346,7 +363,7 @@ fn parse_flags_garages(cmd: &str) -> Result<(u8, bool), CmdError> {
         s = &s[caps.get(0).unwrap().as_str().len()..]; // move along
     }
 
-    if s.trim().len() > 0 {
+    if !s.trim().is_empty() {
         return Err(bad_input("Trailing text, expecting Flags/Garage"));
     }
 
@@ -357,14 +374,13 @@ fn parse_flags_garages(cmd: &str) -> Result<(u8, bool), CmdError> {
 }
 
 #[derive(PartialEq, Debug, Default)]
-
-struct TimeCmd {
+pub struct TimeCmd {
     car: String,
     code: KTime,
 }
 
 #[derive(PartialEq, Debug)]
-enum CmdParse {
+pub enum CmdParse {
     Stage { number: u8 },
     Event { event: String },
     Time(TimeCmd),
@@ -393,8 +409,8 @@ mod tests {
         assert_eq!(parse_flags_garages(" FFG "), Ok((2, true)));
         assert_eq!(parse_flags_garages(" F4F0G"), Ok((5, false)));
         assert_eq!(parse_flags_garages(" F 4F GF 4F"), Ok((10, true)));
-        assert_eq!(parse_flags_garages(" F4FGG").is_err(), true);
-        assert_eq!(parse_flags_garages(" 4FF0G sdfs").is_err(), true);
+        assert!(parse_flags_garages(" F4FGG").is_err());
+        assert!(parse_flags_garages(" 4FF0G sdfs").is_err());
         // let (code, cmd) = parse_time(cmd)?;
         // let (flags, garage) = parse_flags_garages(cmd)?;
     }
@@ -404,8 +420,8 @@ mod tests {
         assert_eq!(parse_command("s 1"), Ok(CmdParse::Stage { number: 1 }));
         assert_eq!(parse_command("Stage 1"), Ok(CmdParse::Stage { number: 1 }));
         assert_eq!(parse_command("S 200"), Ok(CmdParse::Stage { number: 200 }));
-        assert_eq!(parse_command("t").is_err(), true);
-        assert_eq!(parse_command("stagex 1").is_err(), true);
+        assert!(parse_command("t").is_err());
+        assert!(parse_command("stagex 1").is_err());
 
         assert_eq!(
             parse_command("e a"),
@@ -417,7 +433,7 @@ mod tests {
                 event: "abc".into()
             })
         );
-        assert_eq!(parse_command("et aa").is_err(), true);
+        assert!(parse_command("et aa").is_err());
 
         // times
         assert_eq!(

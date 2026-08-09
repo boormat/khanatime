@@ -1,9 +1,18 @@
-// pub mod khana_rule;
-// pub use khana_rule::RULES_MARKDOWN;
-
 // Vec of str to strings.
 // let a= stringify(["a", "b", "c"]);
 pub fn stringify<const N: usize>(a: [&str; N]) -> [String; N] {
-    // https://stackoverflow.com/a/67651639/364875
     a.map(String::from)
+}
+
+/// Minimal `log!` macro (console.log for wasm).
+/// Use `log!("fmt {}", x)`.
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {
+        $crate::web_log(&format!($($arg)*))
+    };
+}
+
+pub fn web_log(msg: &str) {
+    web_sys::console::log_1(&js_sys::JsString::from(msg));
 }
