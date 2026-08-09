@@ -1,0 +1,24 @@
+# Event Timing Mesh Network Blueprint: Berty + PWA Integration
+This blueprint outlines a zero-infrastructure, cross-platform, store-and-forward communications architecture designed to sync sports or race competitor times. It requires no custom hardware and no paid Apple/Google developer accounts, relying entirely on standard smartphone radios and public app store deployments.
+---
+## 1. System Architecture
+* User Interface (PWA): A custom Progressive Web App containing timing inputs, bib trackers, and caching logic (IndexedDB). It runs offline inside Safari/Chrome browsers at remote checkpoints.* Transport Layer (Berty App): The stock, public Berty Messenger App (https://github.com). It stays in the background, driving device-to-device Bluetooth Low Energy (BLE) and ad-hoc local Wi-Fi meshes between checkpoints and mobile race marshals.* Data Bridge (Deep-Linking): The PWA formats competitor times and hands them directly to the local Berty app using native iOS/Android URL schemes.
+---
+## 2. Operational Field Deployment Workflow
+[ Step 1: Pre-Race Pairing ] ──► [ Step 2: Open Timing PWA ] ──► [ Step 3: Enter Competitor Time ] (Scan Group QR Code Offline)         (Launches Local Cache)          (PWA deep-links to Berty)                                                                                  │                                                                                  ▼                                                                      [ Step 4: BLE Mesh Sync ]                                                                        (Automatic Store-&-Forward)
+### Step 1: Pre-Race Pairing (Done Once Offline)* All checkpoint volunteers and race marshals open their stock Berty app.* The race director creates a new group chat room and displays its invite QR code.* Every other staff member scans the QR code to cryptographically join the secure offline timing room.
+### Step 2: Running the Timing PWA* Checkpoint timers tap the custom timing app icon previously saved to their home screens via Safari/Chrome's "Add to Home Screen".* The web application loads completely offline using local browser service worker assets.
+### Step 3: Entering Competitor Times* The timer inputs a racer's Bib Number, the Checkpoint ID, and their Split Time, then hits "Log Time".* The PWA intercept logic compresses the data into a standardized text payload and triggers the Berty URL protocol.
+### Step 4: Behind-The-Scenes Data Flow1. The phone switches focus from the browser directly to the Berty application.2. Berty opens the chat input box pre-populated with the compressed timing string.3. The volunteer presses send, committing the string to Berty’s local OrbitDB log.4. When mobile marshals or racers carrying smartphones move within 10–20 metres of a remote checkpoint, their devices automatically sync database logs over BLE.5. Internet Failover (The Main Leaderboard): The moment any race marshal or roving official moves back into cellular or Wi-Fi coverage (e.g., passing near the main base camp), their Berty app automatically relays the cached checkpoint history logs to the cloud, updating the main live race leaderboard instantly.
+---
+## 3. PWA to Berty Code Integration
+Paste this JavaScript handler into the action trigger of your PWA's timing submission or bib logging button:
+function broadcastTimingData(bibNumber, checkpointId, splitTime, notes) {    // 1. Structure data into a compact text format optimized for BLE bandwidth limits    // Example output: [TIME] BIB402 | CP3 | 01:23:45.67 | Clean    const structuredMessage = `[TIME] BIB${bibNumber.toUpperCase().replace(/\s+/g, '')} | ${checkpointId.toUpperCase()} | ${splitTime} | ${notes || 'NONE'}`;
+    // 2. Safely encode the payload for URL transport    const encodedPayload = encodeURIComponent(structuredMessage);
+    // 3. Formulate Berty's deep-link intent scheme    const bertyUrlScheme = `berty://converse?text=${encodedPayload}`;
+    // 4. Break browser sandbox and route payload to the native app    window.location.href = bertyUrlScheme;}
+// Example Execution:// broadcastTimingData('402', 'CP3', '01:23:45.67', 'Clean');
+---
+## 4. Critical OS Workarounds
+To guarantee that the iOS operating system doesn't put background Bluetooth processes to sleep during long events, apply these operational standards:
+* iOS Settings Hardening: Set Settings > General > Background App Refresh to ON for Berty. Turn off Low Power Mode, as it freezes BLE scanning instantly.* The Android Backbone: Place at least one Android device at each remote checkpoint or with roving marshals. Android allows Berty to run indefinitely as a persistent background daemon, serving as an always-on data-forwarding anchor for the surrounding iPhones.* Guided Access Keep-Alive: For dedicated checkpoint devices, activate iOS Guided Access paired with an Auto-Lock timer set to Never. This keeps the screen dim but ensures the BLE mesh timing sync never drops.
