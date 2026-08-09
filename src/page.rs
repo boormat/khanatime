@@ -4,3 +4,4 @@ pub mod home;
 pub mod khana_rule;
 pub mod results;
 pub mod stage;
+pub mod sync;

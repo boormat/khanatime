@@ -73,6 +73,25 @@ src/
 - Single shared Matrix room per event named "timing"; room history replays as
   store-and-forward offline sync. See `docs/research/MessagingSpike.md` and the
   Comms section of `PLAN.md`.
+- Voice = Push-to-Talk via an embedded Element Call voice widget (MatrixRTC /
+  LiveKit), driven host-side through the Rust SDK `widget` module; needs a
+  LAN homeserver + LiveKit SFU + `lk-jwt-service`. See "Voice — Push-to-Talk"
+  in `PLAN.md`.
+
+## Local Matrix stack (dev)
+
+Synapse + Element Web run as podman containers for browser testing.
+
+```bash
+podman start synapse        # homeserver http://localhost:8008 (server_name localhost)
+scripts/serve_element.sh start   # Element Web http://localhost:8085, defaults to the local Synapse
+scripts/serve_element.sh stop|restart|status|log
+```
+
+Synapse registration is open (no verification); users register via the app's
+sync page or Element. The shared room `#timing:localhost` is public, so any
+account on the server can join it from Element and exchange chat/timing
+messages with the app.
 
 ## Conventions
 

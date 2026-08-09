@@ -38,3 +38,4 @@ futures = "0.3"
 # `cargo build`/`cargo test` don't need a C compiler (matrix-sdk pulls rustls/aws-lc).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 matrix-sdk = { version = "0.18", default-features = false, features = ["js", "indexeddb"] }
+ruma = "0.16"

@@ -1,6 +1,8 @@
 mod event;
 mod input;
 mod page;
+mod services;
+mod timing_event;
 mod view;
 
 use event::{EventInfo, ScoreData};
@@ -16,6 +18,7 @@ pub enum Page {
     Results,
     Stage,
     Event,
+    Sync,
 }
 
 pub enum Msg {
@@ -25,6 +28,7 @@ pub enum Msg {
     StageMsg(page::stage::StageMsg),
     EventMsg(page::event::Msg),
     ResultMsg(page::results::Msg),
+    SyncMsg(page::sync::Msg),
 }
 
 #[derive(Clone, Copy)]
@@ -35,6 +39,7 @@ pub struct Model {
     pub stage_model: page::stage::StageModel,
     pub results_model: page::results::Model,
     pub event_model: page::event::Model,
+    pub sync_model: page::sync::SyncModel,
 }
 
 impl Model {
@@ -51,6 +56,7 @@ impl Model {
             stage_model: page::stage::init(),
             results_model,
             event_model: page::event::init(),
+            sync_model: page::sync::init(),
         }
     }
 }
@@ -67,6 +73,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::StageMsg(msg) => page::stage::update(model, msg),
         Msg::EventMsg(msg) => page::event::update(model, msg),
         Msg::ResultMsg(msg) => page::results::update(model, msg),
+        Msg::SyncMsg(msg) => page::sync::update(model, msg),
         Msg::SetEvent(name) => {
             let scores = event::load_times(&name);
             let event = event::load_event(&name);
@@ -115,6 +122,7 @@ fn view_content(model: Model) -> View {
                 Page::Stage => page::stage::view(model),
                 Page::Results => page::results::view(model),
                 Page::Event => page::event::view(model),
+                Page::Sync => page::sync::view(model),
             })
         }
     }
@@ -129,6 +137,7 @@ fn view_navbar(model: Model) -> View {
         (Page::Results, "fa fa-trophy"),
         (Page::Help, "fa fa-question"),
         (Page::KhanaRules, "fa fa-book"),
+        (Page::Sync, "fa fa-comments"),
     ] {
         let active = model.page.get() == page;
         let class = format!(
@@ -170,6 +179,8 @@ fn main() {
     render(move || {
         let model = Model::init();
         setup_effects(model);
+        #[cfg(target_arch = "wasm32")]
+        page::sync::resume_on_load(model);
         app(model)
     });
 }

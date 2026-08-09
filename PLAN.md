@@ -210,6 +210,41 @@ Compact text, broadcast as `m.room.message` (custom `msgtype`):
 
 Or a structured JSON body if text proves lossy.
 
+### Voice — Push-to-Talk (current direction)
+
+Live voice chat via **Element Call as an embedded widget** (MatrixRTC/LiveKit).
+The Rust `matrix-sdk` has no native VoIP on WASM (WebRTC is native-only), so the
+widget is the supported path. The Rust SDK's `widget` module (feature
+`experimental-widgets`), already used by Element X, hosts it:
+`WidgetSettings::new_virtual_element_call_widget(...)` builds the URL and
+`run_client_widget_api(...)` runs the host side.
+
+**PTT button lives in the Khanatime app**, not inside the widget:
+
+- Embed Element Call in a hidden/headless iframe, voice-only
+  (`intent=join_existing_voice`, `showControls=false`, `header=none`), joined
+  muted (`defaultAudioMuted` / `skipLobby` intent default).
+- Big **hold-to-talk** button (and a keyboard shortcut, e.g. spacebar) in the
+  Khanatime UI. On press → send widget action `io.element.device_mute` with
+  `audio_enabled: true`; on release → `audio_enabled: false`. Element Call's
+  `MuteStates` handles the action and replies with the resulting state.
+- The widget's own in-call controls are hidden; our button is the only PTT.
+
+**Targets:**
+- **Group** — the shared event `timing` room; everyone hears the transmission.
+- **1:1 with the COC** — a second widget instance pointed at a DM room with the
+  Clerk of Course (`intent=join_existing_dm_voice` / `start_call_dm_voice`),
+  with its own PTT button (e.g. hold + "COC" target toggle).
+
+**Infrastructure (voice is inherently live — not store-and-forward):**
+- Homeserver (existing Synapse) for signalling + room history.
+- A deployed Element Call build (self-hosted *embedded package*).
+- A LiveKit SFU + MatrixRTC auth service (`lk-jwt-service`), discovered via
+  `.well-known/matrix/client` → `org.matrix.msc4143.rtc_foci`.
+- Realistic deployment: one laptop at basecamp running Synapse + LiveKit +
+  lk-jwt-service on the event LAN. Voice only works while connected; checkpoints
+  without connectivity fall back to room-history sync (no voice).
+
 ---
 
 ## Screens
@@ -327,6 +362,9 @@ Milestone order; check items off as done.
 - [ ] Conflict handling: outlier discard, duplicate suppression, official
   precedence
 - [ ] Broadcast results / publish to room
+- [ ] Voice PTT: embed Element Call voice widget + host via `matrix-sdk` widget
+  module; hold-to-talk button (DeviceMute actions) for group and 1:1-COC;
+  bundle/configure LiveKit SFU + lk-jwt-service for the event LAN
 
 ### M4 — Event + results polish
 - [ ] Event editor UI (entries, classes, stages, best X of Y)

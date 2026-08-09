@@ -1556,6 +1556,7 @@ dependencies = [
  "lazy-regex",
  "matrix-sdk",
  "pulldown-cmark",
+ "ruma",
  "serde",
  "serde_json",
  "sycamore",
