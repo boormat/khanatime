@@ -2,18 +2,20 @@
 # Element Web (browser Matrix client) for the local Synapse.
 #
 # Serves Element at http://localhost:8085, defaulting to the Khanatime
-# homeserver (http://localhost:8008, see element-config.json). Requires the
-# `synapse` container from AGENTS.md to be running.
+# homeserver (http://localhost:8008, see element-config.json). `start` also
+# boots the local Synapse matrix homeserver (`synapse` container).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/element-config.json"
 NAME="element-web"
+SYNAPSE="synapse"
 PORT=8085
 IMAGE="docker.io/vectorim/element-web:latest"
 
 start() {
+    start_synapse
     if ! podman image exists "$IMAGE" 2>/dev/null; then
         echo "Pulling $IMAGE (first run, may take a minute)..."
         podman pull "$IMAGE"
@@ -29,6 +31,15 @@ start() {
             "$IMAGE"
     fi
     echo "Element Web: http://localhost:$PORT (homeserver http://localhost:8008)"
+}
+
+start_synapse() {
+    if ! podman container exists "$SYNAPSE" 2>/dev/null; then
+        echo "No '$SYNAPSE' container — create the Synapse homeserver first (see AGENTS.md)." >&2
+        return 1
+    fi
+    podman start "$SYNAPSE"
+    echo "Synapse homeserver: http://localhost:8008"
 }
 
 stop() {

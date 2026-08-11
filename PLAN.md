@@ -9,6 +9,8 @@
 - `docs/KhanacrossRules.md` — timing, scoring & results rules (regs reference)
 - `docs/KhanacrossStopwatch.md` — start/finish separate-record design
 - `docs/research/` — comms research (Matrix, BLE, Berty, mesh, crypto)
+- `docs/plan/timing-unknown.md` — UNKNOWN entry flow + resolver (timing screens)
+- `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format
 - `AGENTS.md` — build/test commands and code layout
 
 ---
