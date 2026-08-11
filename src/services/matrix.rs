@@ -58,10 +58,14 @@ const DEVICE_NAME: &str = "khanatime-wasm";
 pub struct IncomingMessage {
     #[allow(dead_code)] // wire metadata, surfaced if multi-room support lands
     pub room: String,
+    /// Matrix event id, used to dedupe feed entries across live sync + backfill.
+    pub mid: String,
     pub sender: String,
     pub body: String,
     pub ts: i64,
     pub timing: Option<TimingEvent>,
+    /// Full raw `m.room.message` event JSON, for pretty-printing on demand.
+    pub raw: String,
 }
 
 // Single-writer module state: the logged-in client + its joined room. Kept out
@@ -674,7 +678,6 @@ pub async fn backfill_room_history(
     room: &Room,
     on_event: &dyn Fn(IncomingMessage),
 ) -> Result<usize, String> {
-    const MAX: usize = 2000;
     let mut from: Option<String> = None;
     let mut messages: Vec<IncomingMessage> = Vec::new();
     loop {
@@ -692,7 +695,7 @@ pub async fn backfill_room_history(
             }
         }
         match response.end {
-            Some(end) if !end.is_empty() && messages.len() < MAX => from = Some(end),
+            Some(end) if !end.is_empty() => from = Some(end),
             _ => break,
         }
     }
@@ -761,11 +764,18 @@ fn parse_message_json(room_id: &ruma::RoomId, v: &serde_json::Value) -> Option<I
         .get("origin_server_ts")
         .and_then(|t| t.as_i64())
         .unwrap_or(0);
+    let mid = v
+        .get("event_id")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     Some(IncomingMessage {
         room: room_id.to_string(),
+        mid,
         sender,
         body,
         ts,
         timing: TimingEvent::from_matrix_content(content),
+        raw: v.to_string(),
     })
 }

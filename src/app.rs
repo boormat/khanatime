@@ -155,6 +155,8 @@ pub fn update(model: Model, msg: Msg) {
             model.app.runs.set(runs);
             model.app.event.set(event.clone());
             crate::event::session_set_event(&storage);
+            model.screens.chat.feed.set(Vec::new());
+            model.screens.chat.expanded.set(Default::default());
             page::event::update(model, page::event::Msg::LoadDetails);
             page::results::update(model, page::results::Msg::Reload);
             crate::sync::join_current_event(model);

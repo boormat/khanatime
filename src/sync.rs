@@ -179,23 +179,23 @@ fn logout(model: Model) {
         model.app.identity.set(String::new());
         model.app.conn.set(ConnState::Idle);
         model.app.room.set(None);
+        model.screens.chat.feed.set(Vec::new());
+        model
+            .screens
+            .chat
+            .expanded
+            .set(std::collections::HashSet::new());
         sm.busy.set(false);
     });
 }
 
 // ----- merge sink -----
 
-/// Live sink: pushes every room message to the Chat feed, then merges state.
+/// Sink: pushes every room message to the Chat feed (live + backfill — the
+/// room is the transaction log), then merges state.
 #[cfg(target_arch = "wasm32")]
 fn sink_for(model: Model) -> Rc<dyn Fn(crate::services::matrix::IncomingMessage)> {
-    Rc::new(move |msg| handle_incoming(model, msg, false))
-}
-
-/// Backfill sink: merges state only (no feed push — history replay must not
-/// flood the Chat page).
-#[cfg(target_arch = "wasm32")]
-fn merge_sink_for(model: Model) -> Rc<dyn Fn(crate::services::matrix::IncomingMessage)> {
-    Rc::new(move |msg| handle_incoming(model, msg, true))
+    Rc::new(move |msg| handle_incoming(model, msg))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -207,7 +207,7 @@ fn spawn_backfill(model: Model) {
         ) else {
             return;
         };
-        let sink = merge_sink_for(model);
+        let sink = sink_for(model);
         if let Err(e) = crate::services::matrix::backfill_room_history(&client, &room, &*sink).await
         {
             khanatime::log!("matrix backfill error: {e}");
@@ -215,23 +215,24 @@ fn spawn_backfill(model: Model) {
     });
 }
 
-/// Merge an incoming room message into local state.  `replay` is true for the
-/// history backfill, which only merges (oldest→newest, last-writer-wins) and
-/// skips the live Chat feed.
+/// Merge an incoming room message into local state, pushing it to the Chat
+/// feed (deduped by Matrix event id) so the log shows the full room history.
 #[cfg(target_arch = "wasm32")]
-fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage, replay: bool) {
-    if !replay {
-        let feed = model.screens.chat.feed;
-        let m = msg.clone();
-        feed.update(|v| {
+fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) {
+    let feed = model.screens.chat.feed;
+    let m = msg.clone();
+    feed.update(|v| {
+        if !v.iter().any(|e| e.mid == m.mid) {
             v.push(crate::page::chat::FeedEntry {
+                mid: m.mid,
                 ts: m.ts,
                 sender: m.sender,
                 body: m.body,
                 timing: m.timing,
+                raw: m.raw,
             });
-        });
-    }
+        }
+    });
     // Scoped by room: the app only ever joins the selected event's timing room,
     // and the room id check drops stragglers from a previous event.
     let Some(room) = crate::services::matrix::room() else {
