@@ -20,10 +20,10 @@ pub enum Screen {
     Start,
     Finish,
     Event,
-    Sync,
+    Chat,
 }
 
-/// Connection state shared across screens (set by the Sync screen / resume).
+/// Connection state shared across screens (set by the Home page / resume).
 #[derive(Clone, PartialEq)]
 pub enum ConnState {
     Idle,
@@ -51,12 +51,13 @@ pub struct AppState {
 /// preserves inputs, feeds, and connection details.
 #[derive(Clone, Copy)]
 pub struct Screens {
+    pub home: page::home::Model,
     pub setup: page::event::Model,
     pub stage: page::stage::StageModel,
     pub start: page::start::Model,
     pub finish: page::finish::Model,
+    pub chat: page::chat::Model,
     pub results: page::results::Model,
-    pub sync: page::sync::SyncModel,
 }
 
 #[derive(Clone, Copy)]
@@ -70,12 +71,12 @@ pub enum Msg {
     Show(Screen),
     SetEvent(String), // event id to load
     Reload,           // event or score data changed (in storage)
+    Conn(crate::sync::Msg),
     StageMsg(page::stage::StageMsg),
     StartMsg(page::start::Msg),
     FinishMsg(page::finish::Msg),
     EventMsg(page::event::Msg),
     ResultMsg(page::results::Msg),
-    SyncMsg(page::sync::Msg),
 }
 
 impl Model {
@@ -114,12 +115,13 @@ impl Model {
                 room: create_signal(None),
             },
             screens: Screens {
+                home: page::home::init(),
                 setup: page::event::init(),
                 stage: page::stage::init(),
                 start: page::start::init(),
                 finish: page::finish::init(),
+                chat: page::chat::init(),
                 results,
-                sync: page::sync::init(),
             },
         }
     }
@@ -151,7 +153,7 @@ pub fn update(model: Model, msg: Msg) {
             crate::event::session_set_event(&storage);
             page::event::update(model, page::event::Msg::LoadDetails);
             page::results::update(model, page::results::Msg::Reload);
-            page::sync::join_current_event(model);
+            crate::sync::join_current_event(model);
         }
 
         Msg::Reload => {
@@ -166,7 +168,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::FinishMsg(msg) => page::finish::update(model, msg),
         Msg::EventMsg(msg) => page::event::update(model, msg),
         Msg::ResultMsg(msg) => page::results::update(model, msg),
-        Msg::SyncMsg(msg) => page::sync::update(model, msg),
+        Msg::Conn(msg) => crate::sync::update(model, msg),
     }
 }
 
@@ -201,7 +203,7 @@ fn view_content(model: Model) -> View {
         Screen::Finish,
         Screen::Stage,
         Screen::Results,
-        Screen::Sync,
+        Screen::Chat,
     ];
     let effective = if needs_event.contains(&screen) && model.app.event.with(|e| e.is_null()) {
         Screen::Home
@@ -219,7 +221,7 @@ fn view_content(model: Model) -> View {
                 Screen::Finish => page::finish::view(model),
                 Screen::Results => page::results::view(model),
                 Screen::Event => page::event::view(model),
-                Screen::Sync => page::sync::view(model),
+                Screen::Chat => page::chat::view(model),
             })
         }
     }
@@ -234,7 +236,7 @@ fn view_navbar(model: Model) -> View {
         Screen::Finish,
         Screen::Stage,
         Screen::Results,
-        Screen::Sync,
+        Screen::Chat,
     ];
     let mut brand: Vec<View> = vec![];
     for (screen, icon) in [
@@ -244,9 +246,9 @@ fn view_navbar(model: Model) -> View {
         (Screen::Finish, "fa fa-flag-checkered"),
         (Screen::Stage, "fa fa-stopwatch-20"),
         (Screen::Results, "fa fa-trophy"),
+        (Screen::Chat, "fa fa-comments"),
         (Screen::Help, "fa fa-question"),
         (Screen::KhanaRules, "fa fa-book"),
-        (Screen::Sync, "fa fa-comments"),
     ] {
         let active = model.screen.get() == screen;
         let disabled = !has_event && needs_event.contains(&screen);

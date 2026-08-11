@@ -6,12 +6,31 @@ use crate::app::ConnState;
 use crate::event::{
     Entry, EntryStatus, EventInfo, KTime, RunRecord, ScoreData, ROLE_COMPETITOR, RUN_FINISH,
 };
-use crate::Model;
 
 // Home / dashboard: sign-in, event picker, quick actions and a live summary of
 // event status.  With no event selected it shows just the picker / sign-in bits.
 
-pub fn view(model: Model) -> View {
+#[derive(Clone, Copy)]
+pub struct Model {
+    pub homeserver: Signal<String>,
+    pub username: Signal<String>,
+    pub password: Signal<String>,
+    pub busy: Signal<bool>,
+    /// Event-selector list open/closed on the home page.
+    pub show_events: Signal<bool>,
+}
+
+pub fn init() -> Model {
+    Model {
+        homeserver: create_signal("http://localhost:8008".to_string()),
+        username: create_signal(String::new()),
+        password: create_signal(String::new()),
+        busy: create_signal(false),
+        show_events: create_signal(false),
+    }
+}
+
+pub fn view(model: crate::Model) -> View {
     view! {
         (move || {
             if matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_)) {
@@ -34,7 +53,7 @@ pub fn view(model: Model) -> View {
     }
 }
 
-fn view_dashboard(model: Model) -> View {
+fn view_dashboard(model: crate::Model) -> View {
     view! {
         section(class="hero is-small") {
             div(class="hero-body") {
@@ -50,7 +69,7 @@ fn view_dashboard(model: Model) -> View {
     }
 }
 
-fn view_event_card(model: Model) -> View {
+fn view_event_card(model: crate::Model) -> View {
     let (id, name, status) = model
         .app
         .event
@@ -80,7 +99,7 @@ fn view_event_card(model: Model) -> View {
                     div(class="level-item") {
                         button(
                             class="button is-small is-link is-outlined",
-                            on:click=move |_| model.screens.sync.show_events.set(true),
+                            on:click=move |_| model.screens.home.show_events.set(true),
                         ) {
                             "Change event"
                         }
@@ -97,7 +116,7 @@ fn view_event_card(model: Model) -> View {
     }
 }
 
-fn view_account(model: Model) -> View {
+fn view_account(model: crate::Model) -> View {
     let user = match model.app.conn.get_clone() {
         ConnState::LoggedIn(u) => u,
         _ => String::new(),
@@ -116,7 +135,7 @@ fn view_account(model: Model) -> View {
                         button(
                             class="button is-small is-light",
                             on:click=move |_| {
-                                crate::update(model, crate::Msg::SyncMsg(crate::page::sync::Msg::Logout))
+                                crate::update(model, crate::Msg::Conn(crate::sync::Msg::Logout))
                             },
                         ) {
                             "Logout"
@@ -128,7 +147,7 @@ fn view_account(model: Model) -> View {
     }
 }
 
-fn view_actions(model: Model) -> View {
+fn view_actions(model: crate::Model) -> View {
     let has_event = !model.app.event.with(|e| e.is_null());
     let role = crate::event::local_role();
     let official = role != ROLE_COMPETITOR;
@@ -170,7 +189,7 @@ fn view_actions(model: Model) -> View {
     }
 }
 
-fn view_comms(model: Model) -> View {
+fn view_comms(model: crate::Model) -> View {
     let conn = model.app.conn.get_clone();
     let room = model.app.room.get_clone();
     let (color, text) = match conn {
@@ -285,7 +304,7 @@ fn stage_progress(
         .collect()
 }
 
-fn view_status_summary(model: Model) -> View {
+fn view_status_summary(model: crate::Model) -> View {
     let event = model.app.event.get_clone();
     if event.is_null() {
         return view! {};
@@ -368,7 +387,7 @@ fn view_status_summary(model: Model) -> View {
     }
 }
 
-fn view_connect(model: Model) -> View {
+fn view_connect(model: crate::Model) -> View {
     view! {
         div(class="box") {
             h2(class="title is-5") {
@@ -383,8 +402,8 @@ fn view_connect(model: Model) -> View {
     }
 }
 
-fn view_login_form(model: Model, state: ConnState) -> View {
-    let sm = model.screens.sync;
+fn view_login_form(model: crate::Model, state: ConnState) -> View {
+    let sm = model.screens.home;
     view! {
         div(class="field") {
             label(class="label") { "Homeserver" }
@@ -409,7 +428,7 @@ fn view_login_form(model: Model, state: ConnState) -> View {
                 button(
                     class="button is-link",
                     disabled=sm.busy.get(),
-                    on:click=move |_| crate::update(model, crate::Msg::SyncMsg(crate::page::sync::Msg::Connect)),
+                    on:click=move |_| crate::update(model, crate::Msg::Conn(crate::sync::Msg::Connect)),
                 ) {
                     (if sm.busy.get() { "Connecting..." } else { "Connect" })
                 }
@@ -429,8 +448,8 @@ fn status_html(state: ConnState) -> View {
     }
 }
 
-fn view_events_box(model: Model) -> View {
-    let sm = model.screens.sync;
+fn view_events_box(model: crate::Model) -> View {
+    let sm = model.screens.home;
     view! {
         div(class="box") {
             h2(class="title is-5") {
@@ -470,7 +489,7 @@ fn view_events_box(model: Model) -> View {
     }
 }
 
-fn view_events(model: Model) -> View {
+fn view_events(model: crate::Model) -> View {
     let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
     ids.sort();
     if ids.is_empty() {

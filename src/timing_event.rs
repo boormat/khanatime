@@ -29,6 +29,12 @@ impl TimingEvent {
     /// Content key that marks a message as a timing payload.
     pub const CONTENT_KEY: &'static str = "khanatime";
 
+    /// Body prefix of an event-setup message (carries a serialized [crate::event::EventInfo]).
+    pub const SETUP_PREFIX: &'static str = "khanatime_setup:";
+
+    /// Body prefix of a results-snapshot message (informational / audit only).
+    pub const RESULT_PREFIX: &'static str = "khanatime_result:";
+
     pub fn new(r#type: &str, event_id: &str, test: u8, car: &str, run: u8) -> Self {
         Self {
             r#type: r#type.to_string(),

@@ -113,11 +113,11 @@ Edge cases:
 - Reassigning an unknown whose time the chief already accepted (Stage page)
   should leave the accepted score alone; the note stays as audit trail.
 
-## Sync / merge (`src/page/sync.rs`)
+## Sync / merge (`src/sync.rs`)
 
 - Mirror `note` through the incoming-run construction in the sync sink.
-- Guard the finish merge: skip `upsert_time`/`upsert_ktime` when
-  `te.car == UNKNOWN_CAR` (mirror the no-score rule from the finish screen).
+- Guard the finish merge: skip `upsert_ktime` when `te.car == UNKNOWN_CAR`
+  (mirror the no-score rule from the finish screen).
 - Unknown events flow as ordinary `start`/`finish` messages — no extra room
   type, no special handler.
 

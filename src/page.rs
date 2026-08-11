@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod event;
 pub mod finish;
 pub mod help;
@@ -8,7 +9,6 @@ pub mod penalty;
 pub mod results;
 pub mod stage;
 pub mod start;
-pub mod sync;
 
 // ---------------------------------------------------------------------------
 // Shared helpers

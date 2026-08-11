@@ -10,7 +10,7 @@
 - `docs/KhanacrossStopwatch.md` — start/finish separate-record design
 - `docs/research/` — comms research (Matrix, BLE, Berty, mesh, crypto)
 - `docs/plan/timing-unknown.md` — UNKNOWN entry flow + resolver (timing screens)
-- `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format
+- `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format (deferred: just in time for the first official release)
 - `AGENTS.md` — build/test commands and code layout
 
 ---
@@ -348,7 +348,6 @@ Milestone order; check items off as done.
 - [ ] Categories many-to-many + auto-Outright; entry ↔ category editor
 - [ ] Officials + role (official | timekeeper | competitor)
 - [ ] Best X of Y + aggregate + per-category ranking in `results.rs`
-- [ ] Serde migration/versioning for localStorage payloads
 
 ### M2 — Stage timer UX
 - [ ] Start/finish/both modes with run-number auto-increment
@@ -377,6 +376,8 @@ Milestone order; check items off as done.
 - [ ] Print stylesheet for results (navbar already `is-hidden-print`)
 - [ ] Mobile layout, offline manifest
 - [ ] Panic/reporting polish; release build + deploy flow
+- [ ] Record/message versioning (localStorage `Envelope<T>` + `TimingEvent.version`)
+  — just in time for the first official release (`docs/plan/record-versioning.md`)
 
 ---
 

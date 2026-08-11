@@ -1,6 +1,8 @@
 # Record / message versioning
 
-> Status: planned
+> Status: deferred — implement just in time for the first official release.
+> Pre-release, clients and room history are disposable (see AGENTS.md, no
+> back-compat), so versioning buys nothing until real data must survive.
 >
 > Versioning for the two persistence layers: localStorage serde payloads
 > (`event:`, `times:`, `runs:`) and the Matrix `TimingEvent` wire format

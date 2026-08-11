@@ -46,12 +46,14 @@ https://boormat.github.io/khanatime/ — run it from the Actions tab.
 src/
 ├── main.rs             # Page enum, Model, Msg, update(), navbar, render
 ├── lib.rs              # log! macro + web_log (console.log)
+├── sync.rs             # Matrix connect/logout/resume/join + merge sink (wasm)
 ├── view.rs             # small view helpers
 ├── event.rs            # EventInfo, Entry, ScoreData, KTime, KTimeTime
 │                       # + localStorage load/save (event + stage times)
 ├── input.rs            # keyboard/input helpers
 └── page/
-    ├── home.rs         # menu / event picker
+    ├── home.rs         # sign-in + event picker
+    ├── chat.rs         # read-only room message view
     ├── event.rs        # event setup (entries, classes, stages)
     ├── stage.rs        # TIMER — command-line stopwatch entry
     │                   #   parse_command()/parse_car(), CmdParse, TimeCmd
@@ -73,6 +75,11 @@ src/
 - Single shared Matrix room per event named "timing"; room history replays as
   store-and-forward offline sync. See `docs/research/MessagingSpike.md` and the
   Comms section of `PLAN.md`.
+- **No back-compat.** Pre-release: every client's localStorage and all room
+  history is disposable. Any device may start empty and any room may be
+  wiped or re-created. Don't build versioning, migration, or merge/ordering
+  protection around existing data surviving; plain replay-in-order +
+  last-writer-wins is fine.
 - Voice = Push-to-Talk via an embedded Element Call voice widget (MatrixRTC /
   LiveKit), driven host-side through the Rust SDK `widget` module; needs a
   LAN homeserver + LiveKit SFU + `lk-jwt-service`. See "Voice — Push-to-Talk"

@@ -22,6 +22,7 @@ use ruma::{
     api::{
         client::{
             account::register::{self, RegistrationKind},
+            message::get_message_events,
             room::{
                 create_room::{
                     self,
@@ -32,6 +33,7 @@ use ruma::{
             uiaa::{AuthData, AuthType, Dummy},
         },
         error::ErrorKind,
+        Direction,
     },
     events::{
         room::topic::RoomTopicEventContent, space::child::SpaceChildEventContent,
@@ -39,7 +41,7 @@ use ruma::{
     },
     room::RoomType,
     serde::Raw,
-    OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
+    uint, OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -471,6 +473,9 @@ pub async fn publish_event(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Give the timing room its setup manifest so fresh devices can adopt it.
+    let _ = send_setup(&timing, event).await;
+
     Ok(EventRooms {
         space,
         timing,
@@ -537,6 +542,69 @@ pub async fn send_timing(room: &Room, event: &TimingEvent) -> Result<(), String>
         .map_err(|e| e.to_string())
 }
 
+/// Broadcast the full event setup so fresh devices joining the timing room can
+/// adopt it (`khanatime_setup:` body prefix).  Merge is last-writer-wins.
+pub async fn send_setup(room: &Room, event: &crate::event::EventInfo) -> Result<(), String> {
+    let json = serde_json::to_string(event).map_err(|e| e.to_string())?;
+    let body = format!("{}{}", TimingEvent::SETUP_PREFIX, json);
+    send_chat(room, &body).await
+}
+
+/// Broadcast a results snapshot for the audit trail (`khanatime_result:` body
+/// prefix).  Informational only — every device computes results from the same
+/// merged data.
+pub async fn send_result(
+    room: &Room,
+    event: &crate::event::EventInfo,
+    scores: &[crate::event::ScoreData],
+) -> Result<(), String> {
+    let body = serde_json::json!({
+        "event_id": event.id,
+        "ts": js_sys::Date::now() as i64,
+        "scores": scores,
+    });
+    let body = format!("{}{}", TimingEvent::RESULT_PREFIX, body);
+    send_chat(room, &body).await
+}
+
+/// Replay the full room history oldest→newest into `on_event`, so a joining
+/// device merges every timing message stored on the server.  Idempotent: the
+/// merge sink dedupes runs and last-writer-wins scores/setup.
+pub async fn backfill_room_history(
+    client: &Client,
+    room: &Room,
+    on_event: &dyn Fn(IncomingMessage),
+) -> Result<usize, String> {
+    const MAX: usize = 2000;
+    let mut from: Option<String> = None;
+    let mut messages: Vec<IncomingMessage> = Vec::new();
+    loop {
+        let mut request =
+            get_message_events::v3::Request::new(room.room_id().to_owned(), Direction::Backward);
+        request.from = from;
+        request.limit = uint!(100);
+        let response = client.send(request).await.map_err(|e| e.to_string())?;
+        for raw in &response.chunk {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(raw.json().get()) else {
+                continue;
+            };
+            if let Some(msg) = parse_message_json(room.room_id(), &v) {
+                messages.push(msg);
+            }
+        }
+        match response.end {
+            Some(end) if !end.is_empty() && messages.len() < MAX => from = Some(end),
+            _ => break,
+        }
+    }
+    messages.reverse(); // server returned newest-first pages
+    let count = messages.len();
+    for msg in messages {
+        on_event(msg);
+    }
+    Ok(count)
+}
+
 // ----- receive -----
 
 /// Spawn the long-polling sync loop, pushing incoming messages into [sink].
@@ -567,6 +635,12 @@ fn parse_timeline_event(room_id: &OwnedRoomId, tev: &TimelineEvent) -> Option<In
         _ => return None,
     };
     let v: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
+    parse_message_json(room_id, &v)
+}
+
+/// Parse any `m.room.message` JSON into an [IncomingMessage] (shared by the
+/// sync loop and history backfill).
+fn parse_message_json(room_id: &ruma::RoomId, v: &serde_json::Value) -> Option<IncomingMessage> {
     if v["type"].as_str() != Some(TimingEvent::MESSAGE_TYPE) {
         return None;
     }

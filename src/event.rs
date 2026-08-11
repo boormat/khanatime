@@ -1037,25 +1037,6 @@ impl Invite {
 /// Insert or overwrite a time for a stage+car in deciseconds.
 /// (Wasm-only callers: the sync sink. Kept here for the native build.)
 #[allow(dead_code)]
-pub fn upsert_time(scores: &mut Vec<ScoreData>, stage: u8, car: &str, time_ds: u16) {
-    let kt = KTime::Time(KTimeTime {
-        time_ds,
-        flags: 0,
-        garage: false,
-    });
-    if let Some(s) = scores.iter_mut().find(|s| s.stage == stage && s.car == car) {
-        s.time = kt;
-    } else {
-        scores.push(ScoreData {
-            stage,
-            car: car.to_string(),
-            time: kt,
-        });
-    }
-}
-
-/// Insert or overwrite a full [KTime] (time+penalties or DNF/WD/FTS) for a
-/// stage+car.  Last run wins.
 pub fn upsert_ktime(scores: &mut Vec<ScoreData>, stage: u8, car: &str, time: KTime) {
     if let Some(s) = scores.iter_mut().find(|s| s.stage == stage && s.car == car) {
         s.time = time;
@@ -1070,7 +1051,7 @@ pub fn upsert_ktime(scores: &mut Vec<ScoreData>, stage: u8, car: &str, time: KTi
 
 /// Apply an incoming event setup (from the room manifest).  Last-writer-wins./// Accepts when local has no id yet (fresh device) or ids match.
 /// Returns true if the local event changed.
-#[allow(dead_code)] // wired to room replay once history backfill lands
+#[allow(dead_code)] // wasm-only: used by the sync merge sink
 pub fn merge_setup(local: &mut EventInfo, incoming: &EventInfo) -> bool {
     if incoming.id.is_empty() || (!local.id.is_empty() && local.id != incoming.id) {
         return false;
@@ -1293,7 +1274,7 @@ pub fn elapsed_ds(start_ts: i64, finish_ts: i64) -> u16 {
 }
 
 /// The [KTime] a finish record represents (for the scores / results model).
-#[allow(dead_code)] // used by tests; the results path reads scores directly
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
 pub fn finish_to_ktime(r: &RunRecord) -> KTime {
     match r.status.as_deref() {
         Some("dnf") => KTime::DNF,
@@ -1306,6 +1287,29 @@ pub fn finish_to_ktime(r: &RunRecord) -> KTime {
             garage: r.status.as_deref() == Some("garage"),
         }),
     }
+}
+
+/// The [RunRecord] a wire [TimingEvent] represents (used by the sync merge).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
+pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
+    RunRecord {
+        r#type: te.r#type.clone(),
+        test: te.test,
+        car: te.car.clone(),
+        run: te.run,
+        ts: te.ts,
+        time_ds: te.time_ds,
+        status: te.status.clone(),
+        flags: te.flags,
+        official_id: te.official_id.clone(),
+    }
+}
+
+/// Decode an event-setup message body (`khanatime_setup:<json>`).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
+pub fn from_setup_body(body: &str) -> Option<EventInfo> {
+    let json = body.strip_prefix(crate::timing_event::TimingEvent::SETUP_PREFIX)?;
+    serde_json::from_str(json).ok()
 }
 
 pub fn session_event_name() -> String {
@@ -1408,25 +1412,6 @@ mod tests {
         assert!(inv
             .url("http://localhost:8080")
             .starts_with("http://localhost:8080?"));
-    }
-
-    #[test]
-    fn upsert_time_adds_then_overwrites() {
-        let mut scores = vec![];
-        upsert_time(&mut scores, 1, "17", 1234);
-        assert_eq!(scores.len(), 1);
-        upsert_time(&mut scores, 1, "17", 9999);
-        assert_eq!(scores.len(), 1);
-        assert_eq!(
-            scores[0].time,
-            KTime::Time(KTimeTime {
-                time_ds: 9999,
-                flags: 0,
-                garage: false
-            })
-        );
-        upsert_time(&mut scores, 2, "17", 100);
-        assert_eq!(scores.len(), 2);
     }
 
     #[test]
@@ -1553,6 +1538,52 @@ mod tests {
                 garage: true
             })
         );
+    }
+
+    #[test]
+    fn record_from_timing_roundtrips() {
+        use crate::timing_event::TimingEvent;
+        let te = TimingEvent {
+            r#type: "finish".into(),
+            event_id: "ev".into(),
+            test: 2,
+            car: "17".into(),
+            run: 3,
+            ts: 42,
+            time_ds: Some(999),
+            status: Some("clean".into()),
+            flags: Some(1),
+            official_id: Some("u".into()),
+        };
+        let r = record_from_timing(&te);
+        assert_eq!(r.r#type, "finish");
+        assert_eq!(r.test, 2);
+        assert_eq!(r.car, "17");
+        assert_eq!(r.run, 3);
+        assert_eq!(r.ts, 42);
+        assert_eq!(r.time_ds, Some(999));
+        assert_eq!(r.status.as_deref(), Some("clean"));
+        assert_eq!(r.flags, Some(1));
+        assert_eq!(r.official_id.as_deref(), Some("u"));
+    }
+
+    #[test]
+    fn from_setup_body_decodes_event() {
+        let ev = EventInfo {
+            id: "kt-2026-x".into(),
+            name: "Demo".into(),
+            sponsoring_club: "NDC".into(),
+            ..Default::default()
+        };
+        let body = format!(
+            "{}{}",
+            crate::timing_event::TimingEvent::SETUP_PREFIX,
+            serde_json::to_string(&ev).unwrap()
+        );
+        let decoded = from_setup_body(&body).expect("setup body decodes");
+        assert_eq!(decoded.id, ev.id);
+        assert_eq!(decoded.name, ev.name);
+        assert!(from_setup_body("khanatime_result:{}").is_none());
     }
 
     #[test]

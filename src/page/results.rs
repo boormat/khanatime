@@ -10,6 +10,7 @@ use sycamore::prelude::*;
 pub enum Msg {
     Reload,
     ShowClass(String),
+    Publish,
 }
 
 #[derive(Clone, Copy)]
@@ -37,47 +38,65 @@ pub fn update(model: crate::Model, msg: Msg) {
             let class = model.screens.results.results.with(|r| r.class.clone());
             load_class(model, &class);
         }
+        Msg::Publish => {
+            #[cfg(target_arch = "wasm32")]
+            publish(model);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = model;
+        }
     }
+}
+
+/// Broadcast a results snapshot to the timing room (audit trail; each publish
+/// is a new message, older versions stay in history).
+#[cfg(target_arch = "wasm32")]
+fn publish(model: crate::Model) {
+    let Some(room) = crate::services::matrix::room() else {
+        return;
+    };
+    let event = model.app.event.get_clone();
+    let scores = model.app.scores.get_clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(e) = crate::services::matrix::send_result(&room, &event, &scores).await {
+            model.app.conn.set(crate::app::ConnState::Error(e));
+        }
+    });
 }
 
 pub fn view(model: crate::Model) -> View {
     view! {
+        (view_publish(model))
         (move || {
             let results = model.screens.results.results.with(|r| r.clone());
             view_results(model, &results)
         })
-        (view_live_feed(model))
     }
 }
 
-// Compact copy of the Matrix live feed, so officials & competitors see times
-// streaming in on the same screen as the standings.
-fn view_live_feed(model: crate::Model) -> View {
+fn view_publish(model: crate::Model) -> View {
+    let joined = model.app.room.with(|r| r.is_some());
     view! {
         div(class="box") {
-            h2(class="title is-5") {
-                "Live feed"
-                span(class="tag is-light is-pulled-right") { "Matrix" }
-            }
-            (move || {
-                let entries = model.screens.sync.feed.get_clone();
-                if entries.is_empty() {
-                    return view! {
-                        p(class="help") {
-                            "No messages yet. Connect and open an event to receive live times."
-                        }
-                    };
+            div(class="level") {
+                div(class="level-left") {
+                    div(class="level-item") {
+                        h2(class="title is-5") { "Results" }
+                    }
                 }
-                let views: Vec<View> = entries
-                    .iter()
-                    .rev()
-                    .map(|e| {
-                        let line = crate::page::sync::feed_line(e);
-                        view! { div { pre { (line) } } }
-                    })
-                    .collect();
-                views.into()
-            })
+                div(class="level-right") {
+                    div(class="level-item") {
+                        button(
+                            class=format!("button {}", if joined { "is-primary" } else { "is-light" }),
+                            disabled=!joined,
+                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Publish)),
+                        ) {
+                            span(class="icon") { i(class="fa fa-paper-plane") }
+                            span { "Publish results" }
+                        }
+                    }
+                }
+            }
+            p(class="help") { "Publishes a results snapshot to the timing room for the official record." }
         }
     }
 }

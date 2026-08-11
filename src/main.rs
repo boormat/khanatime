@@ -3,6 +3,7 @@ mod event;
 mod input;
 mod page;
 mod services;
+mod sync;
 mod timing_event;
 mod view;
 
@@ -39,7 +40,7 @@ fn main() {
         };
         app::show(model, start);
         #[cfg(target_arch = "wasm32")]
-        page::sync::resume_on_load(model);
+        sync::resume_on_load(model);
         app::view(model)
     });
 }
@@ -52,7 +53,7 @@ fn warm_start() -> bool {
         let session = crate::services::matrix::load_session().is_some();
         let event = crate::event::session_event_name();
         let has_event = !event.is_empty();
-        return session && has_event;
+        session && has_event
     }
     #[cfg(not(target_arch = "wasm32"))]
     false
