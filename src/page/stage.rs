@@ -19,6 +19,7 @@ use sycamore::prelude::*;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
     CmdInput(InputMsg),
+    Publish,
 }
 
 #[derive(Clone, Copy)]
@@ -26,16 +27,17 @@ pub struct StageModel {
     pub cmd: InputModel,
     pub preview: Signal<Result<CmdParse, CmdError>>,
     pub stage: Signal<u8>,
+    pub publish_status: Signal<Option<String>>,
 }
 
 // adds score from user entry in model
 fn add_score(model: Model) {
     // hmmm probably should cope with error to avoid user funnies?
-    let s = model.stage_model.preview.with(|p| match p {
-        Ok(CmdParse::Time(cmd)) => to_score(model.stage_model.stage.get(), cmd),
+    let s = model.screens.stage.preview.with(|p| match p {
+        Ok(CmdParse::Time(cmd)) => to_score(model.screens.stage.stage.get(), cmd),
         _ => panic!("add_score called without a parsed time command"),
     });
-    model.scores.update(|v| v.push(s));
+    model.app.scores.update(|v| v.push(s));
 }
 
 fn to_score(stage: u8, cmd: &TimeCmd) -> ScoreData {
@@ -51,13 +53,45 @@ pub fn init() -> StageModel {
         cmd: crate::input::init(),
         stage: create_signal(1),
         preview: create_signal(Err(CmdError::Nothing)),
+        publish_status: create_signal(None),
     }
 }
 
 fn save_times(model: Model) {
-    let name = model.event.with(|e| e.name.clone());
-    let scores = model.scores.get_clone();
-    crate::event::save_times(&name, &scores);
+    let key = model.app.event.with(crate::event::storage_key);
+    let scores = model.app.scores.get_clone();
+    crate::event::save_times(&key, &scores);
+}
+
+/// Send the entered time to the current event's Matrix timing room (web build
+/// only; no-op if not connected or no event id).
+fn broadcast_time(model: Model, car: &str, stage: u8, time: &KTime) {
+    #[cfg(target_arch = "wasm32")]
+    broadcast_time_wasm(model, car, stage, time);
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = (model, car, stage, time);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn broadcast_time_wasm(model: Model, car: &str, stage: u8, time: &KTime) {
+    let Some(room) = crate::services::matrix::room() else {
+        return;
+    };
+    let event_id = model.app.event.with(|e| e.id.clone());
+    if event_id.is_empty() {
+        return;
+    }
+    let run = model.app.scores.with(|s| {
+        s.iter()
+            .filter(|x| x.stage == stage && x.car == car)
+            .count() as u8
+            + 1
+    });
+    let mut te = crate::timing_event::TimingEvent::finish(&event_id, stage, car, run, time);
+    te.official_id = Some(model.app.identity.get_clone());
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = crate::services::matrix::send_timing(&room, &te).await;
+    });
 }
 
 pub fn update(model: Model, msg: StageMsg) {
@@ -67,19 +101,20 @@ pub fn update(model: Model, msg: StageMsg) {
         }
 
         StageMsg::CmdInput(InputMsg::DoThing) => {
-            let input = model.stage_model.cmd.input.get_clone();
+            let input = model.screens.stage.cmd.input.get_clone();
             let cmd = parse_command(&input);
             match cmd {
-                Ok(CmdParse::Time(_tc)) => {
+                Ok(CmdParse::Time(tc)) => {
                     khanatime::log!("time");
                     add_score(model);
                     save_times(model);
+                    broadcast_time(model, &tc.car, model.screens.stage.stage.get(), &tc.code);
                     crate::update(model, crate::Msg::Reload);
 
                     clear_cmd(model);
                 }
                 Ok(CmdParse::Stage { number }) => {
-                    model.stage_model.stage.set(number);
+                    model.screens.stage.stage.set(number);
                     clear_cmd(model);
                 }
                 Ok(CmdParse::Event { event }) => {
@@ -90,12 +125,60 @@ pub fn update(model: Model, msg: StageMsg) {
                 Err(_) => khanatime::log!("parse nope"),
             };
         }
+
+        StageMsg::Publish => publish(model),
     }
 }
 
+/// Publish the current event to a Matrix space + timing room.
+fn publish(model: Model) {
+    #[cfg(target_arch = "wasm32")]
+    publish_wasm(model);
+    #[cfg(not(target_arch = "wasm32"))]
+    model.screens.stage.publish_status.set(Some(
+        "Matrix publishing is only available in the web build".to_string(),
+    ));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn publish_wasm(model: Model) {
+    use crate::event::EventStatus;
+
+    let sm = model.screens.stage;
+    if crate::services::matrix::client().is_none() {
+        sm.publish_status
+            .set(Some("Log in on the Home page first".to_string()));
+        return;
+    }
+    let event = model.app.event.get_clone();
+    if event.id.is_empty() {
+        sm.publish_status
+            .set(Some("Save the event first (needs a name)".to_string()));
+        return;
+    }
+    sm.publish_status.set(Some("Publishing...".to_string()));
+    wasm_bindgen_futures::spawn_local(async move {
+        let res = crate::services::matrix::publish_current_event(&event).await;
+        match res {
+            Ok(rooms) => {
+                let mut event = event;
+                event.space_id = Some(rooms.space.room_id().to_string());
+                event.space_alias = Some(rooms.space_alias.to_string());
+                event.timing_id = Some(rooms.timing.room_id().to_string());
+                event.timing_alias = Some(rooms.timing_alias.to_string());
+                event.status = EventStatus::Published;
+                crate::event::save_event(&event);
+                model.app.event.set(event);
+                sm.publish_status.set(Some("Published".to_string()));
+            }
+            Err(e) => sm.publish_status.set(Some(format!("Publish failed: {e}"))),
+        }
+    });
+}
+
 fn clear_cmd(model: Model) {
-    model.stage_model.preview.set(Err(CmdError::Nothing)); // hmm rubish OK
-    input_clear(model.stage_model.cmd);
+    model.screens.stage.preview.set(Err(CmdError::Nothing)); // hmm rubish OK
+    input_clear(model.screens.stage.cmd);
 }
 
 pub fn view(model: Model) -> View {
@@ -105,14 +188,43 @@ pub fn view(model: Model) -> View {
                 (move || {
                     format!(
                         "Event: {} Stage:{}",
-                        model.event.with(|e| e.name.clone()),
-                        model.stage_model.stage.get()
+                        model.app.event.with(|e| e.name.clone()),
+                        model.screens.stage.stage.get()
                     )
                 })
             }
             (move || view_list(model))
             (move || view_preview(model))
             (input_box_wrap(model))
+            (view_publish(model))
+        }
+    }
+}
+
+fn view_publish(model: Model) -> View {
+    let sm = model.screens.stage;
+    view! {
+        div(class="box") {
+            h2(class="title is-5") { "Publish" }
+            div {
+                (move || {
+                    let status = model.app.event.with(|e| e.status.to_string());
+                    let space = model.app.event.with(|e| e.space_alias.clone());
+                    match space {
+                        Some(alias) => view! { p(class="help is-success") { ("Published at ") (alias) } },
+                        None => view! { p(class="help") { ("Status: ") (status) } },
+                    }
+                })
+            }
+            div {
+                (move || match sm.publish_status.get_clone() {
+                    Some(s) => view! { p(class="help") { (s) } },
+                    None => view! { p(class="help") { "Not published yet." } },
+                })
+            }
+            button(class="button is-primary", on:click=move |_| update(model, StageMsg::Publish)) {
+                "Publish to Matrix"
+            }
         }
     }
 }
@@ -121,7 +233,7 @@ fn view_preview(model: Model) -> View {
     view! {
         div {
             (move || {
-                model.stage_model.preview.with(|p| match p {
+                model.screens.stage.preview.with(|p| match p {
                     Ok(CmdParse::Time(tc)) => {
                         let msg = format!("Confirm time {:?}?", tc);
                         view! { div { (msg) } }
@@ -147,7 +259,7 @@ fn view_preview(model: Model) -> View {
 
 fn view_list(model: Model) -> View {
     let mut v = vec![view_time_header()];
-    model.scores.with(|scores| {
+    model.app.scores.with(|scores| {
         for a in scores.iter() {
             v.push(view_time(a));
         }
@@ -185,7 +297,7 @@ fn input_box_wrap(model: Model) -> View {
         div(class="pannel-block") {
             p(class="control has-icons-left") {
                 (input_box(
-                    model.stage_model.cmd,
+                    model.screens.stage.cmd,
                     "enter times. stage to change stage",
                     dispatch,
                 ))

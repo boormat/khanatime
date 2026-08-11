@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::event::*;
 use crate::view as show;
 use sycamore::prelude::*;
@@ -11,49 +9,33 @@ use sycamore::prelude::*;
 
 pub enum Msg {
     Reload,
-    SortStage,
-    SortEvent,
-    SortDriver,
     ShowClass(String),
 }
 
 #[derive(Clone, Copy)]
 pub struct Model {
-    pub events: Signal<HashSet<String>>, // names of known/stored events (local)
-    pub results: Signal<Option<ResultView>>,
+    pub results: Signal<ResultView>,
 }
 
 pub fn init(event: &EventInfo, scores: &[ScoreData]) -> Model {
-    let events = create_signal(crate::event::list_events());
-    let class = event.classes[0].clone();
-    let results = create_signal(Some(create_result_view(event, scores, &class)));
-    Model { events, results }
+    let class = event.classes.first().cloned().unwrap_or_default();
+    let results = create_signal(create_result_view(event, scores, &class));
+    Model { results }
 }
 
 fn load_class(model: crate::Model, class: &str) {
-    let event = model.event.get_clone();
-    let scores = model.scores.get_clone();
+    let event = model.app.event.get_clone();
+    let scores = model.app.scores.get_clone();
     let results = create_result_view(&event, &scores, class);
-    model.results_model.results.set(Some(results));
+    model.screens.results.results.set(results);
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
     match msg {
-        Msg::SortStage => todo!(),
-        Msg::SortEvent => todo!(),
-        Msg::SortDriver => todo!(),
-        Msg::ShowClass(class) => {
-            load_class(model, &class);
-        }
-
+        Msg::ShowClass(class) => load_class(model, &class),
         Msg::Reload => {
-            let class = model
-                .results_model
-                .results
-                .with(|r| r.as_ref().map(|rv| rv.class.clone()));
-            if let Some(class) = class {
-                load_class(model, &class);
-            }
+            let class = model.screens.results.results.with(|r| r.class.clone());
+            load_class(model, &class);
         }
     }
 }
@@ -61,25 +43,43 @@ pub fn update(model: crate::Model, msg: Msg) {
 pub fn view(model: crate::Model) -> View {
     view! {
         (move || {
-            let results = model.results_model.results.with(|r| r.clone());
-            match results {
-                Some(results) => view_results(model, &results),
-                None => view_event_links(model),
-            }
+            let results = model.screens.results.results.with(|r| r.clone());
+            view_results(model, &results)
         })
+        (view_live_feed(model))
     }
 }
 
-fn view_event_links(model: crate::Model) -> View {
-    let events = model.results_model.events.get_clone();
-    let btns = events
-        .iter()
-        .map(|event| {
-            let event = event.clone();
-            view! { button { (event) } }
-        })
-        .collect::<Vec<View>>();
-    view! { div { (btns) } }
+// Compact copy of the Matrix live feed, so officials & competitors see times
+// streaming in on the same screen as the standings.
+fn view_live_feed(model: crate::Model) -> View {
+    view! {
+        div(class="box") {
+            h2(class="title is-5") {
+                "Live feed"
+                span(class="tag is-light is-pulled-right") { "Matrix" }
+            }
+            (move || {
+                let entries = model.screens.sync.feed.get_clone();
+                if entries.is_empty() {
+                    return view! {
+                        p(class="help") {
+                            "No messages yet. Connect and open an event to receive live times."
+                        }
+                    };
+                }
+                let views: Vec<View> = entries
+                    .iter()
+                    .rev()
+                    .map(|e| {
+                        let line = crate::page::sync::feed_line(e);
+                        view! { div { pre { (line) } } }
+                    })
+                    .collect();
+                views.into()
+            })
+        }
+    }
 }
 
 fn view_results(model: crate::Model, results: &ResultView) -> View {
@@ -167,14 +167,26 @@ fn clasess(model: crate::Model, results: &ResultView) -> View {
 }
 
 fn table_header(results: &ResultView) -> View {
-    let stages_count = results.event.stages_count;
+    let stages_count = results.event.stage_count();
+    // Precompute the per-test labels (stage names, falling back to "Test N").
+    let labels: Vec<String> = (0..stages_count)
+        .map(|i| {
+            let name = results.event.stage(i).name;
+            if name.is_empty() {
+                format!("Test {}", i + 1)
+            } else {
+                name
+            }
+        })
+        .collect();
+    let mut first_row: Vec<View> = vec![view! { th(colspan="3") { "Entry" } }];
+    for label in labels {
+        first_row.push(view! { th(colspan="5") { (label) } });
+    }
     let mut head: Vec<View> = vec![];
     head.push(view! {
         tr {
-            th(colspan="3") { "Entry" }
-            ((1..=stages_count)
-                .map(|stage| view! { th(colspan="5") { (format!("Test {stage}")) } })
-                .collect::<Vec<View>>())
+            (first_row)
         }
     });
     //Time	Flags	Score	Pos	Total	Out
@@ -183,7 +195,7 @@ fn table_header(results: &ResultView) -> View {
             th { "#" }
             th { "Driver" }
             th { "O/R pos" }
-            ((1..=stages_count)
+            ((0..stages_count)
                 .map(|_| {
                     view! {
                         th { "Time" }

@@ -22,12 +22,24 @@ use ruma::{
     api::{
         client::{
             account::register::{self, RegistrationKind},
-            room::create_room::{self, v3::RoomPreset},
+            room::{
+                create_room::{
+                    self,
+                    v3::{CreationContent, RoomPreset},
+                },
+                Visibility,
+            },
             uiaa::{AuthData, AuthType, Dummy},
         },
         error::ErrorKind,
     },
-    OwnedRoomId,
+    events::{
+        room::topic::RoomTopicEventContent, space::child::SpaceChildEventContent,
+        space::parent::SpaceParentEventContent,
+    },
+    room::RoomType,
+    serde::Raw,
+    OwnedRoomAliasId, OwnedRoomId, OwnedServerName,
 };
 use serde::{Deserialize, Serialize};
 
@@ -302,6 +314,210 @@ pub async fn join_or_create_room(client: &Client) -> Result<Room, String> {
     request.preset = Some(RoomPreset::PublicChat);
     request.is_direct = false;
     client.create_room(request).await.map_err(|e| e.to_string())
+}
+
+// ----- per-event spaces (publish) -----
+
+/// The space + timing room of a published event.
+#[derive(Debug, Clone)]
+pub struct EventRooms {
+    pub space: Room,
+    pub timing: Room,
+    pub space_alias: OwnedRoomAliasId,
+    pub timing_alias: OwnedRoomAliasId,
+}
+
+/// Server name of the homeserver, used for `via` and room aliases.
+fn server_name(client: &Client) -> OwnedServerName {
+    let host = client
+        .homeserver()
+        .host_str()
+        .map(|h| h.split(':').next().unwrap_or(h).to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".to_string());
+    host.parse::<OwnedServerName>()
+        .unwrap_or_else(|_| "localhost".parse().expect("static server name"))
+}
+
+/// Build the room alias `#<localpart>:<server>` for this homeserver.
+fn alias(client: &Client, localpart: &str) -> Result<OwnedRoomAliasId, String> {
+    format!("#{localpart}:{}", server_name(client))
+        .parse()
+        .map_err(|e: ruma::IdParseError| e.to_string())
+}
+
+async fn create_room_with_alias(
+    client: &Client,
+    room_alias: &OwnedRoomAliasId,
+    name: &str,
+    is_space: bool,
+) -> Result<Room, String> {
+    let mut request = create_room::v3::Request::default();
+    request.name = Some(name.to_string());
+    request.room_alias_name = Some(room_alias.alias().to_string());
+    request.preset = Some(RoomPreset::PublicChat);
+    request.visibility = Visibility::Public;
+    if is_space {
+        let mut creation = CreationContent::new();
+        creation.room_type = Some(RoomType::Space);
+        request.creation_content =
+            Some(Raw::new(&creation).map_err(|e: serde_json::Error| e.to_string())?);
+    }
+    client.create_room(request).await.map_err(|e| e.to_string())
+}
+
+/// The event id recorded in the `io.kt.event` state event of a room, if any.
+async fn read_event_meta(client: &Client, room: &Room) -> Option<String> {
+    use ruma::api::client::state::get_state_events;
+    let request = get_state_events::v3::Request::new(room.room_id().to_owned());
+    let response = client.send(request).await.ok()?;
+    for raw in response.room_state {
+        let json: serde_json::Value = serde_json::from_str(raw.json().get()).ok()?;
+        if json["type"].as_str() == Some("io.kt.event") {
+            return json
+                .get("content")
+                .and_then(|c| c.get("id"))
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+/// Create the event space + timing room, or join our existing ones.
+///
+/// Idempotent: if the space alias is already taken by *this* event, it is
+/// joined and reused (multi-device convergence).  If it is taken by a
+/// different event, an error is returned with a suggestion to disambiguate.
+pub async fn publish_event(
+    client: &Client,
+    event: &crate::event::EventInfo,
+) -> Result<EventRooms, String> {
+    if !crate::event::valid_event_id(&event.id) {
+        return Err(format!(
+            "Event id '{}' is not usable — it needs a year, e.g. kt-2026-...",
+            event.id
+        ));
+    }
+    let space_alias = alias(client, &event.id)?;
+    let timing_alias = alias(client, &format!("{}-timing", event.id))?;
+
+    let space = match client.is_room_alias_available(&space_alias).await {
+        Ok(true) => create_room_with_alias(client, &space_alias, &event.name, true).await?,
+        Ok(false) => {
+            let res = client
+                .resolve_room_alias(&space_alias)
+                .await
+                .map_err(|e| e.to_string())?;
+            let room = client
+                .join_room_by_id(&res.room_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            match read_event_meta(client, &room).await {
+                Some(id) if id == event.id => room,
+                _ => {
+                    return Err(format!(
+                        "Space alias '{space_alias}' is in use by a different event — add the club/district or override the event slug"
+                    ));
+                }
+            }
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    let timing = match client.is_room_alias_available(&timing_alias).await {
+        Ok(true) => create_room_with_alias(client, &timing_alias, "timing", false).await?,
+        Ok(false) => {
+            let res = client
+                .resolve_room_alias(&timing_alias)
+                .await
+                .map_err(|e| e.to_string())?;
+            client
+                .join_room_by_id(&res.room_id)
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+
+    // Link space <-> timing room.
+    let via = vec![server_name(client)];
+    space
+        .send_state_event_for_key(timing.room_id(), SpaceChildEventContent::new(via.clone()))
+        .await
+        .map_err(|e| e.to_string())?;
+    timing
+        .send_state_event_for_key(space.room_id(), SpaceParentEventContent::new(via))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Meta + topic on the space: searchable directory entry + room identity
+    // (so a later publish can detect "this is ours").
+    let meta = serde_json::json!({
+        "id": event.id,
+        "name": event.name,
+        "club": event.sponsoring_club,
+        "year": event.year,
+    });
+    space
+        .send_state_event_raw("io.kt.event", "", meta)
+        .await
+        .map_err(|e| e.to_string())?;
+    space
+        .send_state_event(RoomTopicEventContent::new(format!(
+            "{} · {} ({})",
+            event.name, event.sponsoring_club, event.year
+        )))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(EventRooms {
+        space,
+        timing,
+        space_alias,
+        timing_alias,
+    })
+}
+
+/// Publish the current event using the logged-in identity (the single account
+/// connected on the Home page).  Errors when no session is active.
+pub async fn publish_current_event(event: &crate::event::EventInfo) -> Result<EventRooms, String> {
+    let Some(client) = client() else {
+        return Err("Log in on the Home page first".to_string());
+    };
+    publish_event(&client, event).await
+}
+
+/// Join an event room by alias (used by invite arrivals).
+pub async fn join_room_by_alias(client: &Client, alias: &str) -> Result<Room, String> {
+    let parsed: ruma::OwnedRoomOrAliasId = alias
+        .parse()
+        .map_err(|e: ruma::IdParseError| e.to_string())?;
+    client
+        .join_room_by_id_or_alias(&parsed, &[])
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Join the current event's timing room. Prefers the published alias, then the
+/// published room id, then falls back to the shared `#timing` room.
+pub async fn join_room_for_event(
+    client: &Client,
+    event: &crate::event::EventInfo,
+) -> Result<Room, String> {
+    if let Some(alias) = &event.timing_alias {
+        if let Ok(room) = join_room_by_alias(client, alias).await {
+            return Ok(room);
+        }
+    }
+    if let Some(id) = &event.timing_id {
+        if let Ok(room_id) = id.parse::<ruma::OwnedRoomId>() {
+            if let Ok(room) = client.join_room_by_id(&room_id).await {
+                return Ok(room);
+            }
+        }
+    }
+    join_or_create_room(client).await
 }
 
 // ----- send -----

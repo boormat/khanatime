@@ -1,31 +1,23 @@
 use sycamore::prelude::*;
 
+use crate::app::ConnState;
 use crate::timing_event::TimingEvent;
 use crate::Model;
 
-// Matrix sync page: connect/register, join the `#timing` room, live feed of
-// room messages, and send chat / sample timing payloads.
+// Matrix sync page: connect/register to any homeserver (localhost dev server
+// self-registers), join the current event's timing room, live feed of room
+// messages, and send chat / sample timing payloads.
 //
 // On the native (non-wasm) build there is no Matrix client, so `update` is a
 // no-op; the page still renders so the layout is consistent.
 
 #[derive(Clone)]
 pub enum Msg {
-    Register,
-    Login,
+    Connect,
     Logout,
-    JoinRoom,
     SendChat,
     SendSampleStart,
     SendSampleFinish,
-}
-
-#[derive(Clone, PartialEq)]
-pub enum ConnState {
-    Idle,
-    Connecting,
-    LoggedIn(String),
-    Error(String),
 }
 
 #[derive(Clone)]
@@ -41,11 +33,11 @@ pub struct SyncModel {
     pub homeserver: Signal<String>,
     pub username: Signal<String>,
     pub password: Signal<String>,
-    pub status: Signal<ConnState>,
-    pub room_id: Signal<Option<String>>,
     pub feed: Signal<Vec<FeedEntry>>,
     pub send_text: Signal<String>,
     pub busy: Signal<bool>,
+    /// Event-selector list open/closed on the home page.
+    pub show_events: Signal<bool>,
 }
 
 pub fn init() -> SyncModel {
@@ -53,11 +45,10 @@ pub fn init() -> SyncModel {
         homeserver: create_signal("http://localhost:8008".to_string()),
         username: create_signal(String::new()),
         password: create_signal(String::new()),
-        status: create_signal(ConnState::Idle),
-        room_id: create_signal(None),
         feed: create_signal(Vec::new()),
         send_text: create_signal(String::new()),
         busy: create_signal(false),
+        show_events: create_signal(false),
     }
 }
 
@@ -71,28 +62,56 @@ pub fn update(model: Model, msg: Msg) {
 /// Resume a persisted Matrix session on app load (wasm only).
 #[cfg(target_arch = "wasm32")]
 pub fn resume_on_load(model: Model) {
-    let sm = model.sync_model;
     let Some(stored) = crate::services::matrix::load_session() else {
         return;
     };
-    sm.status.set(ConnState::Connecting);
+    model.app.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&stored.homeserver).await?;
             crate::services::matrix::restore_session(&client, &stored).await?;
             crate::services::matrix::set_client(Some(client.clone()));
-            let room = crate::services::matrix::join_or_create_room(&client).await?;
+            let room =
+                crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
+                    .await?;
             crate::services::matrix::set_room(Some(room.clone()));
-            crate::services::matrix::start_sync(client, sink_for(sm));
+            crate::services::matrix::start_sync(client, sink_for(model));
             Ok::<_, String>(room.room_id().to_string())
         }
         .await;
         match res {
             Ok(room_id) => {
-                sm.status.set(ConnState::LoggedIn(stored.user_id));
-                sm.room_id.set(Some(room_id));
+                model.app.identity.set(stored.user_id.clone());
+                model.app.conn.set(ConnState::LoggedIn(stored.user_id));
+                model.app.room.set(Some(room_id));
             }
-            Err(e) => sm.status.set(ConnState::Error(e)),
+            Err(e) => model.app.conn.set(ConnState::Error(e)),
+        }
+    });
+}
+
+/// Re-join the room for the currently selected event (after switching event).
+pub fn join_current_event(model: Model) {
+    #[cfg(target_arch = "wasm32")]
+    join_current_event_wasm(model);
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = model;
+}
+
+#[cfg(target_arch = "wasm32")]
+fn join_current_event_wasm(model: Model) {
+    let Some(client) = crate::services::matrix::client() else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        match crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
+            .await
+        {
+            Ok(room) => {
+                crate::services::matrix::set_room(Some(room.clone()));
+                model.app.room.set(Some(room.room_id().to_string()));
+            }
+            Err(e) => model.app.conn.set(ConnState::Error(e)),
         }
     });
 }
@@ -104,52 +123,68 @@ pub fn resume_on_load(_model: Model) {}
 #[cfg(target_arch = "wasm32")]
 fn update_wasm(model: Model, msg: Msg) {
     match msg {
-        Msg::Register => connect(model, true),
-        Msg::Login => connect(model, false),
+        Msg::Connect => connect(model),
         Msg::Logout => logout(model),
-        Msg::JoinRoom => join(model),
         Msg::SendChat => send_chat(model),
         Msg::SendSampleStart => send_sample(model, "start"),
         Msg::SendSampleFinish => send_sample(model, "finish"),
     }
 }
 
+/// True when `hs` is the local dev homeserver, which allows self-registration.
 #[cfg(target_arch = "wasm32")]
-fn connect(model: Model, is_register: bool) {
-    let sm = model.sync_model;
+fn is_dev_server(hs: &str) -> bool {
+    let host = hs
+        .strip_prefix("http://")
+        .or_else(|| hs.strip_prefix("https://"))
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or("");
+    host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+#[cfg(target_arch = "wasm32")]
+fn connect(model: Model) {
+    let sm = model.screens.sync;
     let hs = sm.homeserver.get_clone();
     let user = sm.username.get_clone();
     let pass = sm.password.get_clone();
     if user.trim().is_empty() || pass.is_empty() {
-        sm.status.set(ConnState::Error(
+        model.app.conn.set(ConnState::Error(
             "Enter a username and password".to_string(),
         ));
         return;
     }
+    let dev = is_dev_server(&hs);
     sm.busy.set(true);
-    sm.status.set(ConnState::Connecting);
+    model.app.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&hs).await?;
-            if is_register {
+            if dev {
                 crate::services::matrix::register_or_login(&client, &user, &pass).await?;
             } else {
                 crate::services::matrix::login(&client, &user, &pass).await?;
             }
             crate::services::matrix::save_session(&client, &hs);
             crate::services::matrix::set_client(Some(client.clone()));
-            let room = crate::services::matrix::join_or_create_room(&client).await?;
+            let room =
+                crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
+                    .await?;
             crate::services::matrix::set_room(Some(room.clone()));
-            crate::services::matrix::start_sync(client, sink_for(sm));
+            crate::services::matrix::start_sync(client, sink_for(model));
             Ok::<_, String>(room.room_id().to_string())
         }
         .await;
         match res {
             Ok(room_id) => {
-                sm.status.set(ConnState::LoggedIn(user));
-                sm.room_id.set(Some(room_id));
+                model.app.identity.set(user.clone());
+                model.app.conn.set(ConnState::LoggedIn(user));
+                model.app.room.set(Some(room_id));
+                // Land on the Home dashboard (event status hub) once connected.
+                crate::update(model, crate::Msg::Show(crate::Screen::Home));
             }
-            Err(e) => sm.status.set(ConnState::Error(e)),
+            Err(e) => model.app.conn.set(ConnState::Error(e)),
         }
         sm.busy.set(false);
     });
@@ -157,9 +192,9 @@ fn connect(model: Model, is_register: bool) {
 
 #[cfg(target_arch = "wasm32")]
 fn logout(model: Model) {
-    let sm = model.sync_model;
+    let sm = model.screens.sync;
     let Some(client) = crate::services::matrix::client() else {
-        sm.status.set(ConnState::Idle);
+        model.app.conn.set(ConnState::Idle);
         return;
     };
     sm.busy.set(true);
@@ -167,78 +202,60 @@ fn logout(model: Model) {
         let _ = crate::services::matrix::logout(&client).await;
         crate::services::matrix::set_client(None);
         crate::services::matrix::set_room(None);
-        sm.status.set(ConnState::Idle);
-        sm.room_id.set(None);
-        sm.busy.set(false);
-    });
-}
-
-#[cfg(target_arch = "wasm32")]
-fn join(model: Model) {
-    let sm = model.sync_model;
-    let Some(client) = crate::services::matrix::client() else {
-        sm.status.set(ConnState::Error("Log in first".to_string()));
-        return;
-    };
-    sm.busy.set(true);
-    wasm_bindgen_futures::spawn_local(async move {
-        let res = crate::services::matrix::join_or_create_room(&client).await;
-        match res {
-            Ok(room) => {
-                crate::services::matrix::set_room(Some(room.clone()));
-                sm.room_id.set(Some(room.room_id().to_string()));
-                crate::services::matrix::start_sync(client, sink_for(sm));
-            }
-            Err(e) => sm.status.set(ConnState::Error(e)),
-        }
+        model.app.identity.set(String::new());
+        model.app.conn.set(ConnState::Idle);
+        model.app.room.set(None);
         sm.busy.set(false);
     });
 }
 
 #[cfg(target_arch = "wasm32")]
 fn send_chat(model: Model) {
-    let sm = model.sync_model;
+    let sm = model.screens.sync;
     let text = sm.send_text.get_clone();
     if text.trim().is_empty() {
         return;
     }
     let Some(room) = crate::services::matrix::room() else {
-        sm.status
+        model
+            .app
+            .conn
             .set(ConnState::Error("Join the timing room first".to_string()));
         return;
     };
     sm.send_text.set(String::new());
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(e) = crate::services::matrix::send_chat(&room, &text).await {
-            sm.status.set(ConnState::Error(e));
+            model.app.conn.set(ConnState::Error(e));
         }
     });
 }
 
 #[cfg(target_arch = "wasm32")]
 fn send_sample(model: Model, r#type: &str) {
-    let sm = model.sync_model;
     let Some(room) = crate::services::matrix::room() else {
-        sm.status
+        model
+            .app
+            .conn
             .set(ConnState::Error("Join the timing room first".to_string()));
         return;
     };
-    let event_name = model.event.get_clone().name;
-    let mut te = TimingEvent::new(r#type, &event_name, 1, "17", 1);
-    te.official_id = Some(sm.username.get_clone());
+    let event_id = model.app.event.get_clone().id;
+    let mut te = TimingEvent::new(r#type, &event_id, 1, "17", 1);
+    te.official_id = Some(model.app.identity.get_clone());
     te.status = Some("clean".to_string());
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(e) = crate::services::matrix::send_timing(&room, &te).await {
-            sm.status.set(ConnState::Error(e));
+            model.app.conn.set(ConnState::Error(e));
         }
     });
 }
 
 #[cfg(target_arch = "wasm32")]
-fn sink_for(sm: SyncModel) -> std::rc::Rc<dyn Fn(crate::services::matrix::IncomingMessage)> {
+fn sink_for(model: Model) -> std::rc::Rc<dyn Fn(crate::services::matrix::IncomingMessage)> {
     use crate::services::matrix::IncomingMessage;
 
-    let feed = sm.feed;
+    let feed = model.screens.sync.feed;
     std::rc::Rc::new(move |msg: IncomingMessage| {
         let m = msg.clone();
         feed.update(|v| {
@@ -249,6 +266,55 @@ fn sink_for(sm: SyncModel) -> std::rc::Rc<dyn Fn(crate::services::matrix::Incomi
                 timing: m.timing,
             });
         });
+        // Merge incoming timing into local state. Scoped by room: the app only
+        // ever joins the selected event's timing room, and the room id check
+        // drops stragglers from a previous event.
+        let Some(te) = msg.timing else {
+            return;
+        };
+        let Some(room) = crate::services::matrix::room() else {
+            return;
+        };
+        if msg.room != room.room_id().to_string() {
+            return;
+        }
+        if model.app.event.with(|e| e.id.is_empty()) {
+            return;
+        }
+        if te.r#type == "start" || te.r#type == "finish" {
+            // Mirror the remote run into local state (run numbering,
+            // pending-starts) so Start/Finish screens stay live.
+            let run = crate::event::RunRecord {
+                r#type: te.r#type.clone(),
+                test: te.test,
+                car: te.car.clone(),
+                run: te.run,
+                ts: te.ts,
+                time_ds: te.time_ds,
+                status: te.status.clone(),
+                flags: te.flags,
+                official_id: te.official_id.clone(),
+            };
+            model.app.runs.update(|runs| {
+                crate::event::add_run(runs, run);
+            });
+            let key = model.app.event.with(|e| crate::event::storage_key(e));
+            let runs = model.app.runs.get_clone();
+            crate::event::save_runs(&key, &runs);
+        }
+        if te.r#type == "finish" {
+            let Some(time_ds) = te.time_ds else {
+                return;
+            };
+            model
+                .app
+                .scores
+                .update(|s| crate::event::upsert_time(s, te.test, &te.car, time_ds));
+            let key = model.app.event.with(|e| crate::event::storage_key(e));
+            let scores = model.app.scores.get_clone();
+            crate::event::save_times(&key, &scores);
+        }
+        crate::update(model, crate::Msg::Reload);
     })
 }
 
@@ -265,7 +331,7 @@ pub fn view(model: Model) -> View {
 }
 
 fn view_connection(model: Model) -> View {
-    let sm = model.sync_model;
+    let sm = model.screens.sync;
     view! {
         div(class="box") {
             h2(class="title is-5") { "Connection" }
@@ -292,13 +358,8 @@ fn view_connection(model: Model) -> View {
                 view! {
                     div(class="field is-grouped") {
                         div(class="control") {
-                            button(class="button is-link", disabled=busy, on:click=move |_| update(model, Msg::Register)) {
-                                "Register"
-                            }
-                        }
-                        div(class="control") {
-                            button(class="button is-primary", disabled=busy, on:click=move |_| update(model, Msg::Login)) {
-                                "Login"
+                            button(class="button is-link", disabled=busy, on:click=move |_| update(model, Msg::Connect)) {
+                                "Connect"
                             }
                         }
                         div(class="control") {
@@ -309,7 +370,8 @@ fn view_connection(model: Model) -> View {
                     }
                 }
             })
-            div { (move || status_html(sm.status.get_clone())) }
+            div { (move || status_html(model.app.conn.get_clone())) }
+            p(class="help") { "Any homeserver works by logging in. The localhost dev server will register a new account for you." }
         }
     }
 }
@@ -326,25 +388,21 @@ fn status_html(state: ConnState) -> View {
 }
 
 fn view_room(model: Model) -> View {
-    let sm = model.sync_model;
     view! {
         div(class="box") {
             h2(class="title is-5") { "Timing room" }
             div {
-                (move || match sm.room_id.get_clone() {
+                (move || match model.app.room.get_clone() {
                     Some(id) => view! { p(class="help is-success") { ("Joined ") (id) } },
-                    None => view! { p(class="help") { "Not joined. Shared room: #timing:localhost" } },
+                    None => view! { p(class="help") { "Not joined. Connect to join the current event's timing room." } },
                 })
-            }
-            button(class="button is-info", on:click=move |_| update(model, Msg::JoinRoom)) {
-                "Join / create timing room"
             }
         }
     }
 }
 
 fn view_send(model: Model) -> View {
-    let sm = model.sync_model;
+    let sm = model.screens.sync;
     view! {
         div(class="box") {
             h2(class="title is-5") { "Send" }
@@ -384,7 +442,7 @@ fn view_send(model: Model) -> View {
 }
 
 fn view_feed(model: Model) -> View {
-    let sm = model.sync_model;
+    let sm = model.screens.sync;
     view! {
         div(class="box") {
             h2(class="title is-5") { "Live feed" }
@@ -397,17 +455,7 @@ fn view_feed(model: Model) -> View {
                     .iter()
                     .rev()
                     .map(|e| {
-                        let timing = e
-                            .timing
-                            .as_ref()
-                            .map(|t| {
-                                format!(
-                                    "  [KT {} test={} car={} run={}]",
-                                    t.r#type, t.test, t.car, t.run
-                                )
-                            })
-                            .unwrap_or_default();
-                        let line = format!("{} {}: {}{}", e.sender, fmt_ts(e.ts), e.body, timing);
+                        let line = feed_line(e);
                         view! {
                             div {
                                 pre { (line) }
@@ -419,6 +467,21 @@ fn view_feed(model: Model) -> View {
             })
         }
     }
+}
+
+/// Single feed line shared by the Sync page and the Results live-feed panel.
+pub fn feed_line(e: &FeedEntry) -> String {
+    let timing = e
+        .timing
+        .as_ref()
+        .map(|t| {
+            format!(
+                "  [KT {} test={} car={} run={}]",
+                t.r#type, t.test, t.car, t.run
+            )
+        })
+        .unwrap_or_default();
+    format!("{} {}: {}{}", e.sender, fmt_ts(e.ts), e.body, timing)
 }
 
 fn fmt_ts(ms: i64) -> String {
