@@ -372,12 +372,13 @@ Milestone order; check items off as done.
 - [x] Events hub screen (demo / search published / plan new / saved)
 - [x] Event lifecycle: draft → publish → amend-only; demo local-only;
   publish validation (stages present, no timing data)
-- [ ] Category result tabs
-- [ ] Rules reference page (done — `khana_rule.rs`, keep current)
+- [x] Category result tabs — class tabs with Outright always-first + active state
+- [x] Rules reference page (done — `khana_rule.rs`, keep current)
 
 ### M5 — Finish
-- [ ] Print stylesheet for results (navbar already `is-hidden-print`)
-- [ ] Mobile layout, offline manifest
+- [x] Print stylesheet for results (navbar + publish box + tabs hidden, print-only
+  header, rows kept together; `bulma-print` already vendored)
+- [ ] Mobile layout, offline manifest (SW removed in `36283c6` — broke dev/testing)
 - [ ] Panic/reporting polish; release build + deploy flow
 - [ ] Record/message versioning (localStorage `Envelope<T>` + `TimingEvent.version`)
   — just in time for the first official release (`docs/plan/record-versioning.md`)

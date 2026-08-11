@@ -840,6 +840,23 @@ pub fn create_result_view(event: &EventInfo, scores: &[ScoreData], class: &str) 
     rv
 }
 
+/// The overall standing: every active entry, regardless of class membership.
+/// Always available, so the results page can show an Outright tab even when the
+/// event's classes list doesn't include one.
+pub fn create_outright_view(event: &EventInfo, scores: &[ScoreData]) -> ResultView {
+    let mut rv = ResultView::init("Outright", event, scores);
+    if !event.classes.iter().any(|c| c == "Outright") {
+        rv.rows = event
+            .entries
+            .iter()
+            .filter(|e| is_active_entry(e))
+            .map(|e| (e.car.clone(), ResultRow::init(e, event, scores)))
+            .collect();
+    }
+    calc(&mut rv);
+    rv
+}
+
 // get entries  in class
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
     entries
@@ -1781,6 +1798,27 @@ mod tests {
         let found = find_entries_in_class(&entries, "Outright");
         let cars: Vec<&str> = found.iter().map(|e| e.car.as_str()).collect();
         assert_eq!(cars, vec!["1"]);
+    }
+
+    #[test]
+    fn outright_view_includes_every_active_entry() {
+        // Entry without the "Outright" tag must still be in the overall view.
+        let mut ev = EventInfo {
+            stages: vec![],
+            classes: vec!["Female".into()],
+            entries: vec![],
+            ..Default::default()
+        };
+        let mut a = Entry::new("1", "Alice");
+        a.classes = vec!["Female".into()];
+        let mut b = Entry::new("2", "Bob");
+        b.classes = vec!["Junior".into()];
+        let mut w = Entry::new("3", "Wendy");
+        w.status = EntryStatus::Withdrawn;
+        ev.entries = vec![a, b, w];
+        let rv = create_outright_view(&ev, &[]);
+        let cars: Vec<&str> = rv.rows.keys().map(|c| c.as_str()).collect();
+        assert_eq!(cars, vec!["1", "2"]);
     }
 
     #[test]

@@ -19,15 +19,34 @@ pub struct Model {
 }
 
 pub fn init(event: &EventInfo, scores: &[ScoreData]) -> Model {
-    let class = event.classes.first().cloned().unwrap_or_default();
-    let results = create_signal(create_result_view(event, scores, &class));
+    let results = create_signal(build_view(event, scores, &class_tabs(event)[0]));
     Model { results }
+}
+
+/// Compute results for a tab: Outright = all active entries, others filtered.
+fn build_view(event: &EventInfo, scores: &[ScoreData], tab: &str) -> ResultView {
+    if tab == "Outright" {
+        create_outright_view(event, scores)
+    } else {
+        create_result_view(event, scores, tab)
+    }
+}
+
+/// Tab order: Outright always first, then the event's classes (deduped).
+fn class_tabs(event: &EventInfo) -> Vec<String> {
+    let mut tabs = vec!["Outright".to_string()];
+    for c in &event.classes {
+        if !tabs.contains(c) {
+            tabs.push(c.clone());
+        }
+    }
+    tabs
 }
 
 fn load_class(model: crate::Model, class: &str) {
     let event = model.app.event.get_clone();
     let scores = model.app.scores.get_clone();
-    let results = create_result_view(&event, &scores, class);
+    let results = build_view(&event, &scores, class);
     model.screens.results.results.set(results);
 }
 
@@ -76,7 +95,7 @@ pub fn view(model: crate::Model) -> View {
 fn view_publish(model: crate::Model) -> View {
     let joined = model.app.room.with(|r| r.is_some());
     view! {
-        div(class="box") {
+        div(class="box is-hidden-print") {
             div(class="level") {
                 div(class="level-left") {
                     div(class="level-item") {
@@ -84,6 +103,19 @@ fn view_publish(model: crate::Model) -> View {
                     }
                 }
                 div(class="level-right") {
+                    div(class="level-item") {
+                        button(
+                            class="button",
+                            on:click=move |_| {
+                                if let Some(w) = web_sys::window() {
+                                    let _ = w.print();
+                                }
+                            },
+                        ) {
+                            span(class="icon") { i(class="fa fa-print") }
+                            span { "Print" }
+                        }
+                    }
                     div(class="level-item") {
                         button(
                             class=format!("button {}", if joined { "is-primary" } else { "is-light" }),
@@ -105,10 +137,22 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
     let class_btns = clasess(model, results);
     let header = table_header(results);
     let rows = results.rows.values().map(view_row).collect::<Vec<View>>();
+    let name = results.event.name.clone();
+    let class = results.class.clone();
+    let date = results.event.event_date.clone();
+    let subtitle = if date.is_empty() {
+        class
+    } else {
+        format!("{class} — {date}")
+    };
 
     view! {
         div {
             (class_btns)
+            div(class="is-print-only") {
+                h1(class="title is-4") { (name) }
+                h2(class="subtitle is-5") { (subtitle) }
+            }
             div(class="table-container") {
                 table(class="table is-bordered is-narrow") {
                     (header)
@@ -126,7 +170,7 @@ fn view_row(rr: &ResultRow) -> View {
     let name = rr.entry.name.clone();
     let columns = rr.columns.iter().map(show_rs).collect::<Vec<View>>();
     view! {
-        tr {
+        tr(class="is-together-print") {
             td { (car) }
             td { (name) }
             td { "TBA" }
@@ -166,15 +210,20 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
 }
 
 fn clasess(model: crate::Model, results: &ResultView) -> View {
-    let classes = results.event.classes.clone();
-    let btns = classes
+    let current = results.class.clone();
+    let tabs = class_tabs(&results.event);
+    let btns = tabs
         .iter()
         .map(|class| {
             let class = class.clone();
             let class_disp = class.clone();
+            let active = class == current;
             view! {
                 button(
-                    class="button is-primary",
+                    class=format!(
+                        "button is-hidden-print {}",
+                        if active { "is-link is-selected" } else { "is-light" }
+                    ),
                     on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ShowClass(class.clone()))),
                 ) {
                     (class_disp)
