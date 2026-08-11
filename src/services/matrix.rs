@@ -22,6 +22,7 @@ use ruma::{
     api::{
         client::{
             account::register::{self, RegistrationKind},
+            directory::get_public_rooms_filtered,
             message::get_message_events,
             room::{
                 create_room::{
@@ -368,22 +369,25 @@ async fn create_room_with_alias(
     client.create_room(request).await.map_err(|e| e.to_string())
 }
 
-/// The event id recorded in the `io.kt.event` state event of a room, if any.
-async fn read_event_meta(client: &Client, room: &Room) -> Option<String> {
+/// The `io.kt.event` state content of a room, if any.
+async fn read_event_meta_content(client: &Client, room: &Room) -> Option<serde_json::Value> {
     use ruma::api::client::state::get_state_events;
     let request = get_state_events::v3::Request::new(room.room_id().to_owned());
     let response = client.send(request).await.ok()?;
     for raw in response.room_state {
         let json: serde_json::Value = serde_json::from_str(raw.json().get()).ok()?;
         if json["type"].as_str() == Some("io.kt.event") {
-            return json
-                .get("content")
-                .and_then(|c| c.get("id"))
-                .and_then(|id| id.as_str())
-                .map(|s| s.to_string());
+            return json.get("content").cloned();
         }
     }
     None
+}
+
+/// The event id recorded in the `io.kt.event` state event of a room, if any.
+async fn read_event_meta(client: &Client, room: &Room) -> Option<String> {
+    read_event_meta_content(client, room)
+        .await
+        .and_then(|c| c.get("id")?.as_str().map(|s| s.to_string()))
 }
 
 /// Create the event space + timing room, or join our existing ones.
@@ -491,6 +495,101 @@ pub async fn publish_current_event(event: &crate::event::EventInfo) -> Result<Ev
         return Err("Log in on the Home page first".to_string());
     };
     publish_event(&client, event).await
+}
+
+/// A published event found via the room-directory search.
+#[derive(Debug, Clone)]
+pub struct EventSearchResult {
+    pub name: String,
+    pub alias: String,
+    pub room_id: String,
+}
+
+/// Search the homeserver's public room directory for published khanatime event
+/// spaces (rooms with an `io.kt.event`-style alias or a `kt-` alias).
+pub async fn search_events(client: &Client, term: &str) -> Result<Vec<EventSearchResult>, String> {
+    let mut request = get_public_rooms_filtered::v3::Request::new();
+    request.limit = Some(uint!(20));
+    let mut filter = ruma::directory::Filter::default();
+    filter.generic_search_term = Some(term.to_string());
+    request.filter = filter;
+    let response = client.send(request).await.map_err(|e| e.to_string())?;
+    let out = response
+        .chunk
+        .into_iter()
+        .filter(|c| c.room_type == Some(RoomType::Space))
+        .filter(|c| {
+            let alias = c
+                .canonical_alias
+                .as_ref()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            alias.starts_with("#kt-")
+                || c.name
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains("khanatime")
+        })
+        .map(|c| {
+            let alias = c
+                .canonical_alias
+                .as_ref()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            EventSearchResult {
+                name: c.name.unwrap_or_default(),
+                alias,
+                room_id: c.room_id.to_string(),
+            }
+        })
+        .collect();
+    Ok(out)
+}
+
+/// Join a published event space and build the local [crate::event::EventInfo]
+/// from its `io.kt.event` state.  Entries/stages arrive later via the timing
+/// room's setup-manifest backfill.
+pub async fn open_published_event(
+    client: &Client,
+    alias: &str,
+) -> Result<crate::event::EventInfo, String> {
+    let parsed: ruma::OwnedRoomOrAliasId = alias
+        .parse()
+        .map_err(|e: ruma::IdParseError| e.to_string())?;
+    let room = client
+        .join_room_by_id_or_alias(&parsed, &[])
+        .await
+        .map_err(|e| e.to_string())?;
+    let meta = read_event_meta_content(client, &room)
+        .await
+        .ok_or_else(|| "That room isn't a khanatime event".to_string())?;
+    let id = meta
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "That room isn't a khanatime event".to_string())?;
+    let mut ev = crate::event::EventInfo {
+        id: id.to_string(),
+        name: meta
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        sponsoring_club: meta
+            .get("club")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        year: meta
+            .get("year")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        status: crate::event::EventStatus::Published,
+        ..Default::default()
+    };
+    ev.space_alias = Some(alias.to_string());
+    Ok(ev)
 }
 
 /// Join an event room by alias (used by invite arrivals).

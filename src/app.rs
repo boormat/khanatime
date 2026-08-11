@@ -13,6 +13,7 @@ use sycamore::prelude::*;
 pub enum Screen {
     #[default]
     Home,
+    Events,
     Help,
     KhanaRules,
     Results,
@@ -52,6 +53,7 @@ pub struct AppState {
 #[derive(Clone, Copy)]
 pub struct Screens {
     pub home: page::home::Model,
+    pub events: page::events::Model,
     pub setup: page::event::Model,
     pub stage: page::stage::StageModel,
     pub start: page::start::Model,
@@ -76,6 +78,7 @@ pub enum Msg {
     StartMsg(page::start::Msg),
     FinishMsg(page::finish::Msg),
     EventMsg(page::event::Msg),
+    EventsMsg(page::events::Msg),
     ResultMsg(page::results::Msg),
 }
 
@@ -116,6 +119,7 @@ impl Model {
             },
             screens: Screens {
                 home: page::home::init(),
+                events: page::events::init(),
                 setup: page::event::init(),
                 stage: page::stage::init(),
                 start: page::start::init(),
@@ -167,6 +171,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::StartMsg(msg) => page::start::update(model, msg),
         Msg::FinishMsg(msg) => page::finish::update(model, msg),
         Msg::EventMsg(msg) => page::event::update(model, msg),
+        Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => page::results::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
     }
@@ -214,6 +219,7 @@ fn view_content(model: Model) -> View {
         div(class="container") {
             (match effective {
                 Screen::Home => page::home::view(model),
+                Screen::Events => page::events::view(model),
                 Screen::Help => page::help::view(),
                 Screen::KhanaRules => page::khana_rule::view(),
                 Screen::Stage => page::stage::view(model),
@@ -241,6 +247,7 @@ fn view_navbar(model: Model) -> View {
     let mut brand: Vec<View> = vec![];
     for (screen, icon) in [
         (Screen::Home, "fa fa-home"),
+        (Screen::Events, "fa fa-folder-open"),
         (Screen::Event, "fa fa-screwdriver-wrench"),
         (Screen::Start, "fa fa-flag"),
         (Screen::Finish, "fa fa-flag-checkered"),

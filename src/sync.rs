@@ -32,6 +32,10 @@ pub fn update(model: Model, msg: Msg) {
 /// Resume a persisted Matrix session on app load (wasm only).
 #[cfg(target_arch = "wasm32")]
 pub fn resume_on_load(model: Model) {
+    // Demo events are local-only: never connect or join a room for them.
+    if model.app.event.with(|e| e.is_demo()) {
+        return;
+    }
     let Some(stored) = crate::services::matrix::load_session() else {
         return;
     };
@@ -64,6 +68,10 @@ pub fn resume_on_load(model: Model) {
 /// Re-join the room for the currently selected event (after switching event).
 #[cfg(target_arch = "wasm32")]
 pub fn join_current_event(model: Model) {
+    // Demo events are local-only: never join a timing room for them.
+    if model.app.event.with(|e| e.is_demo()) {
+        return;
+    }
     let Some(client) = crate::services::matrix::client() else {
         return;
     };

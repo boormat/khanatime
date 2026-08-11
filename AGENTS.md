@@ -52,9 +52,10 @@ src/
 │                       # + localStorage load/save (event + stage times)
 ├── input.rs            # keyboard/input helpers
 └── page/
-    ├── home.rs         # sign-in + event picker
+    ├── home.rs         # sign-in + current-event dashboard
+    ├── events.rs       # event hub: demo / search published / plan new / saved
     ├── chat.rs         # read-only room message view
-    ├── event.rs        # event setup (entries, classes, stages)
+    ├── event.rs        # event setup (entries, classes, stages, lifecycle)
     ├── stage.rs        # TIMER — command-line stopwatch entry
     │                   #   parse_command()/parse_car(), CmdParse, TimeCmd
     ├── results.rs      # results + score computation (ResultRow/ResultScore/Pos)
@@ -69,6 +70,19 @@ src/
 - `ScoreData { stage, car, time }` — one record per stage per car
 - `KTime` enum + `KTimeTime { time_ds, flags, garage }` — time stored in
   **deciseconds** (`time_ds`), plus flag penalties (count) and garage flag.
+
+### Event lifecycle
+
+- `EventStatus` is `Draft → Published → Running → Finished`. Anything after
+  draft is **amend-only**: never delete data, change state instead (entries get
+  `Withdrawn`, a used test/entry can't be removed — see
+  `event::stage_has_timing`/`entry_has_timing` guards). Fixed details lock at
+  publish; "Publish as New" clones to a fresh draft id.
+- A new event must publish before any timing starts (`event::publish_errors`:
+  no demo, at least one stage, no scores/runs). Demo = `demo-training`, local
+  only, never joins a room (`sync::join_current_event`/`resume_on_load` skip it).
+- Amending a published event sets `needs_sync`; "Sync setup to room" re-broadcasts
+  the manifest (`matrix::send_setup`, last-writer-wins).
 
 ## Sync model (current direction)
 

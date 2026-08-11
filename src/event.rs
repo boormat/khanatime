@@ -7,6 +7,10 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 pub const ID_PREFIX: &str = "kt-";
+
+/// Id of the local-only demo event used to train officials.  Deliberately not
+/// a valid event id (no `kt-` prefix), so it can never be published.
+pub const DEMO_EVENT_ID: &str = "demo-training";
 #[allow(dead_code)] // reserved for official roles on the publish/identity path
 pub const ROLE_KEY_OFFICIAL: &str = "key_official";
 pub const ROLE_OFFICIAL: &str = "official";
@@ -416,6 +420,12 @@ impl EventInfo {
     /// True when no event is currently selected (the null event).
     pub fn is_null(&self) -> bool {
         self.id.is_empty()
+    }
+
+    /// True for the local training event.  Demo events are never published and
+    /// never join a timing room (see [demo_event]).
+    pub fn is_demo(&self) -> bool {
+        self.id.starts_with("demo-")
     }
 
     pub fn add_class(&mut self, class: &String) {
@@ -832,13 +842,18 @@ pub fn create_result_view(event: &EventInfo, scores: &[ScoreData], class: &str) 
 
 // get entries  in class
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
-    //    return vec![&scores[0]];
-    let class = class.to_string();
-    let a = entries
+    entries
         .iter()
-        .filter(|e| e.classes.contains(&class))
-        .collect();
-    a
+        .filter(|e| e.classes.iter().any(|c| c == class) && is_active_entry(e))
+        .collect()
+}
+
+/// Entries that count in the results: withdrawn / draft / reserve are out.
+fn is_active_entry(e: &Entry) -> bool {
+    !matches!(
+        e.status,
+        EntryStatus::Withdrawn | EntryStatus::Draft | EntryStatus::Reserve
+    )
 }
 
 // get available Raw scores for the list of cars in a stage
@@ -1138,6 +1153,88 @@ pub fn remove_event(id: &str) {
     if session_event_name() == id {
         session_set_event("");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Demo event (local training).  Never published, never joins a room.
+// ---------------------------------------------------------------------------
+
+/// Build the pristine demo event template.  Sample entries + stages so
+/// officials can practise start/finish timing and watch results compute.
+pub fn demo_event() -> EventInfo {
+    let mut ev = EventInfo {
+        id: DEMO_EVENT_ID.to_string(),
+        name: "Khanatime Demo".to_string(),
+        sponsoring_club: "Demo Club".to_string(),
+        status: EventStatus::Draft,
+        stages: (1..=3).map(Stage::for_test).collect(),
+        classes: ["Outright", "Female", "Junior"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        ..Default::default()
+    };
+    for (car, name, classes) in [
+        ("1", "Alice", &["Outright", "Female"][..]),
+        ("2", "Bob", &["Outright"][..]),
+        ("3", "Carol", &["Outright", "Female", "Junior"][..]),
+        ("4", "Dan", &["Outright", "Junior"][..]),
+        ("5", "Erin", &["Outright", "Female"][..]),
+        ("6", "Frank", &["Outright"][..]),
+    ] {
+        ev.add_entry(car, name);
+        if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
+            entry.classes = classes.iter().map(|s| s.to_string()).collect();
+        }
+    }
+    ev
+}
+
+/// Restore the demo event to its pristine template, wiping all training state
+/// (entries, stages, times, runs) added while practising.
+pub fn reset_demo() {
+    remove_event(DEMO_EVENT_ID);
+    save_event(&demo_event());
+}
+
+// ---------------------------------------------------------------------------
+// Publish / amend validation.  Pure, so the rules are unit-testable.
+// ---------------------------------------------------------------------------
+
+/// True when the event has any recorded timing data (scores or run records).
+pub fn has_timing_data(scores: &[ScoreData], runs: &[RunRecord]) -> bool {
+    !scores.is_empty() || !runs.is_empty()
+}
+
+/// True when a stage has any recorded score or run record.
+pub fn stage_has_timing(scores: &[ScoreData], runs: &[RunRecord], stage: u8) -> bool {
+    scores.iter().any(|s| s.stage == stage) || runs.iter().any(|r| r.test == stage)
+}
+
+/// True when a car has any recorded score or run record.
+pub fn entry_has_timing(scores: &[ScoreData], runs: &[RunRecord], car: &str) -> bool {
+    scores.iter().any(|s| s.car == car) || runs.iter().any(|r| r.car == car)
+}
+
+/// Reasons the event is not in a publishable state.  Empty when it is.
+///
+/// A NEW event must publish before any timing happens; an event that already
+/// has scores/runs is amended, not republished.
+pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord]) -> Vec<String> {
+    let mut errs: Vec<String> = vec![];
+    if event.is_demo() {
+        errs.push("Demo events are for local training only and can't be published.".to_string());
+    }
+    if event.stages.is_empty() {
+        errs.push("Add at least one test before publishing.".to_string());
+    }
+    if has_timing_data(scores, runs) {
+        errs.push(
+            "New events can't be published with timing data — publish before timing starts."
+                .to_string(),
+        );
+    }
+    errs
 }
 
 /// List of known events in storage (ids).  If it fails .. empty is fine.
@@ -1584,6 +1681,106 @@ mod tests {
         assert_eq!(decoded.id, ev.id);
         assert_eq!(decoded.name, ev.name);
         assert!(from_setup_body("khanatime_result:{}").is_none());
+    }
+
+    #[test]
+    fn demo_event_is_local_only() {
+        let demo = demo_event();
+        assert!(demo.is_demo());
+        assert!(!valid_event_id(&demo.id), "demo id must not be publishable");
+        assert_eq!(demo.name, "Khanatime Demo");
+        assert_eq!(demo.stages.len(), 3);
+        assert!(!demo.entries.is_empty());
+        assert!(!demo.classes.is_empty());
+        // A demo event carries no timing data.
+        assert!(!has_timing_data(&[], &[]));
+    }
+
+    #[test]
+    fn publish_errors_catch_bad_state() {
+        let mut ev = EventInfo {
+            id: "kt-2026-x".into(),
+            name: "X".into(),
+            stages: vec![],
+            ..Default::default()
+        };
+        let score = ScoreData {
+            stage: 1,
+            car: "1".into(),
+            time: KTime::Time(KTimeTime {
+                time_ds: 100,
+                flags: 0,
+                garage: false,
+            }),
+        };
+        let run = RunRecord {
+            r#type: RUN_START.to_string(),
+            test: 1,
+            car: "1".into(),
+            run: 1,
+            ts: 1,
+            ..Default::default()
+        };
+        // No stages -> error.
+        assert!(!publish_errors(&ev, &[], &[]).is_empty());
+        // Stages configured -> clean.
+        ev.stages = vec![Stage::for_test(1)];
+        assert!(publish_errors(&ev, &[], &[]).is_empty());
+        // Timing data -> error.
+        assert!(publish_errors(&ev, &[score], &[]).contains(
+            &"New events can't be published with timing data — publish before timing starts."
+                .to_string()
+        ));
+        assert!(publish_errors(&ev, &[], &[run]).contains(
+            &"New events can't be published with timing data — publish before timing starts."
+                .to_string()
+        ));
+        // Demo -> error.
+        let demo = demo_event();
+        assert!(publish_errors(&demo, &[], &[])
+            .iter()
+            .any(|e| e.contains("can't be published")));
+    }
+
+    #[test]
+    fn stage_and_entry_timing_guards() {
+        let scores = vec![ScoreData {
+            stage: 2,
+            car: "7".into(),
+            time: KTime::Time(KTimeTime {
+                time_ds: 100,
+                flags: 0,
+                garage: false,
+            }),
+        }];
+        let runs = vec![RunRecord {
+            r#type: RUN_FINISH.to_string(),
+            test: 3,
+            car: "8".into(),
+            run: 1,
+            ts: 1,
+            ..Default::default()
+        }];
+        assert!(stage_has_timing(&scores, &runs, 2));
+        assert!(stage_has_timing(&scores, &runs, 3));
+        assert!(!stage_has_timing(&scores, &runs, 1));
+        assert!(entry_has_timing(&scores, &runs, "7"));
+        assert!(entry_has_timing(&scores, &runs, "8"));
+        assert!(!entry_has_timing(&scores, &runs, "9"));
+    }
+
+    #[test]
+    fn results_exclude_withdrawn_entries() {
+        let mut e1 = Entry::new("1", "Alice");
+        e1.status = EntryStatus::Started;
+        let mut e2 = Entry::new("2", "Bob");
+        e2.status = EntryStatus::Withdrawn;
+        let mut e3 = Entry::new("3", "Carol");
+        e3.status = EntryStatus::Reserve;
+        let entries = vec![e1, e2, e3];
+        let found = find_entries_in_class(&entries, "Outright");
+        let cars: Vec<&str> = found.iter().map(|e| e.car.as_str()).collect();
+        assert_eq!(cars, vec!["1"]);
     }
 
     #[test]

@@ -368,7 +368,10 @@ Milestone order; check items off as done.
   bundle/configure LiveKit SFU + lk-jwt-service for the event LAN
 
 ### M4 — Event + results polish
-- [ ] Event editor UI (entries, classes, stages, best X of Y)
+- [x] Event editor UI (entries, classes, stages, best X of Y)
+- [x] Events hub screen (demo / search published / plan new / saved)
+- [x] Event lifecycle: draft → publish → amend-only; demo local-only;
+  publish validation (stages present, no timing data)
 - [ ] Category result tabs
 - [ ] Rules reference page (done — `khana_rule.rs`, keep current)
 

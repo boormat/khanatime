@@ -22,8 +22,14 @@ pub enum Msg {
     ClassInput(InputMsg),
     // entry stuff
     EntryInput(InputMsg),
-    ToggleClass { car: String, class: String },
-    SetEntryStatus { car: String, status: EntryStatus },
+    ToggleClass {
+        car: String,
+        class: String,
+    },
+    SetEntryStatus {
+        car: String,
+        status: EntryStatus,
+    },
     DeleteEntry(String),
     // draft event creation
     CreateDraft,
@@ -36,6 +42,10 @@ pub enum Msg {
     StageDelete(usize),
     // publish to Matrix
     Publish,
+    /// Copy a published event to a fresh draft (new id, no timing data).
+    PublishAsNew,
+    /// Re-broadcast the setup manifest to the timing room after amending.
+    SyncToRoom,
 }
 
 #[derive(Clone, Copy)]
@@ -59,6 +69,9 @@ pub struct Model {
     pub edit_entry_close: Signal<String>,
     pub edit_stripe: Signal<String>,
     pub publish_status: Signal<Option<String>>,
+    /// Set when a published event is amended locally and the timing room
+    /// hasn't been re-synced yet.
+    pub needs_sync: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -81,11 +94,20 @@ pub fn init() -> Model {
         edit_entry_close: create_signal(String::new()),
         edit_stripe: create_signal(String::new()),
         publish_status: create_signal(None),
+        needs_sync: create_signal(false),
     }
 }
 
 fn save_event(model: crate::Model) {
     crate::event::save_event(&model.app.event.get_clone());
+    // Amending a published event means the room copy is stale.
+    if model
+        .app
+        .event
+        .with(|e| e.status != crate::event::EventStatus::Draft)
+    {
+        model.screens.setup.needs_sync.set(true);
+    }
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
@@ -193,6 +215,25 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .set(model.screens.setup.edit_rev.get().wrapping_add(1));
         }
         Msg::StageDelete(idx) => {
+            let num = model
+                .screens
+                .setup
+                .edit_stages
+                .with(|v| v.get(idx).map(|s| s.num));
+            if let Some(num) = num {
+                if crate::event::stage_has_timing(
+                    &model.app.scores.get_clone(),
+                    &model.app.runs.get_clone(),
+                    num,
+                ) {
+                    model
+                        .screens
+                        .setup
+                        .feedback
+                        .set(format!("Test {num} has timing data — amend, don't delete."));
+                    return;
+                }
+            }
             model.screens.setup.edit_stages.update(|v| {
                 if idx < v.len() {
                     v.remove(idx);
@@ -205,8 +246,20 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .set(model.screens.setup.edit_rev.get().wrapping_add(1));
         }
         Msg::Publish => publish(model),
+        Msg::PublishAsNew => publish_as_new(model),
+        Msg::SyncToRoom => sync_to_room(model),
         Msg::DeleteEntry(car) => {
             khanatime::log!("delete entry {}", car);
+            if crate::event::entry_has_timing(
+                &model.app.scores.get_clone(),
+                &model.app.runs.get_clone(),
+                &car,
+            ) {
+                model.screens.setup.feedback.set(format!(
+                    "Entry {car} has timing data — withdraw instead of deleting."
+                ));
+                return;
+            }
             let mut removed = false;
             model.app.event.update(|e| removed = e.remove_entry(&car));
             if removed {
@@ -336,11 +389,79 @@ fn save_details(model: crate::Model) {
 /// Publish the current event to a Matrix space + timing room using the
 /// identity logged in on the Home page.
 fn publish(model: crate::Model) {
+    let em = model.screens.setup;
+    let event = model.app.event.get_clone();
+    let scores = model.app.scores.get_clone();
+    let runs = model.app.runs.get_clone();
+    let errs = crate::event::publish_errors(&event, &scores, &runs);
+    if !errs.is_empty() {
+        em.publish_status
+            .set(Some(format!("Can't publish: {}", errs.join(" "))));
+        return;
+    }
     #[cfg(target_arch = "wasm32")]
     publish_wasm(model);
     #[cfg(not(target_arch = "wasm32"))]
-    model.screens.setup.publish_status.set(Some(
+    em.publish_status.set(Some(
         "Matrix publishing is only available in the web build".to_string(),
+    ));
+}
+
+/// Copy a published event into a fresh draft: new id, Matrix links cleared,
+/// no timing data attached (scores live under the old id).  The original stays
+/// untouched, so entries/results survive as an amendable record.
+fn publish_as_new(model: crate::Model) {
+    let em = model.screens.setup;
+    let mut e = model.app.event.get_clone();
+    if e.status == crate::event::EventStatus::Draft {
+        em.publish_status
+            .set(Some("This event isn't published yet.".to_string()));
+        return;
+    }
+    let base = crate::event::build_event_id(&e.year, &e.sponsoring_club, &e.name);
+    let mut id = base.clone();
+    let mut n = 2;
+    while crate::event::list_events().contains(&id) {
+        id = format!("{base}-{n}");
+        n += 1;
+    }
+    e.id = id;
+    e.status = crate::event::EventStatus::Draft;
+    e.space_id = None;
+    e.space_alias = None;
+    e.timing_id = None;
+    e.timing_alias = None;
+    crate::event::save_event(&e);
+    crate::update(model, crate::Msg::SetEvent(e.id.clone()));
+    crate::update(model, crate::Msg::Show(crate::Screen::Event));
+}
+
+/// Re-broadcast the setup manifest to the timing room (wasm only).
+fn sync_to_room(model: crate::Model) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let em = model.screens.setup;
+        let Some(room) = crate::services::matrix::room() else {
+            em.publish_status
+                .set(Some("Not connected to a timing room".to_string()));
+            return;
+        };
+        let event = model.app.event.get_clone();
+        em.publish_status.set(Some("Syncing setup...".to_string()));
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::services::matrix::send_setup(&room, &event).await {
+                Ok(()) => {
+                    em.publish_status
+                        .set(Some("Setup synced to room".to_string()));
+                    em.needs_sync.set(false);
+                }
+                Err(e) => em.publish_status.set(Some(format!("Sync failed: {e}"))),
+            }
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    model.screens.setup.publish_status.set(Some(
+        "Matrix sync is only available in the web build".to_string(),
     ));
 }
 
@@ -400,6 +521,7 @@ pub fn view(model: crate::Model) -> View {
                     (view_create_button(model))
                 }
             }
+            (view_status_banner(model))
             (move || {
                 if model.screens.setup.show_create.get() {
                     view_draft(model)
@@ -411,6 +533,45 @@ pub fn view(model: crate::Model) -> View {
             (view_stages(model))
             (view_publish(model))
             (view_entrants(model))
+        }
+    }
+}
+
+/// True once an event has left the draft stage (published / running / finished).
+fn is_published(model: crate::Model) -> bool {
+    model
+        .app
+        .event
+        .with(|e| e.status != crate::event::EventStatus::Draft)
+}
+
+/// Lifecycle status banner: draft vs published vs local-only demo.
+fn view_status_banner(model: crate::Model) -> View {
+    let (status, is_demo) = model
+        .app
+        .event
+        .with(|e| (e.status.to_string(), e.is_demo()));
+    let (class, label) = if is_demo {
+        ("is-warning", "Demo (local only)")
+    } else if status == "published" {
+        ("is-success", "Published")
+    } else if status == "draft" {
+        ("is-info", "Draft")
+    } else {
+        ("is-success", "Amend-only (running/finished)")
+    };
+    view! {
+        div(class="notification is-light p-2") {
+            span(class=format!("tag {class}")) { (label) }
+            (if is_published(model) {
+                view! {
+                    span(class="help is-inline") {
+                        " Fixed details are locked; entrants and results are amended (no deletion)."
+                    }
+                }
+            } else {
+                view! {}
+            })
         }
     }
 }
@@ -509,13 +670,21 @@ fn view_feedback(model: crate::Model) -> View {
 }
 
 /// Edit the current event's fixed details (tests, dates, club, year, stripe
-/// link, classes).  Everything is read-only until "Edit" is pressed.
+/// link, classes).  Everything is read-only until "Edit" is pressed — and
+/// permanently read-only once the event is published.
 fn view_details(model: crate::Model) -> View {
     let em = model.screens.setup;
-    let editing = em.editing.get();
+    let editing = em.editing.get() && !is_published(model);
     view! {
         div(class="box") {
-            h2(class="title is-5") { "Event details" }
+            h2(class="title is-5") {
+                "Event details"
+                (if is_published(model) {
+                    view! { span(class="tag is-light is-pulled-right") { "locked" } }
+                } else {
+                    view! {}
+                })
+            }
             div(class="field is-grouped") {
                 div(class="control is-expanded") {
                     label(class="label") { "Club / district" }
@@ -552,7 +721,7 @@ fn view_details(model: crate::Model) -> View {
                 h3(class="title is-6") { "Classes" }
                 (move || view_class_list(model))
                 (move || {
-                    if em.editing.get() {
+                    if editing {
                         view! {
                             div {
                                 (input_box(
@@ -570,7 +739,7 @@ fn view_details(model: crate::Model) -> View {
             div(class="field is-grouped") {
                 div(class="control") {
                     (move || {
-                        if em.editing.get() {
+                        if em.editing.get() && !is_published(model) {
                             view! {
                                 button(
                                     class="button is-primary",
@@ -626,6 +795,12 @@ fn view_stages(model: crate::Model) -> View {
             (move || {
                 if !editing {
                     view! { p(class="help") { "Press Edit to change tests." } }
+                } else if is_published(model) {
+                    view! {
+                        p(class="help") {
+                            "Tests are editable, but can't be removed once published (amend, not delete)."
+                        }
+                    }
                 } else {
                     view! {}
                 }
@@ -773,11 +948,17 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
                 (view_timing_buttons(model, idx))
             }
             div(class="column is-1") {
-                button(
-                    class="delete is-danger",
-                    title="Remove test",
-                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::StageDelete(idx))),
-                )
+                (if is_published(model) {
+                    view! {}
+                } else {
+                    view! {
+                        button(
+                            class="delete is-danger",
+                            title="Remove test",
+                            on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::StageDelete(idx))),
+                        )
+                    }
+                })
             }
         }
     }
@@ -840,14 +1021,51 @@ fn view_publish(model: crate::Model) -> View {
         div(class="box") {
             h2(class="title is-5") { "Publish" }
             div(class="field is-grouped") {
-                div(class="control") {
-                    button(
-                        class="button is-primary",
-                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::Publish)),
-                    ) {
-                        "Publish to Matrix"
+                (move || {
+                    let is_demo = model.app.event.with(|e| e.is_demo());
+                    let published = is_published(model);
+                    if is_demo {
+                        view! {
+                            div(class="control") {
+                                span(class="tag is-warning") { "Demo — local only, never published" }
+                            }
+                        }
+                    } else if published {
+                        view! {
+                            div(class="buttons") {
+                                button(
+                                    class="button is-link",
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SyncToRoom)),
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-arrows-rotate") }
+                                    span { "Sync setup to room" }
+                                    (if em.needs_sync.get() {
+                                        view! { span(class="tag is-danger") { "unsynced" } }
+                                    } else {
+                                        view! {}
+                                    })
+                                }
+                                button(
+                                    class="button is-primary",
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::PublishAsNew)),
+                                ) {
+                                    "Publish as New"
+                                }
+                            }
+                        }
+                    } else {
+                        view! {
+                            div(class="control") {
+                                button(
+                                    class="button is-primary",
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::Publish)),
+                                ) {
+                                    "Publish to Matrix"
+                                }
+                            }
+                        }
                     }
-                }
+                })
                 div(class="control") {
                     (move || {
                         let status = model.app.event.with(|e| e.status.to_string());
@@ -861,7 +1079,11 @@ fn view_publish(model: crate::Model) -> View {
             }
             (move || match em.publish_status.get_clone() {
                 Some(s) => view! { p(class="help") { (s) } },
-                None => view! { p(class="help") { "Publishes the event space + timing room with the logged-in account." } },
+                None => view! {
+                    p(class="help") {
+                        "A new event must publish before any timing happens. Once published, edits become amendments synced to the room."
+                    }
+                },
             })
         }
     }
@@ -869,7 +1091,7 @@ fn view_publish(model: crate::Model) -> View {
 
 fn view_class_list(model: crate::Model) -> View {
     let classes = model.app.event.with(|event| event.classes.clone());
-    let editing = model.screens.setup.editing.get();
+    let editing = model.screens.setup.editing.get() && !is_published(model);
     let items = classes
         .iter()
         .map(|class| {
@@ -1023,11 +1245,28 @@ fn view_entry(model: crate::Model, entry: &Entry, classes: &Vec<String>) -> View
             (class_checks)
             (if editing {
                 view! {
-                    button(
-                        class="delete is-danger",
-                        title="Remove entry",
-                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::DeleteEntry(car_del.clone()))),
-                    )
+                    (if is_published(model) {
+                        let car_w = car_del.clone();
+                        view! {
+                            button(
+                                class="button is-small is-warning",
+                                title="Withdraw entry (no deletion after publish)",
+                                on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SetEntryStatus {
+                                    car: car_w.clone(),
+                                    status: EntryStatus::Withdrawn,
+                                })),
+                            ) { "Withdraw" }
+                        }
+                    } else {
+                        let car_d = car_del.clone();
+                        view! {
+                            button(
+                                class="delete is-danger",
+                                title="Remove entry",
+                                on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::DeleteEntry(car_d.clone()))),
+                            )
+                        }
+                    })
                 }
             } else {
                 view! {}

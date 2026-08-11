@@ -16,8 +16,6 @@ pub struct Model {
     pub username: Signal<String>,
     pub password: Signal<String>,
     pub busy: Signal<bool>,
-    /// Event-selector list open/closed on the home page.
-    pub show_events: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -26,7 +24,6 @@ pub fn init() -> Model {
         username: create_signal(String::new()),
         password: create_signal(String::new()),
         busy: create_signal(false),
-        show_events: create_signal(false),
     }
 }
 
@@ -46,7 +43,7 @@ pub fn view(model: crate::Model) -> View {
                         }
                     }
                     (view_connect(model))
-                    (view_events_box(model))
+                    (view_pick_events(model))
                 }
             }
         })
@@ -65,7 +62,6 @@ fn view_dashboard(model: crate::Model) -> View {
         (move || view_actions(model))
         (move || view_comms(model))
         (move || view_status_summary(model))
-        (move || view_events_box(model))
     }
 }
 
@@ -99,7 +95,7 @@ fn view_event_card(model: crate::Model) -> View {
                     div(class="level-item") {
                         button(
                             class="button is-small is-link is-outlined",
-                            on:click=move |_| model.screens.home.show_events.set(true),
+                            on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
                         ) {
                             "Change event"
                         }
@@ -448,94 +444,30 @@ fn status_html(state: ConnState) -> View {
     }
 }
 
-fn view_events_box(model: crate::Model) -> View {
-    let sm = model.screens.home;
+/// Picker entry point: opens the Events screen (demo / published / new / saved).
+fn view_pick_events(model: crate::Model) -> View {
     view! {
         div(class="box") {
             h2(class="title is-5") {
-                "2. Select an event"
-                span(class="tag is-light is-pulled-right") { "Timing room" }
+                "2. Pick an event"
+                span(class="tag is-light is-pulled-right") { "Events" }
             }
-            p(class="help") { "Open a published event to join its timing room." }
-            (move || {
-                let open = sm.show_events.get();
-                view! {
-                    div(class="field") {
-                        div(class="control") {
-                            button(
-                                class=format!(
-                                    "button is-fullwidth {}",
-                                    if open { "is-light" } else { "is-link" }
-                                ),
-                                on:click=move |_| sm.show_events.set(!sm.show_events.get()),
-                            ) {
-                                span(class="icon is-small") {
-                                    i(class=if open { "fa fa-angle-up" } else { "fa fa-angle-down" })
-                                }
-                                span { (if open { "Hide event list" } else { "Select event" }) }
-                            }
-                        }
+            p(class="help") {
+                "Load the demo event, search for a published event on Matrix, or plan a new one."
+            }
+            div(class="field") {
+                div(class="control") {
+                    button(
+                        class="button is-link",
+                        on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-folder-open") }
+                        span { "Open event picker" }
                     }
                 }
-            })
-            (move || {
-                if sm.show_events.get() {
-                    view_events(model)
-                } else {
-                    view! {}
-                }
-            })
+            }
         }
     }
-}
-
-fn view_events(model: crate::Model) -> View {
-    let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
-    ids.sort();
-    if ids.is_empty() {
-        return view! {
-            p(class="help") {
-                "No events yet. Create one on the Event page."
-            }
-        };
-    }
-    let current = model.app.event.with(|e| e.id.clone());
-    let views: Vec<View> = ids
-        .iter()
-        .map(|id| {
-            let id = id.clone();
-            let e = crate::event::load_event(&id);
-            let name = if e.name.is_empty() {
-                id.clone()
-            } else {
-                e.name.clone()
-            };
-            let status = e.status.to_string();
-            let is_current = id == current;
-            view! {
-                div(class="field is-grouped") {
-                    div(class="control is-expanded") {
-                        p(class="has-text-weight-medium") {
-                            (name)
-                            span(class="tag is-light is-pulled-right") { (status) }
-                        }
-                    }
-                    div(class="control") {
-                        button(
-                            class=format!(
-                                "button is-small {}",
-                                if is_current { "is-primary" } else { "is-link" }
-                            ),
-                            on:click=move |_| crate::update(model, crate::Msg::SetEvent(id.clone())),
-                        ) {
-                            (if is_current { "Current" } else { "Open" })
-                        }
-                    }
-                }
-            }
-        })
-        .collect();
-    views.into()
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod event;
+pub mod events;
 pub mod finish;
 pub mod help;
 pub mod home;
