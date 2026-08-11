@@ -98,16 +98,11 @@ pub fn init() -> Model {
     }
 }
 
-fn save_event(model: crate::Model) {
-    crate::event::save_event(&model.app.event.get_clone());
-    // Amending a published event means the room copy is stale.
-    if model
-        .app
-        .event
-        .with(|e| e.status != crate::event::EventStatus::Draft)
-    {
-        model.screens.setup.needs_sync.set(true);
-    }
+/// Record an edit to the current event: enqueue a setup manifest to the
+/// transaction log (the durable record of every edit) and refresh results.
+fn commit_event(model: crate::Model) {
+    crate::app::enqueue_setup(model);
+    crate::update(model, crate::Msg::Reload);
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
@@ -125,7 +120,7 @@ pub fn update(model: crate::Model, msg: Msg) {
                 let mut ok = false;
                 model.app.event.update(|e| ok = e.add_entry(car, name));
                 if ok {
-                    save_event(model);
+                    commit_event(model);
                     input_clear(model.screens.setup.entrant);
                 } else {
                     input_feedback(model.screens.setup.entrant, "Duplicate Entry.");
@@ -158,7 +153,7 @@ pub fn update(model: crate::Model, msg: Msg) {
                 model.app.event.update(|e| {
                     e.rename_class(&key, &input);
                 });
-                save_event(model);
+                commit_event(model);
             }
             input_clear(model.screens.setup.class);
         }
@@ -169,7 +164,7 @@ pub fn update(model: crate::Model, msg: Msg) {
             let mut removed = false;
             model.app.event.update(|e| removed = e.remove_class(&class));
             if removed {
-                save_event(model);
+                commit_event(model);
             }
         }
         Msg::ToggleClass { car, class } => {
@@ -183,7 +178,7 @@ pub fn update(model: crate::Model, msg: Msg) {
                     }
                 }
             });
-            save_event(model);
+            commit_event(model);
         }
         Msg::CreateDraft => create_draft(model),
         Msg::LoadDetails => load_details(model),
@@ -263,7 +258,7 @@ pub fn update(model: crate::Model, msg: Msg) {
             let mut removed = false;
             model.app.event.update(|e| removed = e.remove_entry(&car));
             if removed {
-                save_event(model);
+                commit_event(model);
                 crate::update(model, crate::Msg::Reload);
             }
         }
@@ -274,7 +269,7 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .event
                 .update(|e| updated = e.set_entry_status(&car, status));
             if updated {
-                save_event(model);
+                commit_event(model);
             }
         }
     }
@@ -316,7 +311,8 @@ fn create_draft(model: crate::Model) {
         id: id.clone(),
         ..Default::default()
     };
-    crate::event::save_event(&e);
+    model.app.event.set(e);
+    crate::app::enqueue_setup(model);
     model.screens.setup.new_name.set(String::new());
     model.screens.setup.new_club.set(String::new());
     model.screens.setup.feedback.set(String::new());
@@ -381,9 +377,8 @@ fn save_details(model: crate::Model) {
         e.entry_close = entry_close;
         e.stripe_link = stripe;
     });
-    save_event(model);
+    commit_event(model);
     load_details(model);
-    crate::update(model, crate::Msg::Reload);
 }
 
 /// Publish the current event to a Matrix space + timing room using the
@@ -431,38 +426,23 @@ fn publish_as_new(model: crate::Model) {
     e.space_alias = None;
     e.timing_id = None;
     e.timing_alias = None;
-    crate::event::save_event(&e);
-    crate::update(model, crate::Msg::SetEvent(e.id.clone()));
+    model.app.event.set(e);
+    crate::app::enqueue_setup(model);
+    crate::update(
+        model,
+        crate::Msg::SetEvent(model.app.event.with(|e| e.id.clone())),
+    );
     crate::update(model, crate::Msg::Show(crate::Screen::Event));
 }
 
-/// Re-broadcast the setup manifest to the timing room (wasm only).
+/// Re-broadcast the setup manifest to the timing room by re-enqueueing it
+/// (the durable record) and flushing the pending outbox to the room.
 fn sync_to_room(model: crate::Model) {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let em = model.screens.setup;
-        let Some(room) = crate::services::matrix::room() else {
-            em.publish_status
-                .set(Some("Not connected to a timing room".to_string()));
-            return;
-        };
-        let event = model.app.event.get_clone();
-        em.publish_status.set(Some("Syncing setup...".to_string()));
-        wasm_bindgen_futures::spawn_local(async move {
-            match crate::services::matrix::send_setup(&room, &event).await {
-                Ok(()) => {
-                    em.publish_status
-                        .set(Some("Setup synced to room".to_string()));
-                    em.needs_sync.set(false);
-                }
-                Err(e) => em.publish_status.set(Some(format!("Sync failed: {e}"))),
-            }
-        });
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    model.screens.setup.publish_status.set(Some(
-        "Matrix sync is only available in the web build".to_string(),
-    ));
+    let em = model.screens.setup;
+    crate::app::enqueue_setup(model);
+    crate::sync::flush_pending(model);
+    em.publish_status
+        .set(Some("Setup queued for sync to room".to_string()));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -492,8 +472,9 @@ fn publish_wasm(model: crate::Model) {
                 event.timing_id = Some(rooms.timing.room_id().to_string());
                 event.timing_alias = Some(rooms.timing_alias.to_string());
                 event.status = EventStatus::Published;
-                crate::event::save_event(&event);
                 model.app.event.set(event);
+                crate::app::enqueue_setup(model);
+                crate::sync::flush_pending(model);
                 em.publish_status.set(Some("Published".to_string()));
             }
             Err(e) => em.publish_status.set(Some(format!("Publish failed: {e}"))),

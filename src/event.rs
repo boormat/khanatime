@@ -105,7 +105,7 @@ impl Stage {
 }
 
 // Event INFO.  Staticish
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct EventInfo {
     pub name: String,
 
@@ -272,7 +272,7 @@ impl std::fmt::Display for EventStatus {
     }
 }
 
-#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+#[derive(Default, PartialEq, Serialize, Deserialize, Debug, Clone)]
 pub struct ScoreData {
     // keys For moment only accept int car numbers? 00 0B 24TBC
     pub stage: u8,
@@ -1096,17 +1096,7 @@ pub fn merge_setup(local: &mut EventInfo, incoming: &EventInfo) -> bool {
     changed
 }
 
-const EVENT_PREFIX: &str = "event:";
-const TIMES_PREFIX: &str = "times:";
 const EVENT_SESSION: &str = "event";
-
-fn event_key(key: &str) -> String {
-    format!("{}{}", EVENT_PREFIX, key)
-}
-
-fn times_key(key: &str) -> String {
-    format!("{}{}", TIMES_PREFIX, key)
-}
 
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
@@ -1116,22 +1106,9 @@ fn session_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.session_storage().ok().flatten()
 }
 
-fn get_json<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
-    storage()?
-        .get_item(key)
-        .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
-}
-
-fn set_json<T: Serialize>(key: &str, value: &T) {
-    if let Some(st) = storage() {
-        let _ = st.set_item(key, &serde_json::to_string(value).unwrap());
-    }
-}
-
-/// Load an event by id.  Returns the null event (empty id) when the key is
-/// empty or nothing is stored under it.
+/// Load an event's config by replaying its transaction log (last-writer-wins
+/// on setup).  Returns the null event (empty id) when the key is empty or the
+/// log is empty.
 pub fn load_event(key: &str) -> EventInfo {
     if key.is_empty() {
         return EventInfo {
@@ -1139,37 +1116,9 @@ pub fn load_event(key: &str) -> EventInfo {
             ..Default::default()
         };
     }
-    get_json(&event_key(key)).unwrap_or_default()
-}
-
-/// Key that [load_event]/[save_event]/[load_times] should use for `event`.
-pub fn storage_key(event: &EventInfo) -> String {
-    event.id.clone()
-}
-
-pub fn save_event(event: &EventInfo) {
-    // A null event (nothing selected) must never be persisted.
-    if event.id.is_empty() {
-        return;
-    }
-    set_json(&event_key(&storage_key(event)), event);
-}
-
-/// Delete an event and all of its per-event data (times, run records).
-#[allow(dead_code)] // unused until the event-deletion UI lands
-pub fn remove_event(id: &str) {
-    if id.is_empty() {
-        return;
-    }
-    let Some(st) = storage() else {
-        return;
-    };
-    let _ = st.remove_item(&event_key(id));
-    let _ = st.remove_item(&times_key(id));
-    let _ = st.remove_item(&runs_key(id));
-    if session_event_name() == id {
-        session_set_event("");
-    }
+    let (ev, _, _) =
+        crate::replay::replay(&crate::log::load_log(key), &crate::log::load_pending(key));
+    ev
 }
 
 // ---------------------------------------------------------------------------
@@ -1210,8 +1159,32 @@ pub fn demo_event() -> EventInfo {
 /// Restore the demo event to its pristine template, wiping all training state
 /// (entries, stages, times, runs) added while practising.
 pub fn reset_demo() {
-    remove_event(DEMO_EVENT_ID);
-    save_event(&demo_event());
+    crate::log::remove_event_log(DEMO_EVENT_ID);
+    ensure_demo();
+}
+
+/// Ensure the demo event exists in the transaction log (its setup manifest is
+/// the durable record, exactly like any other event's).
+pub fn ensure_demo() {
+    if crate::log::load_log(DEMO_EVENT_ID).is_empty()
+        && crate::log::load_pending(DEMO_EVENT_ID).is_empty()
+    {
+        enqueue_event_setup(&demo_event());
+    }
+}
+
+/// Enqueue an event-setup manifest into the event's transaction log (the
+/// durable record of its configuration).
+pub fn enqueue_event_setup(ev: &EventInfo) {
+    if ev.id.is_empty() {
+        return;
+    }
+    let body = format!(
+        "{}{}",
+        crate::timing_event::TimingEvent::SETUP_PREFIX,
+        serde_json::to_string(ev).unwrap()
+    );
+    crate::log::enqueue_pending(&ev.id, crate::log::LogMsg::new_pending(body, String::new()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1254,88 +1227,14 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     errs
 }
 
-/// List of known events in storage (ids).  If it fails .. empty is fine.
+/// List of known events (ids) that have a transaction log.
 pub fn list_events() -> HashSet<String> {
-    let mut out: HashSet<String> = Default::default();
-    if let Some(st) = storage() {
-        if let Ok(len) = st.length() {
-            (0..len).for_each(|i| {
-                if let Ok(Some(name)) = st.key(i) {
-                    if let Some(key) = name.strip_prefix(EVENT_PREFIX) {
-                        if let Some(e) = get_json::<EventInfo>(&name) {
-                            out.insert(if e.id.is_empty() {
-                                key.to_string()
-                            } else {
-                                e.id
-                            });
-                        }
-                    }
-                }
-            });
-        }
-    }
-    out
-}
-
-pub fn load_times(key: &str) -> Vec<ScoreData> {
-    if key.is_empty() {
-        return vec![];
-    }
-    get_json(&times_key(key)).unwrap_or_default()
-}
-
-pub fn save_times(key: &str, scores: &Vec<ScoreData>) {
-    if !key.is_empty() {
-        set_json(&times_key(key), scores);
-    }
-}
-
-/// Migrate per-event data (times, run records) stored under a legacy name key
-/// to the current id key.  No-op when the keys match or either is empty.
-pub fn migrate_times_if_needed(old_key: &str, new_key: &str) {
-    if old_key.is_empty() || new_key.is_empty() || old_key == new_key {
-        return;
-    }
-    if get_json::<Vec<ScoreData>>(&times_key(new_key)).is_none() {
-        if let Some(times) = get_json::<Vec<ScoreData>>(&times_key(old_key)) {
-            set_json(&times_key(new_key), &times);
-            if let Some(st) = storage() {
-                let _ = st.remove_item(&times_key(old_key));
-            }
-        }
-    }
-    if get_json::<Vec<RunRecord>>(&runs_key(new_key)).is_none() {
-        if let Some(runs) = get_json::<Vec<RunRecord>>(&runs_key(old_key)) {
-            set_json(&runs_key(new_key), &runs);
-            if let Some(st) = storage() {
-                let _ = st.remove_item(&runs_key(old_key));
-            }
-        }
-    }
+    crate::log::list_event_ids()
 }
 
 // ---------------------------------------------------------------------------
 // Run records (start/finish pairing, run numbering, pending starts).
 // ---------------------------------------------------------------------------
-
-const RUNS_PREFIX: &str = "runs:";
-
-fn runs_key(key: &str) -> String {
-    format!("{}{}", RUNS_PREFIX, key)
-}
-
-pub fn load_runs(key: &str) -> Vec<RunRecord> {
-    if key.is_empty() {
-        return vec![];
-    }
-    get_json(&runs_key(key)).unwrap_or_default()
-}
-
-pub fn save_runs(key: &str, runs: &Vec<RunRecord>) {
-    if !key.is_empty() {
-        set_json(&runs_key(key), runs);
-    }
-}
 
 /// Two records are the same observation (used to dedupe Matrix mirrors).
 fn same_run(a: &RunRecord, b: &RunRecord) -> bool {

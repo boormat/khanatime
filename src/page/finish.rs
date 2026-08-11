@@ -1,8 +1,7 @@
 use sycamore::prelude::*;
 
 use crate::event::{
-    add_run, elapsed_ds, next_run, pending_starts, save_runs, upsert_ktime, KTime, RunRecord,
-    RUN_FINISH,
+    elapsed_ds, next_run, pending_starts, upsert_ktime, KTime, RunRecord, RUN_FINISH,
 };
 use crate::page::{pad, penalty};
 
@@ -117,14 +116,8 @@ fn do_finish(model: crate::Model) {
     model.app.scores.update(|s| {
         upsert_ktime(s, test, &car, ktime);
     });
-    let key = model.app.event.with(crate::event::storage_key);
-    crate::event::save_times(&key, &model.app.scores.get_clone());
 
-    model.app.runs.update(|runs| {
-        add_run(runs, finish.clone());
-    });
-    save_runs(&key, &model.app.runs.get_clone());
-    crate::page::broadcast_run(model, &finish);
+    crate::page::enqueue_run(model, &finish);
     crate::update(model, crate::Msg::Reload);
     sm.car.set(String::new());
     sm.time.set(String::new());

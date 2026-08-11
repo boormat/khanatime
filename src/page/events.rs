@@ -53,9 +53,7 @@ pub enum Msg {
 pub fn update(model: crate::Model, msg: Msg) {
     match msg {
         Msg::LoadDemo => {
-            if !crate::event::list_events().contains(DEMO_EVENT_ID) {
-                crate::event::save_event(&crate::event::demo_event());
-            }
+            crate::event::ensure_demo();
             crate::update(model, crate::Msg::SetEvent(DEMO_EVENT_ID.to_string()));
             crate::update(model, crate::Msg::Show(crate::Screen::Home));
         }
@@ -156,7 +154,7 @@ fn open_result(model: crate::Model, alias: String) {
         em.search_busy.set(false);
         match res {
             Ok(ev) => {
-                crate::event::save_event(&ev);
+                crate::event::enqueue_event_setup(&ev);
                 crate::update(model, crate::Msg::SetEvent(ev.id));
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
             }

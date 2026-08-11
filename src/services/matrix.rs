@@ -630,27 +630,40 @@ pub async fn join_room_for_event(
 
 // ----- send -----
 
-pub async fn send_chat(room: &Room, text: &str) -> Result<(), String> {
+pub async fn send_chat(room: &Room, text: &str) -> Result<String, String> {
     let content = serde_json::json!({ "msgtype": "m.text", "body": text });
     room.send_raw(TimingEvent::MESSAGE_TYPE, content)
         .await
-        .map(|_| ())
+        .map(|res| res.response.event_id.to_string())
         .map_err(|e| e.to_string())
 }
 
-pub async fn send_timing(room: &Room, event: &TimingEvent) -> Result<(), String> {
+pub async fn send_timing(room: &Room, event: &TimingEvent) -> Result<String, String> {
     room.send_raw(TimingEvent::MESSAGE_TYPE, event.to_matrix_content())
         .await
-        .map(|_| ())
+        .map(|res| res.response.event_id.to_string())
         .map_err(|e| e.to_string())
 }
 
 /// Broadcast the full event setup so fresh devices joining the timing room can
 /// adopt it (`khanatime_setup:` body prefix).  Merge is last-writer-wins.
-pub async fn send_setup(room: &Room, event: &crate::event::EventInfo) -> Result<(), String> {
+pub async fn send_setup(room: &Room, event: &crate::event::EventInfo) -> Result<String, String> {
     let json = serde_json::to_string(event).map_err(|e| e.to_string())?;
     let body = format!("{}{}", TimingEvent::SETUP_PREFIX, json);
     send_chat(room, &body).await
+}
+
+/// Send a stored outbox message to the room, returning the Matrix event id.
+/// Setup manifests are plain `m.text` bodies; timing messages carry the
+/// `khanatime` content key (reconstructed from their `KT {json}` body).
+pub async fn send_log_message(room: &Room, msg: &crate::log::LogMsg) -> Result<String, String> {
+    if msg.body.starts_with(TimingEvent::SETUP_PREFIX) {
+        send_chat(room, &msg.body).await
+    } else if let Some(te) = TimingEvent::from_body(&msg.body) {
+        send_timing(room, &te).await
+    } else {
+        Err("not a sendable log message".to_string())
+    }
 }
 
 /// Broadcast a results snapshot for the audit trail (`khanatime_result:` body
@@ -667,7 +680,7 @@ pub async fn send_result(
         "scores": scores,
     });
     let body = format!("{}{}", TimingEvent::RESULT_PREFIX, body);
-    send_chat(room, &body).await
+    send_chat(room, &body).await.map(|_| ())
 }
 
 /// Replay the full room history oldest→newest into `on_event`, so a joining

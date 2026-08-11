@@ -1,7 +1,9 @@
 mod app;
 mod event;
 mod input;
+mod log;
 mod page;
+mod replay;
 mod services;
 mod sync;
 mod timing_event;

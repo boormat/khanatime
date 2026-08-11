@@ -88,26 +88,29 @@ impl Model {
         // No real event selected yet: start with NO current event (empty id +
         // name) so the app shows the picker / sign-in screens instead of a
         // fabricated placeholder event.
-        let event_info = if session_key.is_empty() {
-            EventInfo {
-                id: String::new(),
-                name: String::new(),
-                stages: vec![],
-                stages_count: 0,
-                classes: vec![],
-                entries: vec![],
-                ..EventInfo::default()
-            }
+        let (event_info, scores, runs) = if session_key.is_empty() {
+            (
+                EventInfo {
+                    id: String::new(),
+                    name: String::new(),
+                    stages: vec![],
+                    stages_count: 0,
+                    classes: vec![],
+                    entries: vec![],
+                    ..EventInfo::default()
+                },
+                vec![],
+                vec![],
+            )
         } else {
-            crate::event::load_event(&session_key)
+            crate::replay::replay(
+                &crate::log::load_log(&session_key),
+                &crate::log::load_pending(&session_key),
+            )
         };
-        crate::event::migrate_times_if_needed(&session_key, &event_info.id);
-        let storage = crate::event::storage_key(&event_info);
-        let scores = crate::event::load_times(&storage);
-        let runs = crate::event::load_runs(&storage);
         let results = page::results::init(&event_info, &scores);
 
-        Model {
+        let m = Model {
             screen: create_signal(Screen::Event),
             app: AppState {
                 event: create_signal(event_info),
@@ -127,7 +130,9 @@ impl Model {
                 chat: page::chat::init(),
                 results,
             },
-        }
+        };
+        refresh_feed(m);
+        m
     }
 }
 
@@ -146,26 +151,22 @@ pub fn update(model: Model, msg: Msg) {
         Msg::Show(screen) => show(model, screen),
 
         Msg::SetEvent(name) => {
-            let event = crate::event::load_event(&name);
-            crate::event::migrate_times_if_needed(&name, &event.id);
-            let storage = crate::event::storage_key(&event);
-            let scores = crate::event::load_times(&storage);
-            let runs = crate::event::load_runs(&storage);
+            let (event, scores, runs) = crate::replay::replay(
+                &crate::log::load_log(&name),
+                &crate::log::load_pending(&name),
+            );
+            model.app.event.set(event.clone());
             model.app.scores.set(scores);
             model.app.runs.set(runs);
-            model.app.event.set(event.clone());
-            crate::event::session_set_event(&storage);
-            model.screens.chat.feed.set(Vec::new());
+            crate::event::session_set_event(&name);
             model.screens.chat.expanded.set(Default::default());
+            refresh_feed(model);
             page::event::update(model, page::event::Msg::LoadDetails);
             page::results::update(model, page::results::Msg::Reload);
             crate::sync::join_current_event(model);
         }
 
         Msg::Reload => {
-            let storage = model.app.event.with(crate::event::storage_key);
-            model.app.scores.set(crate::event::load_times(&storage));
-            model.app.runs.set(crate::event::load_runs(&storage));
             page::results::update(model, page::results::Msg::Reload);
         }
 
@@ -186,6 +187,55 @@ pub fn setup_effects(model: Model) {
         let cmd = page::stage::parse_command(&input);
         model.screens.stage.preview.set(cmd);
     });
+}
+
+// ------ ------
+//     Log / feed helpers
+// ------ ------
+
+/// Rebuild the chat feed from the current event's stored log + pending, and
+/// refresh the setup screen's "needs sync" flag (unsent setup manifest).
+pub fn refresh_feed(model: Model) {
+    let id = model.app.event.with(|e| e.id.clone());
+    let log = crate::log::load_log(&id);
+    let pending = crate::log::load_pending(&id);
+    let mut feed: Vec<crate::page::chat::FeedEntry> = log
+        .iter()
+        .chain(pending.iter())
+        .map(crate::page::chat::FeedEntry::from)
+        .collect();
+    feed.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.mid.cmp(&b.mid)));
+    model.screens.chat.feed.set(feed);
+    // Only published+ events sync to a room, so only they can need a re-sync.
+    let published = model
+        .app
+        .event
+        .with(|e| e.status != crate::event::EventStatus::Draft);
+    let has_unsent_setup = published
+        && pending.iter().any(|m| {
+            m.body
+                .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
+        });
+    model.screens.setup.needs_sync.set(has_unsent_setup);
+}
+
+/// Enqueue a setup-manifest message for the current event (the durable record
+/// of every edit) and refresh the feed.  Flushes to the room when connected.
+pub fn enqueue_setup(model: Model) {
+    let id = model.app.event.with(|e| e.id.clone());
+    if id.is_empty() {
+        return;
+    }
+    let ev = model.app.event.get_clone();
+    let body = format!(
+        "{}{}",
+        crate::timing_event::TimingEvent::SETUP_PREFIX,
+        serde_json::to_string(&ev).unwrap()
+    );
+    let sender = model.app.identity.get_clone();
+    crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(body, sender));
+    refresh_feed(model);
+    crate::sync::flush_pending(model);
 }
 
 // ------ ------

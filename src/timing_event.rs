@@ -82,13 +82,26 @@ impl TimingEvent {
         te
     }
 
+    /// The `m.text` body this event is carried in (also stored in pending).
+    pub fn body(&self) -> String {
+        format!(
+            "KT {}",
+            serde_json::to_value(self).expect("timing event serializes")
+        )
+    }
+
+    /// Parse a `KT {json}` message body back into a [TimingEvent].
+    pub fn from_body(body: &str) -> Option<Self> {
+        let json = body.strip_prefix("KT ")?;
+        serde_json::from_str(json).ok()
+    }
+
     /// Wrap this event as `m.room.message` content.
     pub fn to_matrix_content(&self) -> serde_json::Value {
-        let json = serde_json::to_value(self).expect("timing event serializes");
         serde_json::json!({
             "msgtype": "m.text",
-            "body": format!("KT {}", json),
-            Self::CONTENT_KEY: json,
+            "body": self.body(),
+            Self::CONTENT_KEY: serde_json::to_value(self).expect("timing event serializes"),
         })
     }
 

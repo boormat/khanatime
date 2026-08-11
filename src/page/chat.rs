@@ -4,9 +4,9 @@ use sycamore::prelude::*;
 
 use crate::timing_event::TimingEvent;
 
-// Chat: transaction-log viewer for the current event's timing room.  Every
-// message the server holds (backfill + live) lands in `feed`; the room is
-// merged into local state elsewhere.  No send box — this is a diagnostics
+// Chat: transaction-log viewer for the current event's timing room.  The log
+// (backfill + live) plus any unsent pending messages land in `feed`; the room
+// is merged into local state elsewhere.  No send box — this is a diagnostics
 // viewer: one line per message, click a line to pretty-print its raw JSON.
 
 #[derive(Clone)]
@@ -19,6 +19,22 @@ pub struct FeedEntry {
     pub timing: Option<TimingEvent>,
     /// Full raw `m.room.message` event JSON.
     pub raw: String,
+    /// True while this message is still unsent (local outbox).
+    pub pending: bool,
+}
+
+impl From<&crate::log::LogMsg> for FeedEntry {
+    fn from(m: &crate::log::LogMsg) -> Self {
+        Self {
+            mid: m.mid.clone(),
+            ts: m.ts,
+            sender: m.sender.clone(),
+            body: m.body.clone(),
+            timing: TimingEvent::from_body(&m.body),
+            raw: m.raw.clone(),
+            pending: m.pending,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -160,7 +176,8 @@ fn line_summary(e: &FeedEntry) -> String {
     } else {
         e.body.clone()
     };
-    format!("{}  {}  {}", fmt_ts(e.ts), e.sender, summary)
+    let tag = if e.pending { " ↺ pending" } else { "" };
+    format!("{}{}  {}  {}", fmt_ts(e.ts), tag, e.sender, summary)
 }
 
 /// Raw event JSON, pretty-printed.

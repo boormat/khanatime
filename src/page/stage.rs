@@ -57,41 +57,10 @@ pub fn init() -> StageModel {
     }
 }
 
-fn save_times(model: Model) {
-    let key = model.app.event.with(crate::event::storage_key);
-    let scores = model.app.scores.get_clone();
-    crate::event::save_times(&key, &scores);
-}
-
-/// Send the entered time to the current event's Matrix timing room (web build
-/// only; no-op if not connected or no event id).
+/// Send the entered time to the current event's pending outbox (the durable
+/// record until it's flushed to the timing room).
 fn broadcast_time(model: Model, car: &str, stage: u8, time: &KTime) {
-    #[cfg(target_arch = "wasm32")]
-    broadcast_time_wasm(model, car, stage, time);
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = (model, car, stage, time);
-}
-
-#[cfg(target_arch = "wasm32")]
-fn broadcast_time_wasm(model: Model, car: &str, stage: u8, time: &KTime) {
-    let Some(room) = crate::services::matrix::room() else {
-        return;
-    };
-    let event_id = model.app.event.with(|e| e.id.clone());
-    if event_id.is_empty() {
-        return;
-    }
-    let run = model.app.scores.with(|s| {
-        s.iter()
-            .filter(|x| x.stage == stage && x.car == car)
-            .count() as u8
-            + 1
-    });
-    let mut te = crate::timing_event::TimingEvent::finish(&event_id, stage, car, run, time);
-    te.official_id = Some(model.app.identity.get_clone());
-    wasm_bindgen_futures::spawn_local(async move {
-        let _ = crate::services::matrix::send_timing(&room, &te).await;
-    });
+    crate::page::enqueue_ktime(model, stage, car, time);
 }
 
 pub fn update(model: Model, msg: StageMsg) {
@@ -107,7 +76,6 @@ pub fn update(model: Model, msg: StageMsg) {
                 Ok(CmdParse::Time(tc)) => {
                     khanatime::log!("time");
                     add_score(model);
-                    save_times(model);
                     broadcast_time(model, &tc.car, model.screens.stage.stage.get(), &tc.code);
                     crate::update(model, crate::Msg::Reload);
 
@@ -167,8 +135,9 @@ fn publish_wasm(model: Model) {
                 event.timing_id = Some(rooms.timing.room_id().to_string());
                 event.timing_alias = Some(rooms.timing_alias.to_string());
                 event.status = EventStatus::Published;
-                crate::event::save_event(&event);
                 model.app.event.set(event);
+                crate::app::enqueue_setup(model);
+                crate::sync::flush_pending(model);
                 sm.publish_status.set(Some("Published".to_string()));
             }
             Err(e) => sm.publish_status.set(Some(format!("Publish failed: {e}"))),

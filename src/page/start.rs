@@ -1,10 +1,10 @@
 use sycamore::prelude::*;
 
-use crate::event::{add_run, next_run, save_runs, RunRecord, RUN_START};
+use crate::event::{next_run, RunRecord, RUN_START};
 use crate::page::pad;
 
 // Big-button start timing: pick a test, pick a car, press START.  Records a
-// `start` run (for pending-starts / run numbering) and broadcasts it.
+// `start` run (for pending-starts / run numbering) to the pending outbox.
 
 #[derive(Clone)]
 pub enum Msg {
@@ -36,15 +36,6 @@ pub fn update(model: crate::Model, msg: Msg) {
     }
 }
 
-fn record(model: crate::Model, run: RunRecord) {
-    model.app.runs.update(|runs| {
-        add_run(runs, run);
-    });
-    let runs = model.app.runs.get_clone();
-    let key = model.app.event.with(crate::event::storage_key);
-    save_runs(&key, &runs);
-}
-
 fn start_car(model: crate::Model) {
     let car = model.screens.start.car.get_clone().trim().to_string();
     if car.is_empty() {
@@ -68,8 +59,7 @@ fn start_car(model: crate::Model) {
         flags: None,
         official_id: Some(model.app.identity.get_clone()),
     };
-    record(model, record_run.clone());
-    crate::page::broadcast_run(model, &record_run);
+    crate::page::enqueue_run(model, &record_run);
     model.screens.start.feedback.set(None);
     model.screens.start.car.set(String::new());
 }
@@ -98,14 +88,11 @@ fn mark_dns(model: crate::Model) {
         flags: None,
         official_id: Some(model.app.identity.get_clone()),
     };
-    record(model, record_run.clone());
-    crate::page::broadcast_run(model, &record_run);
+    crate::page::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".
     model.app.scores.update(|s| {
         crate::event::upsert_ktime(s, test, &car, crate::event::KTime::NOSHO);
     });
-    let key = model.app.event.with(crate::event::storage_key);
-    crate::event::save_times(&key, &model.app.scores.get_clone());
     crate::update(model, crate::Msg::Reload);
     model.screens.start.feedback.set(None);
     model.screens.start.car.set(String::new());
