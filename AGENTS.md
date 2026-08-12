@@ -13,18 +13,24 @@ trunk serve
 # Release build
 trunk build --release
 
+# Releasable check (fmt + clippy warnings-as-errors + tests) —
+# same script CI runs; gates the deploy workflow
+./scripts/check.sh
+
 # Tests
 cargo test
 
 # Format
 cargo fmt
 
-# Lint (CI has this commented out, run locally)
-cargo clippy --all-features
+# Lint (matches CI; --all-targets also lints test code)
+cargo clippy --all-targets
 ```
 
 Deploy is a manual GitHub Actions workflow (`deploy.yml`) that updates
-https://boormat.github.io/khanatime/ — run it from the Actions tab.
+https://boormat.github.io/khanatime/ — run it from the Actions tab. It is
+gated on the `check` job (`scripts/check.sh`), so a release can't ship
+unlinted code.
 
 ## Framework notes
 
