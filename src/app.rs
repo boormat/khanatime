@@ -21,6 +21,7 @@ pub enum Screen {
     Start,
     Finish,
     Event,
+    Entries,
     Chat,
 }
 
@@ -60,6 +61,7 @@ pub struct Screens {
     pub finish: page::finish::Model,
     pub chat: page::chat::Model,
     pub results: page::results::Model,
+    pub entries: page::entries::Model,
 }
 
 #[derive(Clone, Copy)]
@@ -80,6 +82,7 @@ pub enum Msg {
     EventMsg(page::event::Msg),
     EventsMsg(page::events::Msg),
     ResultMsg(page::results::Msg),
+    EntriesMsg(page::entries::Msg),
 }
 
 impl Model {
@@ -129,6 +132,7 @@ impl Model {
                 finish: page::finish::init(),
                 chat: page::chat::init(),
                 results,
+                entries: page::entries::init(),
             },
         };
         refresh_feed(m);
@@ -160,6 +164,11 @@ pub fn update(model: Model, msg: Msg) {
             model.app.runs.set(runs);
             crate::event::session_set_event(&name);
             model.screens.chat.expanded.set(Default::default());
+            // Fresh event: reset any staged entry edits.
+            model.screens.entries.staged.set(Vec::new());
+            model.screens.entries.confirm.set(None);
+            model.screens.entries.admin.set(false);
+            model.screens.entries.show_form.set(false);
             refresh_feed(model);
             page::event::update(model, page::event::Msg::LoadDetails);
             page::results::update(model, page::results::Msg::Reload);
@@ -176,6 +185,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::EventMsg(msg) => page::event::update(model, msg),
         Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => page::results::update(model, msg),
+        Msg::EntriesMsg(msg) => page::entries::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
     }
 }
@@ -261,6 +271,7 @@ fn view_content(model: Model) -> View {
         Screen::Stage,
         Screen::Results,
         Screen::Chat,
+        Screen::Entries,
     ];
     let effective = if needs_event.contains(&screen) && model.app.event.with(|e| e.is_null()) {
         Screen::Home
@@ -279,6 +290,7 @@ fn view_content(model: Model) -> View {
                 Screen::Finish => page::finish::view(model),
                 Screen::Results => page::results::view(model),
                 Screen::Event => page::event::view(model),
+                Screen::Entries => page::entries::view(model),
                 Screen::Chat => page::chat::view(model),
             })
         }
@@ -295,6 +307,7 @@ fn view_navbar(model: Model) -> View {
         Screen::Stage,
         Screen::Results,
         Screen::Chat,
+        Screen::Entries,
     ];
     let mut brand: Vec<View> = vec![];
     for (screen, icon) in [
@@ -305,6 +318,7 @@ fn view_navbar(model: Model) -> View {
         (Screen::Finish, "fa fa-flag-checkered"),
         (Screen::Stage, "fa fa-stopwatch-20"),
         (Screen::Results, "fa fa-trophy"),
+        (Screen::Entries, "fa fa-users"),
         (Screen::Chat, "fa fa-comments"),
         (Screen::Help, "fa fa-question"),
         (Screen::KhanaRules, "fa fa-book"),

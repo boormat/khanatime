@@ -657,7 +657,9 @@ pub async fn send_setup(room: &Room, event: &crate::event::EventInfo) -> Result<
 /// Setup manifests are plain `m.text` bodies; timing messages carry the
 /// `khanatime` content key (reconstructed from their `KT {json}` body).
 pub async fn send_log_message(room: &Room, msg: &crate::log::LogMsg) -> Result<String, String> {
-    if msg.body.starts_with(TimingEvent::SETUP_PREFIX) {
+    if msg.body.starts_with(TimingEvent::SETUP_PREFIX)
+        || msg.body.starts_with(TimingEvent::ENTRY_PREFIX)
+    {
         send_chat(room, &msg.body).await
     } else if let Some(te) = TimingEvent::from_body(&msg.body) {
         send_timing(room, &te).await

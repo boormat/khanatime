@@ -310,6 +310,62 @@ fn view_status_summary(model: crate::Model) -> View {
 
     let (total, active, withdrawn, draft, reserve) = entry_counts(&event);
     let stages = stage_progress(&event, &scores, &runs);
+    let unassigned = event
+        .entries
+        .iter()
+        .filter(|e| {
+            crate::event::is_active_entry(e)
+                && e.car.is_empty()
+                && e.status != crate::event::EntryStatus::Reserve
+        })
+        .count();
+    // Pre-compute owned shared-car info (groups borrows event.entries which
+    // goes out of scope before the view! macro, which needs 'static data).
+    let shared_box: View = {
+        let groups = crate::event::shared_groups(&event.entries);
+        if groups.is_empty() {
+            view! {}
+        } else {
+            let lines: Vec<View> = groups
+                .iter()
+                .map(|(name, members)| {
+                    // Clone before view! to avoid borrowing groups into the
+                    // view! closure (which needs 'static data).
+                    let name = name.clone();
+                    let who = members
+                        .iter()
+                        .map(|e| {
+                            let car = if e.car.is_empty() {
+                                "?"
+                            } else {
+                                e.car.as_str()
+                            };
+                            format!("{car} {name2}", name2 = e.name)
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    view! {
+                        div(class="level") {
+                            div(class="level-left") {
+                                span(class="tag is-warning") {
+                                    i(class="fa fa-users")
+                                    (name)
+                                }
+                                span(class="ml-2") { (who) }
+                            }
+                        }
+                    }
+                })
+                .collect();
+            view! {
+                div(class="mt-2") {
+                    h3(class="title is-6") { "Shared cars" }
+                    (lines)
+                    p(class="help") { "Drivers sharing a car — run them early or hurry them up." }
+                }
+            }
+        }
+    };
 
     let mut rows: Vec<View> = vec![];
     for s in &stages {
@@ -364,7 +420,16 @@ fn view_status_summary(model: crate::Model) -> View {
                 } else {
                     view! {}
                 })
+                (if unassigned > 0 {
+                    view! { div(class="control") { span(class="tags has-addons") {
+                        span(class="tag") { "Awaiting #" }
+                        span(class="tag is-danger") { (unassigned.to_string()) }
+                    } } }
+                } else {
+                    view! {}
+                })
             }
+            (shared_box)
             table(class="table is-fullwidth is-striped") {
                 thead {
                     tr {

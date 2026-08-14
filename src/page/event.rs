@@ -1,17 +1,12 @@
-use crate::event::Entry;
-use crate::event::EntryStatus;
 use crate::event::Stage;
 use crate::event::TimingStyle;
 use crate::input::input_box;
 use crate::input::input_clear;
-use crate::input::input_feedback;
 use crate::input::InputModel;
 use crate::input::InputMsg;
 
 // Event edit view.
 // List of Classes. = derived from users?
-// List of Entrants.
-use lazy_regex::regex;
 use sycamore::prelude::*;
 
 #[derive(Clone)]
@@ -20,38 +15,34 @@ pub enum Msg {
     EditClass(String), // borkish
     DeleteClass(String),
     ClassInput(InputMsg),
-    // entry stuff
-    EntryInput(InputMsg),
-    ToggleClass {
-        car: String,
-        class: String,
-    },
-    SetEntryStatus {
-        car: String,
-        status: EntryStatus,
-    },
-    DeleteEntry(String),
     // draft event creation
     CreateDraft,
     // event details editing
     LoadDetails,
-    SaveLocal,
+    /// Compact + diff the staged edits and open the confirm modal.
+    SaveBatch,
+    /// Apply the staged event and enqueue one setup manifest.
+    SendBatch,
+    /// Close the confirm modal and keep editing.
+    CancelBatch,
+    /// Revert the edit form to the committed event and stop editing.
+    DiscardBatch,
     ToggleEdit,
     // per-test (stage) editing
     StageAdd,
     StageDelete(usize),
-    // publish to Matrix
+    // publish + sync to Matrix
     Publish,
     /// Copy a published event to a fresh draft (new id, no timing data).
     PublishAsNew,
-    /// Re-broadcast the setup manifest to the timing room after amending.
+    /// Re-broadcast the event setup manifest to the already-existing timing
+    /// room (after an amendment).
     SyncToRoom,
 }
 
 #[derive(Clone, Copy)]
 pub struct Model {
     pub class: InputModel,
-    pub entrant: InputModel,
     pub new_name: Signal<String>,
     pub new_club: Signal<String>,
     pub new_year: Signal<String>,
@@ -68,17 +59,20 @@ pub struct Model {
     pub edit_entry_open: Signal<String>,
     pub edit_entry_close: Signal<String>,
     pub edit_stripe: Signal<String>,
+    /// Staged class list (like `edit_stages`), applied on batch send.
+    pub edit_classes: Signal<Vec<String>>,
     pub publish_status: Signal<Option<String>>,
     /// Set when a published event is amended locally and the timing room
     /// hasn't been re-synced yet.
     pub needs_sync: Signal<bool>,
+    /// Batch-confirm modal content (the event diff) while open.
+    pub confirm: Signal<Option<Vec<String>>>,
 }
 
 pub fn init() -> Model {
     let year = js_sys::Date::new_0().get_full_year().to_string();
     Model {
         class: crate::input::init(),
-        entrant: crate::input::init(),
         new_name: create_signal(String::new()),
         new_club: create_signal(String::new()),
         new_year: create_signal(year.clone()),
@@ -93,8 +87,10 @@ pub fn init() -> Model {
         edit_entry_open: create_signal(String::new()),
         edit_entry_close: create_signal(String::new()),
         edit_stripe: create_signal(String::new()),
+        edit_classes: create_signal(crate::event::EventInfo::default().classes),
         publish_status: create_signal(None),
         needs_sync: create_signal(false),
+        confirm: create_signal(None),
     }
 }
 
@@ -111,27 +107,6 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::ClassInput(InputMsg::CancelEdit) => {
             input_clear(model.screens.setup.class);
         }
-        Msg::EntryInput(InputMsg::CancelEdit) => {
-            input_clear(model.screens.setup.entrant);
-        }
-        Msg::EntryInput(InputMsg::DoThing) => {
-            let input = model.screens.setup.entrant.input.get_clone();
-            if let Some((car, name)) = parse_car_and(&input[..]) {
-                let mut ok = false;
-                model.app.event.update(|e| ok = e.add_entry(car, name));
-                if ok {
-                    commit_event(model);
-                    input_clear(model.screens.setup.entrant);
-                } else {
-                    input_feedback(model.screens.setup.entrant, "Duplicate Entry.");
-                }
-            } else {
-                input_feedback(
-                    model.screens.setup.entrant,
-                    "Can't parse Entry. Car#<space>Name",
-                );
-            }
-        }
         Msg::EditClass(class) => {
             model.screens.setup.class.input.set(class.clone());
             model
@@ -143,50 +118,44 @@ pub fn update(model: crate::Model, msg: Msg) {
         }
 
         Msg::ClassInput(InputMsg::DoThing) => {
-            // new or rename... if key not null?
+            // new or rename... if key not null?  Stages into the edit form.
             let key = model.screens.setup.class.key.get_clone();
             let input = model.screens.setup.class.input.get_clone();
-            if key.is_empty() {
-                model.app.event.update(|e| e.add_class(&input));
-            } else {
-                // can't remove without removing drivers first?
-                model.app.event.update(|e| {
-                    e.rename_class(&key, &input);
-                });
-                commit_event(model);
-            }
+            model.screens.setup.edit_classes.update(|v| {
+                if key.is_empty() {
+                    if !v.contains(&input) {
+                        v.push(input.clone());
+                    }
+                } else if let Some(c) = v.iter_mut().find(|c| **c == key) {
+                    *c = input.clone();
+                }
+            });
             input_clear(model.screens.setup.class);
         }
 
         Msg::DeleteClass(class) => {
-            khanatime::log!("delete {}", class);
-            // can't remove without removing drivers first?
-            let mut removed = false;
-            model.app.event.update(|e| removed = e.remove_class(&class));
-            if removed {
-                commit_event(model);
-            }
-        }
-        Msg::ToggleClass { car, class } => {
-            khanatime::log!("toggle {} {}", car, class);
-            model.app.event.update(|e| {
-                if let Some(entry) = e.entries.iter_mut().find(|entry| entry.car == car) {
-                    if entry.classes.contains(&class) {
-                        entry.classes.retain(|x| x != &class);
-                    } else {
-                        entry.classes.push(class.clone());
-                    }
-                }
-            });
-            commit_event(model);
+            model
+                .screens
+                .setup
+                .edit_classes
+                .update(|v| v.retain(|c| c != &class));
         }
         Msg::CreateDraft => create_draft(model),
         Msg::LoadDetails => load_details(model),
-        Msg::SaveLocal => save_details(model),
+        Msg::SaveBatch => save_batch(model),
+        Msg::SendBatch => send_batch(model),
+        Msg::CancelBatch => model.screens.setup.confirm.set(None),
+        Msg::DiscardBatch => {
+            load_details(model);
+            model.screens.setup.editing.set(false);
+            model.screens.setup.confirm.set(None);
+        }
         Msg::ToggleEdit => {
             if model.screens.setup.editing.get() {
-                save_details(model);
+                // Done: abandon staged edits and revert the form.
+                load_details(model);
                 model.screens.setup.editing.set(false);
+                model.screens.setup.confirm.set(None);
             } else {
                 model.screens.setup.editing.set(true);
                 load_details(model);
@@ -242,37 +211,65 @@ pub fn update(model: crate::Model, msg: Msg) {
         }
         Msg::Publish => publish(model),
         Msg::PublishAsNew => publish_as_new(model),
-        Msg::SyncToRoom => sync_to_room(model),
-        Msg::DeleteEntry(car) => {
-            khanatime::log!("delete entry {}", car);
-            if crate::event::entry_has_timing(
-                &model.app.scores.get_clone(),
-                &model.app.runs.get_clone(),
-                &car,
-            ) {
-                model.screens.setup.feedback.set(format!(
-                    "Entry {car} has timing data — withdraw instead of deleting."
-                ));
-                return;
-            }
-            let mut removed = false;
-            model.app.event.update(|e| removed = e.remove_entry(&car));
-            if removed {
-                commit_event(model);
-                crate::update(model, crate::Msg::Reload);
-            }
-        }
-        Msg::SetEntryStatus { car, status } => {
-            let mut updated = false;
+        Msg::SyncToRoom => {
+            crate::app::enqueue_setup(model);
             model
-                .app
-                .event
-                .update(|e| updated = e.set_entry_status(&car, status));
-            if updated {
-                commit_event(model);
-            }
+                .screens
+                .setup
+                .publish_status
+                .set(Some("Setup re-sent to room.".to_string()));
         }
     }
+}
+
+/// Build the staged event: committed event + edit-form fields (details,
+/// stages, classes).  Nothing is written to the event until the batch sends.
+fn staged_event(model: crate::Model) -> crate::event::EventInfo {
+    let em = model.screens.setup;
+    let mut ev = model.app.event.get_clone();
+    ev.sponsoring_club = em.edit_club.get_clone().trim().to_string();
+    ev.year = em.edit_year.get_clone().trim().to_string();
+    ev.event_date = em.edit_event_date.get_clone().trim().to_string();
+    ev.entry_open = em.edit_entry_open.get_clone().trim().to_string();
+    ev.entry_close = em.edit_entry_close.get_clone().trim().to_string();
+    ev.stripe_link = em.edit_stripe.get_clone().trim().to_string();
+    let mut stages = em.edit_stages.get_clone();
+    // Display/ordering is by `num`; stable on ties.
+    stages.sort_by_key(|s| s.num);
+    for s in stages.iter_mut() {
+        if s.best_x > s.repeats {
+            s.best_x = s.repeats;
+        }
+    }
+    ev.stages = stages;
+    ev.classes = em.edit_classes.get_clone();
+    ev
+}
+
+/// Compact (no-op) + diff the staged event against the committed one and open
+/// the confirm modal.
+fn save_batch(model: crate::Model) {
+    let em = model.screens.setup;
+    let committed = model.app.event.get_clone();
+    let staged = staged_event(model);
+    let diff = crate::batch::event_diff(&committed, &staged);
+    if diff.is_empty() {
+        em.feedback.set("No changes to send.".to_string());
+        return;
+    }
+    em.feedback.set(String::new());
+    em.confirm.set(Some(diff));
+}
+
+/// Apply the staged event and enqueue a single setup manifest (the batch).
+fn send_batch(model: crate::Model) {
+    let em = model.screens.setup;
+    let staged = staged_event(model);
+    model.app.event.set(staged);
+    commit_event(model);
+    em.editing.set(false);
+    em.confirm.set(None);
+    load_details(model);
 }
 
 /// Build (or select) a draft event from the form fields and switch to it.
@@ -349,36 +346,7 @@ fn load_details(model: crate::Model) {
         stages = ev.stages;
     }
     model.screens.setup.edit_stages.set(stages);
-}
-
-/// Write the detail-edit fields back to the event.
-fn save_details(model: crate::Model) {
-    let em = model.screens.setup;
-    let club = em.edit_club.get_clone().trim().to_string();
-    let year = em.edit_year.get_clone().trim().to_string();
-    let event_date = em.edit_event_date.get_clone().trim().to_string();
-    let entry_open = em.edit_entry_open.get_clone().trim().to_string();
-    let entry_close = em.edit_entry_close.get_clone().trim().to_string();
-    let stripe = em.edit_stripe.get_clone().trim().to_string();
-    let mut stages = em.edit_stages.get_clone();
-    // Display/ordering is by `num`; stable on ties.
-    stages.sort_by_key(|s| s.num);
-    for s in stages.iter_mut() {
-        if s.best_x > s.repeats {
-            s.best_x = s.repeats;
-        }
-    }
-    model.app.event.update(|e| {
-        e.stages = stages.clone();
-        e.sponsoring_club = club;
-        e.year = year;
-        e.event_date = event_date;
-        e.entry_open = entry_open;
-        e.entry_close = entry_close;
-        e.stripe_link = stripe;
-    });
-    commit_event(model);
-    load_details(model);
+    model.screens.setup.edit_classes.set(e.classes.clone());
 }
 
 /// Publish the current event to a Matrix space + timing room using the
@@ -401,7 +369,6 @@ fn publish(model: crate::Model) {
         "Matrix publishing is only available in the web build".to_string(),
     ));
 }
-
 /// Copy a published event into a fresh draft: new id, Matrix links cleared,
 /// no timing data attached (scores live under the old id).  The original stays
 /// untouched, so entries/results survive as an amendable record.
@@ -433,16 +400,6 @@ fn publish_as_new(model: crate::Model) {
         crate::Msg::SetEvent(model.app.event.with(|e| e.id.clone())),
     );
     crate::update(model, crate::Msg::Show(crate::Screen::Event));
-}
-
-/// Re-broadcast the setup manifest to the timing room by re-enqueueing it
-/// (the durable record) and flushing the pending outbox to the room.
-fn sync_to_room(model: crate::Model) {
-    let em = model.screens.setup;
-    crate::app::enqueue_setup(model);
-    crate::sync::flush_pending(model);
-    em.publish_status
-        .set(Some("Setup queued for sync to room".to_string()));
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -513,9 +470,43 @@ pub fn view(model: crate::Model) -> View {
             (view_details(model))
             (view_stages(model))
             (view_publish(model))
-            (view_entrants(model))
+            (view_entries_link(model))
+            (view_confirm_modal(model))
         }
     }
+}
+
+/// Link to the Entries page (where entrants are managed now).
+fn view_entries_link(model: crate::Model) -> View {
+    view! {
+        div(class="box") {
+            div(class="level") {
+                div(class="level-left") {
+                    h2(class="title is-5") { "Entries" }
+                }
+                div(class="level-right") {
+                    button(
+                        class="button is-small is-link",
+                        on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Entries)),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-users") }
+                        span { "Manage entries" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn view_confirm_modal(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    crate::view::view_confirm_modal(
+        em.confirm,
+        "Send",
+        move || crate::update(model, crate::Msg::EventMsg(Msg::SendBatch)),
+        move || crate::update(model, crate::Msg::EventMsg(Msg::CancelBatch)),
+        move || crate::update(model, crate::Msg::EventMsg(Msg::DiscardBatch)),
+    )
 }
 
 /// True once an event has left the draft stage (published / running / finished).
@@ -724,9 +715,9 @@ fn view_details(model: crate::Model) -> View {
                             view! {
                                 button(
                                     class="button is-primary",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SaveLocal)),
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SaveBatch)),
                                 ) {
-                                    "Save Local"
+                                    "Save changes"
                                 }
                             }
                         } else {
@@ -836,38 +827,6 @@ fn input_value(ev: &web_sys::Event) -> String {
         .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
         .map(|e| e.value())
         .unwrap_or_default()
-}
-
-/// The value a `<select>` currently holds (from its `change` event).
-fn select_value(ev: &web_sys::Event) -> String {
-    use wasm_bindgen::JsCast;
-    ev.target()
-        .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
-        .map(|e| e.value())
-        .unwrap_or_default()
-}
-
-/// Entry statuses in the order shown in the status dropdown.
-const ENTRY_STATUSES: &[(&str, &str)] = &[
-    ("draft", "Draft Entry"),
-    ("submitted", "Entry Submitted"),
-    ("accepted", "Accepted"),
-    ("reserve", "Reserve"),
-    ("confirmed", "Confirmed"),
-    ("started", "Started"),
-    ("withdrawn", "Withdrawn"),
-];
-
-fn entry_status_from(value: &str) -> EntryStatus {
-    match value {
-        "draft" => EntryStatus::Draft,
-        "accepted" => EntryStatus::Accepted,
-        "reserve" => EntryStatus::Reserve,
-        "confirmed" => EntryStatus::Confirmed,
-        "started" => EntryStatus::Started,
-        "withdrawn" => EntryStatus::Withdrawn,
-        _ => EntryStatus::Submitted,
-    }
 }
 
 fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
@@ -1071,8 +1030,14 @@ fn view_publish(model: crate::Model) -> View {
 }
 
 fn view_class_list(model: crate::Model) -> View {
-    let classes = model.app.event.with(|event| event.classes.clone());
-    let editing = model.screens.setup.editing.get() && !is_published(model);
+    let em = model.screens.setup;
+    let editing = em.editing.get() && !is_published(model);
+    // Editing shows the staged class list; read-only shows the committed one.
+    let classes = if editing {
+        em.edit_classes.get_clone()
+    } else {
+        model.app.event.with(|event| event.classes.clone())
+    };
     let items = classes
         .iter()
         .map(|class| {
@@ -1113,158 +1078,4 @@ fn view_class_list(model: crate::Model) -> View {
         })
         .collect::<Vec<View>>();
     view! { ul(class="todo-list") { (items) } }
-}
-
-/// Entrants are part of the event: list with class toggles + remove, and an
-/// add input.  Everything except the list is hidden unless editing.
-fn view_entrants(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    view! {
-        div(class="box") {
-            h2(class="title is-5") { "Entrants" }
-            (move || view_entrant_list(model))
-            (move || {
-                if em.editing.get() {
-                    view! {
-                        div {
-                            (input_box(
-                                em.entrant,
-                                "New Entrant?",
-                                move |msg| crate::update(model, crate::Msg::EventMsg(Msg::EntryInput(msg))),
-                            ))
-                        }
-                    }
-                } else {
-                    view! {}
-                }
-            })
-        }
-    }
-}
-
-fn view_entrant_list(model: crate::Model) -> View {
-    let (entries, classes) = model
-        .app
-        .event
-        .with(|event| (event.entries.clone(), event.classes.clone()));
-    let items = entries
-        .iter()
-        .map(|entry| view_entry(model, entry, &classes))
-        .collect::<Vec<View>>();
-    view! {
-        div {
-            ul(class="todo-list") { (items) }
-        }
-    }
-}
-
-fn view_entry(model: crate::Model, entry: &Entry, classes: &Vec<String>) -> View {
-    let car = entry.car.clone();
-    let name = entry.name.clone();
-    let entry_classes = entry.classes.clone();
-    let status = entry.status.clone();
-    let car_disp = car.clone();
-    let car_del = car.clone();
-    let car_st = car.clone();
-    let editing = model.screens.setup.editing.get();
-
-    let status_value = status.as_str().to_string();
-    let status_label = status.to_string();
-    let mut status_options: Vec<View> = vec![];
-    for (value, label) in ENTRY_STATUSES {
-        let value = value.to_string();
-        let label = label.to_string();
-        status_options.push(view! { option(value=value) { (label) } });
-    }
-
-    let mut class_checks: Vec<View> = vec![];
-    if editing {
-        for class in classes {
-            let class = class.clone();
-            let on = entry_classes.contains(&class);
-            let c1 = class.clone();
-            let car_c = car.clone();
-            class_checks.push(view! {
-                label(class="checkbox") {
-                    input(
-                        r#type="checkbox",
-                        checked=on,
-                        on:change=move |_| crate::update(model, crate::Msg::EventMsg(Msg::ToggleClass { car: car_c.clone(), class: c1.clone() })),
-                    )
-                    (class)
-                }
-            });
-        }
-    }
-
-    view! {
-        li {
-            span(class="tag is-black") {
-                i(class="fa fa-car", style="width: 20px")
-                (car_disp)
-            }
-            span(style="width: 80px; margin: 10px") { (name) }
-            (if editing {
-                view! {
-                    select(
-                        class="select is-small",
-                        value=status_value,
-                        on:change=move |ev| {
-                            let value = select_value(&ev);
-                            crate::update(model, crate::Msg::EventMsg(Msg::SetEntryStatus {
-                                car: car_st.clone(),
-                                status: entry_status_from(&value),
-                            }));
-                        },
-                    ) { (status_options) }
-                }
-            } else {
-                view! {
-                    span(class="tag is-light") { (status_label.clone()) }
-                }
-            })
-            (class_checks)
-            (if editing {
-                view! {
-                    (if is_published(model) {
-                        let car_w = car_del.clone();
-                        view! {
-                            button(
-                                class="button is-small is-warning",
-                                title="Withdraw entry (no deletion after publish)",
-                                on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SetEntryStatus {
-                                    car: car_w.clone(),
-                                    status: EntryStatus::Withdrawn,
-                                })),
-                            ) { "Withdraw" }
-                        }
-                    } else {
-                        let car_d = car_del.clone();
-                        view! {
-                            button(
-                                class="delete is-danger",
-                                title="Remove entry",
-                                on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::DeleteEntry(car_d.clone()))),
-                            )
-                        }
-                    })
-                }
-            } else {
-                view! {}
-            })
-        }
-    }
-}
-
-pub fn parse_car_and(cmd: &str) -> Option<(&str, &str)> {
-    let re = regex!(r"^\d+[A-Z]? ");
-    let s = cmd.trim();
-    match re.find(s) {
-        None => None,
-        Some(m) => {
-            let number = &s[0..m.end()].trim();
-            let rest = &s[m.end()..].trim();
-            Some((number, rest))
-        }
-    }
 }

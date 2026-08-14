@@ -35,6 +35,10 @@ impl TimingEvent {
     /// Body prefix of a results-snapshot message (informational / audit only).
     pub const RESULT_PREFIX: &'static str = "khanatime_result:";
 
+    /// Body prefix of a per-entry state message (carries a serialized
+    /// [crate::event::EntryMsg]).
+    pub const ENTRY_PREFIX: &'static str = "khanatime_entry:";
+
     pub fn new(r#type: &str, event_id: &str, test: u8, car: &str, run: u8) -> Self {
         Self {
             r#type: r#type.to_string(),

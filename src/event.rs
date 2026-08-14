@@ -224,10 +224,31 @@ impl std::fmt::Display for EntryStatus {
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Entry {
-    pub car: String,  // entry/car number
+    /// Stable primary key: per-event counter, assigned on creation (see
+    /// [EventInfo::upsert_entry]).  Identity never changes, even when the car
+    /// number does.  0 = not yet assigned.
+    #[serde(default)]
+    pub entry_no: u32,
+    /// Assigned car number — "" until the timekeeper assigns one at
+    /// close-entries.  Text, digits-first, uppercase (see
+    /// [normalize_car_number]); timing data keys on this string.
+    pub car: String,
+    /// The car number the entrant nominated.  A preference only: may be
+    /// blank, and duplicates are fine (the timekeeper resolves collisions).
+    #[serde(default)]
+    pub preferred_car: String,
     pub name: String, // name
     #[serde(default)]
     pub vehicle: String, // description
+    /// Free-text shared-car name (rego, owner, description — whatever the
+    /// entrant/timekeeper types).  Entries whose names match (see
+    /// [shared_car_key]) share a physical car.  Informational only.
+    #[serde(default)]
+    pub shared_car: Option<String>,
+    /// Running/display order, assigned at close-entries.  0 = unset (falls
+    /// back to arrival order by `entry_no`).
+    #[serde(default)]
+    pub order: u32,
     #[serde(default)]
     pub classes: Vec<String>, // Classes. Count be an ID. meh
     #[serde(default)]
@@ -236,6 +257,22 @@ pub struct Entry {
     pub passenger: Option<String>,
     #[serde(default)]
     pub status: EntryStatus,
+    /// Matrix user id of the person who entered themselves (empty for
+    /// official-added entries).
+    #[serde(default)]
+    pub owner: Option<String>,
+}
+
+/// Wire format of a per-entry state message (`khanatime_entry:<json>`).
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+pub struct EntryMsg {
+    pub event_id: String,
+    pub ts: i64,
+    /// Full entry snapshot (last-writer-wins per car).
+    pub entry: Entry,
+    /// Tombstone: remove the entry from the event.
+    #[serde(default)]
+    pub delete: bool,
 }
 
 /// A person attached to the event (organiser, official).
@@ -330,10 +367,10 @@ pub enum KTime {
 pub struct ResultView {
     pub event: EventInfo,
     pub class: String,
-    pub rows: IndexMap<String, ResultRow>, // list of know entrants/drivers. Ordered by car number
-    pub base_times_ds: Vec<u16>,           // base times
+    pub rows: IndexMap<u32, ResultRow>, // entries keyed by entry_no, in running order
+    pub base_times_ds: Vec<u16>,        // base times
 
-                                           // can probably remove the Index map so we can sort by a separate vec of refs?
+                                        // can probably remove the Index map so we can sort by a separate vec of refs?
 }
 
 // results to render
@@ -510,14 +547,49 @@ impl EventInfo {
             return false;
         }
 
-        let entry = Entry::new(car, name);
+        let mut entry = Entry::new(car, name);
+        entry.entry_no = self.next_entry_no();
         self.entries.push(entry);
         true
     }
 
-    /// Set the lifecycle status of an entry by car number.
-    pub fn set_entry_status(&mut self, car: &str, status: EntryStatus) -> bool {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.car == *car) {
+    /// The next unused entry number (counter, never reused within an event).
+    pub fn next_entry_no(&self) -> u32 {
+        self.entries.iter().map(|e| e.entry_no).max().unwrap_or(0) + 1
+    }
+
+    /// Find an entry by its stable entry number.
+    pub fn find_entry(&self, entry_no: u32) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.entry_no == entry_no)
+    }
+
+    /// Find an entry by its assigned car number.
+    pub fn find_entry_by_car(&self, car: &str) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.car == car)
+    }
+
+    /// Entries in running/display order: explicit `order` first (0 = unset,
+    /// sorted last in arrival order), ties broken by `entry_no`.
+    pub fn sorted_entries(&self) -> Vec<&Entry> {
+        let mut v: Vec<&Entry> = self.entries.iter().collect();
+        v.sort_by_key(|e| entry_sort_key(e));
+        v
+    }
+
+    /// Backfill entry numbers for legacy entries (entry_no 0).  Idempotent.
+    pub fn ensure_entry_nos(&mut self) {
+        let mut next = self.next_entry_no();
+        for e in self.entries.iter_mut() {
+            if e.entry_no == 0 {
+                e.entry_no = next;
+                next += 1;
+            }
+        }
+    }
+
+    /// Set the lifecycle status of an entry by entry number.
+    pub fn set_entry_status(&mut self, entry_no: u32, status: EntryStatus) -> bool {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.entry_no == entry_no) {
             e.status = status;
             true
         } else {
@@ -525,12 +597,76 @@ impl EventInfo {
         }
     }
 
-    // delete an entry by car number
-    pub fn remove_entry(&mut self, car: &str) -> bool {
+    // delete an entry by entry number
+    pub fn remove_entry(&mut self, entry_no: u32) -> bool {
         let before = self.entries.len();
-        self.entries.retain(|e| e.car != *car);
+        self.entries.retain(|e| e.entry_no != entry_no);
         before != self.entries.len()
     }
+
+    /// Insert or replace an entry (keyed by entry number; 0 is assigned the
+    /// next number).  Returns true when the entry was new.
+    ///
+    /// Counter collision from concurrent offline creation on another device:
+    /// when the existing entry with the same number clearly belongs to
+    /// someone else (both have owners and they differ), the incoming entry is
+    /// renumbered and appended instead of clobbering.
+    pub fn upsert_entry(&mut self, entry: Entry) -> bool {
+        let mut entry = entry;
+        if entry.entry_no == 0 {
+            entry.entry_no = self.next_entry_no();
+        }
+        match self
+            .entries
+            .iter()
+            .position(|e| e.entry_no == entry.entry_no)
+        {
+            Some(i) => {
+                let collision = self.entries[i].owner.is_some()
+                    && entry.owner.is_some()
+                    && self.entries[i].owner != entry.owner;
+                if collision {
+                    entry.entry_no = self.next_entry_no();
+                    self.entries.push(entry);
+                    true
+                } else {
+                    self.entries[i] = entry;
+                    false
+                }
+            }
+            None => {
+                self.entries.push(entry);
+                true
+            }
+        }
+    }
+}
+
+/// Sort key for running/display order (see [EventInfo::sorted_entries]).
+pub fn entry_sort_key(e: &Entry) -> (bool, u32, u32) {
+    (e.order == 0, e.order, e.entry_no)
+}
+
+/// Encode an entry state message body (`khanatime_entry:<json>`).
+pub fn entry_body(event_id: &str, entry: &Entry, delete: bool) -> String {
+    let msg = EntryMsg {
+        event_id: event_id.to_string(),
+        ts: crate::log::now_ms(),
+        entry: entry.clone(),
+        delete,
+    };
+    format!(
+        "{}{}",
+        crate::timing_event::TimingEvent::ENTRY_PREFIX,
+        serde_json::to_string(&msg).expect("entry msg serializes")
+    )
+}
+
+/// Decode an entry state message body.  Returns None for other prefixes.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
+pub fn from_entry_body(body: &str) -> Option<EntryMsg> {
+    let json = body.strip_prefix(crate::timing_event::TimingEvent::ENTRY_PREFIX)?;
+    serde_json::from_str(json).ok()
 }
 
 impl Entry {
@@ -541,24 +677,169 @@ impl Entry {
         let car = car.to_string();
         let name = name.to_string();
         Self {
+            entry_no: 0, // assigned by EventInfo::add_entry/upsert_entry
+            preferred_car: String::new(),
             vehicle,
+            shared_car: None,
+            order: 0,
             classes,
             car,
             name,
             licence: None,
             passenger: None,
             status: EntryStatus::Submitted,
+            owner: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Car numbers.  Text, not integers: "007", "0", "00A" and "000" are all
+// distinct.  Canonical form: no whitespace, uppercase, digits then optional
+// letters (`^[0-9]+[A-Z]*$`).  The assigned number is what officials type at
+// timing, so scores/runs key on it; the entry's identity is `entry_no`.
+// ---------------------------------------------------------------------------
+
+pub const CAR_NUMBER_MAX: usize = 8;
+
+/// Validate a canonical car number: digits first, then optional uppercase
+/// letters, no whitespace, length-capped.
+pub fn validate_car_number(s: &str) -> Result<(), String> {
+    if s.is_empty() {
+        return Err("Car number is empty".to_string());
+    }
+    if s.len() > CAR_NUMBER_MAX {
+        return Err(format!("Car number too long (max {CAR_NUMBER_MAX} chars)"));
+    }
+    let mut seen_letter = false;
+    for c in s.chars() {
+        match c {
+            'A'..='Z' => seen_letter = true,
+            '0'..='9' if seen_letter => {
+                return Err("Digits can't follow letters (e.g. 7A, not 7A2)".to_string())
+            }
+            '0'..='9' => {}
+            _ => return Err(format!("Unexpected character '{c}' in car number")),
+        }
+    }
+    if !s.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return Err("Car number must start with a digit".to_string());
+    }
+    Ok(())
+}
+
+/// Normalize a typed car number: strip all whitespace, uppercase, validate.
+pub fn normalize_car_number(raw: &str) -> Result<String, String> {
+    let s: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_uppercase();
+    validate_car_number(&s)?;
+    Ok(s)
+}
+
+/// Maximum car number the suggestion algorithm will generate.  The pool is
+/// deliberately small (club events rarely exceed 200 entries); see
+/// [next_free_number] for the exhaustion fallback.
+pub const MAX_SUGGESTED_NUMBER: u32 = 65_535;
+
+/// Smallest positive integer not in `used` (as an exact string or numerically,
+/// so "007" blocks "7").  Withdrawn entries still hold their numbers — a
+/// number is never recycled within an event.
+///
+/// When the pool up to [MAX_SUGGESTED_NUMBER] is exhausted, falls back to
+/// `next_entry_no + MAX_SUGGESTED_NUMBER` (never fails).
+pub fn next_free_number(used: &std::collections::HashSet<String>) -> String {
+    let nums: std::collections::HashSet<u32> = used.iter().filter_map(|c| c.parse().ok()).collect();
+    for n in 1..=MAX_SUGGESTED_NUMBER {
+        let s = n.to_string();
+        if !used.contains(&s) && !nums.contains(&n) {
+            return s;
+        }
+    }
+    // Exhaustion (impossible in practice): generate a number outside the pool.
+    let mut f = MAX_SUGGESTED_NUMBER + 1 + nums.len() as u32;
+    while used.contains(&f.to_string()) || nums.contains(&f) {
+        f += 1;
+    }
+    f.to_string()
+}
+
+/// Suggest an assigned car number: the entrant's preferred number when it's
+/// valid and free, else the smallest free pure number.
+pub fn suggest_car_number(used: &std::collections::HashSet<String>, preferred: &str) -> String {
+    if !preferred.is_empty() && validate_car_number(preferred).is_ok() && !used.contains(preferred)
+    {
+        return preferred.to_string();
+    }
+    next_free_number(used)
+}
+
+// ---------------------------------------------------------------------------
+// Shared cars.  `shared_car` is a typed name (rego, owner, description);
+// entries whose names match share a physical car.  Informational only — it
+// never affects numbering or timing, so it can change at any time.
+// ---------------------------------------------------------------------------
+
+/// Grouping key for a shared-car name: trimmed, single-spaced, lowercase.
+pub fn shared_car_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Shared-car groups for display: `(display name, members)` for names shared
+/// by ≥2 entries, members in running order.  First-seen casing wins for the
+/// display name.
+pub fn shared_groups(entries: &[Entry]) -> Vec<(String, Vec<&Entry>)> {
+    let mut groups: IndexMap<String, (String, Vec<&Entry>)> = IndexMap::new();
+    for e in entries {
+        let Some(name) = e.shared_car.as_deref() else {
+            continue;
+        };
+        let key = shared_car_key(name);
+        if key.is_empty() {
+            continue;
+        }
+        groups
+            .entry(key)
+            .or_insert_with(|| {
+                (
+                    name.split_whitespace().collect::<Vec<_>>().join(" "),
+                    vec![],
+                )
+            })
+            .1
+            .push(e);
+    }
+    let mut out: Vec<(String, Vec<&Entry>)> = groups
+        .into_values()
+        .filter(|(_, members)| members.len() >= 2)
+        .collect();
+    for (_, members) in out.iter_mut() {
+        members.sort_by_key(|e| entry_sort_key(e));
+    }
+    out
+}
+
+/// Entry numbers that share a physical car (members of a ≥2 group) — for
+/// flagging shared cars on the timing screens.
+pub fn shared_entry_nos(entries: &[Entry]) -> HashSet<u32> {
+    shared_groups(entries)
+        .iter()
+        .flat_map(|(_, members)| members.iter().map(|e| e.entry_no))
+        .collect()
 }
 
 impl<'a> ResultView {
     pub fn init(class: &str, event: &'a EventInfo, scores: &[ScoreData]) -> Self {
         let entries = find_entries_in_class(&event.entries, class);
 
-        let rows: IndexMap<String, ResultRow> = entries
+        let rows: IndexMap<u32, ResultRow> = entries
             .iter()
-            .map(|e| (e.car.clone(), ResultRow::init(e, event, scores)))
+            .map(|e| (e.entry_no, ResultRow::init(e, event, scores)))
             .collect();
         let class = class.to_string();
 
@@ -716,28 +997,24 @@ pub fn calc_pos_changes(rv: &mut ResultView) {
 
 pub fn calc_stage_positions(rv: &mut ResultView) {
     for stage in 0..rv.event.stage_count() {
-        // collect pairs, rowkey (car) vs time
-        // could collect a mut pos & too?
-        let mut car_scores: Vec<(&str, &mut Pos)> = vec![];
-        for (rowkey, rr) in rv.rows.iter_mut() {
+        let mut positions: Vec<&mut Pos> = vec![];
+        for rr in rv.rows.values_mut() {
             if let Some(rs) = &mut rr.columns[stage] {
-                // if let Some(cum_pos) = &mut rs.cum_pos {
-                car_scores.push((rowkey.as_str(), &mut rs.stage_pos));
+                positions.push(&mut rs.stage_pos);
             }
         }
-
-        calc_rank(&mut car_scores);
+        calc_rank(&mut positions);
     }
 }
 
-fn calc_rank(car_scores: &mut Vec<(&str, &mut Pos)>) {
+fn calc_rank(positions: &mut [&mut Pos]) {
     // sort by score
-    car_scores.sort_unstable_by_key(|a| a.1.score_ds);
+    positions.sort_unstable_by_key(|p| p.score_ds);
 
-    // calc the ranks and eq and poke into the cum_pos Pos
+    // calc the ranks and eq and poke into the Pos
     let mut last_time = 0u16;
     let mut rank = 1u8;
-    for (idx, (_, pos)) in car_scores.iter_mut().enumerate() {
+    for (idx, pos) in positions.iter_mut().enumerate() {
         let score = pos.score_ds;
         let eq = score == last_time;
         last_time = score;
@@ -752,17 +1029,15 @@ fn calc_rank(car_scores: &mut Vec<(&str, &mut Pos)>) {
 
 pub fn calc_cumulative_positions(rv: &mut ResultView) {
     for stage in 0..rv.event.stage_count() {
-        // collect pairs, rowkey (car) vs time
-        // could collect a mut pos & too?
-        let mut car_scores: Vec<(&str, &mut Pos)> = vec![];
-        for (rowkey, rr) in rv.rows.iter_mut() {
+        let mut positions: Vec<&mut Pos> = vec![];
+        for rr in rv.rows.values_mut() {
             if let Some(rs) = &mut rr.columns[stage] {
                 if let Some(cum_pos) = &mut rs.cum_pos {
-                    car_scores.push((rowkey.as_str(), cum_pos));
+                    positions.push(cum_pos);
                 }
             }
         }
-        calc_rank(&mut car_scores);
+        calc_rank(&mut positions);
     }
 }
 
@@ -796,19 +1071,17 @@ pub fn calc_totals(rv: &mut ResultView) {
         row.total_pos = 0;
         row.total_eq = false;
     }
-    let mut car_totals: Vec<(&str, u32, &mut ResultRow)> = vec![];
-    for (key, row) in rv.rows.iter_mut() {
-        if row.total_ds == 0 {
-            continue; // no completed runs yet
-        }
-        car_totals.push((key.as_str(), row.total_ds, row));
-    }
-    car_totals.sort_by_key(|a| a.1);
+    let mut rows: Vec<&mut ResultRow> = rv
+        .rows
+        .values_mut()
+        .filter(|r| r.total_ds != 0) // no completed runs yet
+        .collect();
+    rows.sort_by_key(|r| r.total_ds);
     let mut last = u32::MAX;
     let mut rank = 1u8;
-    for (idx, (_, score, row)) in car_totals.iter_mut().enumerate() {
-        let eq = *score == last;
-        last = *score;
+    for (idx, row) in rows.iter_mut().enumerate() {
+        let eq = row.total_ds == last;
+        last = row.total_ds;
         if !eq {
             rank = idx as u8 + 1;
         }
@@ -847,10 +1120,10 @@ pub fn create_outright_view(event: &EventInfo, scores: &[ScoreData]) -> ResultVi
     let mut rv = ResultView::init("Outright", event, scores);
     if !event.classes.iter().any(|c| c == "Outright") {
         rv.rows = event
-            .entries
-            .iter()
+            .sorted_entries()
+            .into_iter()
             .filter(|e| is_active_entry(e))
-            .map(|e| (e.car.clone(), ResultRow::init(e, event, scores)))
+            .map(|e| (e.entry_no, ResultRow::init(e, event, scores)))
             .collect();
     }
     calc(&mut rv);
@@ -859,14 +1132,16 @@ pub fn create_outright_view(event: &EventInfo, scores: &[ScoreData]) -> ResultVi
 
 // get entries  in class
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
-    entries
+    let mut v: Vec<&Entry> = entries
         .iter()
         .filter(|e| e.classes.iter().any(|c| c == class) && is_active_entry(e))
-        .collect()
+        .collect();
+    v.sort_by_key(|e| entry_sort_key(e));
+    v
 }
 
 /// Entries that count in the results: withdrawn / draft / reserve are out.
-fn is_active_entry(e: &Entry) -> bool {
+pub fn is_active_entry(e: &Entry) -> bool {
     !matches!(
         e.status,
         EntryStatus::Withdrawn | EntryStatus::Draft | EntryStatus::Reserve
@@ -1116,8 +1391,9 @@ pub fn load_event(key: &str) -> EventInfo {
             ..Default::default()
         };
     }
-    let (ev, _, _) =
+    let (mut ev, _, _) =
         crate::replay::replay(&crate::log::load_log(key), &crate::log::load_pending(key));
+    ev.ensure_entry_nos();
     ev
 }
 
@@ -1147,10 +1423,17 @@ pub fn demo_event() -> EventInfo {
         ("4", "Dan", &["Outright", "Junior"][..]),
         ("5", "Erin", &["Outright", "Female"][..]),
         ("6", "Frank", &["Outright"][..]),
+        ("12", "Gail", &["Outright", "Female"][..]),
     ] {
         ev.add_entry(car, name);
         if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
             entry.classes = classes.iter().map(|s| s.to_string()).collect();
+        }
+    }
+    // Erin and Gail share Erin's MX-5 (a typed shared-car name).
+    for car in ["5", "12"] {
+        if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
+            entry.shared_car = Some("Erin's MX-5".to_string());
         }
     }
     ev
@@ -1709,15 +1992,18 @@ mod tests {
             ..Default::default()
         };
         let mut a = Entry::new("1", "Alice");
+        a.entry_no = 1;
         a.classes = vec!["Female".into()];
         let mut b = Entry::new("2", "Bob");
+        b.entry_no = 2;
         b.classes = vec!["Junior".into()];
         let mut w = Entry::new("3", "Wendy");
+        w.entry_no = 3;
         w.status = EntryStatus::Withdrawn;
         ev.entries = vec![a, b, w];
         let rv = create_outright_view(&ev, &[]);
-        let cars: Vec<&str> = rv.rows.keys().map(|c| c.as_str()).collect();
-        assert_eq!(cars, vec!["1", "2"]);
+        let nos: Vec<u32> = rv.rows.keys().copied().collect();
+        assert_eq!(nos, vec![1, 2]);
     }
 
     #[test]
@@ -1845,23 +2131,26 @@ mod tests {
     }
 
     #[test]
-    fn set_entry_status_updates_by_car() {
+    fn set_entry_status_updates_by_entry_no() {
         let mut ev = EventInfo::default();
         ev.add_entry("7", "Alice");
         ev.add_entry("8", "Bob");
-        assert!(ev.set_entry_status("7", EntryStatus::Accepted));
-        assert!(ev.set_entry_status("8", EntryStatus::Withdrawn));
-        assert!(!ev.set_entry_status("99", EntryStatus::Draft));
-        let a = ev.entries.iter().find(|e| e.car == "7").unwrap();
-        let b = ev.entries.iter().find(|e| e.car == "8").unwrap();
-        assert_eq!(a.status, EntryStatus::Accepted);
-        assert_eq!(b.status, EntryStatus::Withdrawn);
+        let (a, b) = (ev.entries[0].entry_no, ev.entries[1].entry_no);
+        assert!(ev.set_entry_status(a, EntryStatus::Accepted));
+        assert!(ev.set_entry_status(b, EntryStatus::Withdrawn));
+        assert!(!ev.set_entry_status(99, EntryStatus::Draft));
+        assert_eq!(ev.find_entry(a).unwrap().status, EntryStatus::Accepted);
+        assert_eq!(ev.find_entry(b).unwrap().status, EntryStatus::Withdrawn);
     }
 
     #[test]
     fn calc_pipeline_handles_multi_stage() {
+        let mut a = Entry::new("1", "Alice");
+        a.entry_no = 1;
+        let mut b = Entry::new("2", "Bob");
+        b.entry_no = 2;
         let ev = EventInfo {
-            entries: vec![Entry::new("1", "Alice"), Entry::new("2", "Bob")],
+            entries: vec![a, b],
             ..Default::default()
         };
         let scores = vec![
@@ -1905,7 +2194,7 @@ mod tests {
         let rv = create_result_view(&ev, &scores, "Outright");
         assert_eq!(
             rv.rows.keys().cloned().collect::<Vec<_>>(),
-            vec!["1".to_string(), "2".to_string()],
+            vec![1u32, 2u32],
             "entries={:?} classes={:?}",
             ev.entries
                 .iter()
@@ -1913,7 +2202,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ev.classes
         );
-        let alice = &rv.rows["1"].columns;
+        let alice = &rv.rows[&1u32].columns;
         assert_eq!(alice.len(), 3);
         // cumulative time after stage 2 = sum of both stage scores
         assert_eq!(
@@ -1926,5 +2215,390 @@ mod tests {
                 .score_ds,
             920
         );
+    }
+
+    #[test]
+    fn entry_msg_roundtrip() {
+        let mut entry = Entry::new("7", "Alice");
+        entry.owner = Some("@alice:localhost".into());
+        entry.status = EntryStatus::Submitted;
+        let body = entry_body("kt-2026-x", &entry, false);
+        let parsed = from_entry_body(&body).expect("decodes");
+        assert_eq!(parsed.event_id, "kt-2026-x");
+        assert_eq!(parsed.entry, entry);
+        assert!(!parsed.delete);
+        assert!(parsed.ts > 0);
+        assert!(from_entry_body("khanatime_setup:{}").is_none());
+        assert!(from_entry_body("KT {}").is_none());
+    }
+
+    #[test]
+    fn entry_msg_tombstone() {
+        let entry = Entry::new("9", "Dan");
+        let body = entry_body("kt-2026-x", &entry, true);
+        let parsed = from_entry_body(&body).expect("decodes");
+        assert!(parsed.delete);
+    }
+
+    #[test]
+    fn upsert_entry_replaces_by_entry_no() {
+        let mut ev = EventInfo {
+            id: "kt-2026-x".into(),
+            ..Default::default()
+        };
+        ev.add_entry("7", "Alice");
+        let no = ev.entries[0].entry_no;
+        let mut changed = Entry::new("7", "Alice");
+        changed.entry_no = no;
+        changed.status = EntryStatus::Confirmed;
+        changed.owner = Some("@alice:localhost".into());
+        assert!(!ev.upsert_entry(changed.clone()));
+        assert_eq!(ev.entries.len(), 1);
+        assert_eq!(ev.entries[0].status, EntryStatus::Confirmed);
+        assert_eq!(ev.entries[0].owner.as_deref(), Some("@alice:localhost"));
+        assert!(ev.upsert_entry(Entry::new("8", "Bob")));
+        assert_eq!(ev.entries.len(), 2);
+    }
+
+    #[test]
+    fn upsert_entry_assigns_numbers_and_survives_collisions() {
+        let mut ev = EventInfo::default();
+        ev.add_entry("7", "Alice"); // entry_no 1
+                                    // New entry with no number assigned yet -> gets the next number.
+        assert!(ev.upsert_entry(Entry::new("8", "Bob")));
+        assert_eq!(ev.entries[1].entry_no, 2);
+        // Concurrent offline creation on another device grabbed the same
+        // counter for a different owner: renumber, don't clobber.
+        let mut incoming = Entry::new("9", "Carol");
+        incoming.entry_no = 2;
+        incoming.owner = Some("@carol:localhost".into());
+        ev.entries[1].owner = Some("@bob:localhost".into());
+        assert!(ev.upsert_entry(incoming));
+        assert_eq!(ev.entries.len(), 3);
+        assert_eq!(ev.entries[2].entry_no, 3);
+        assert!(ev.find_entry_by_car("8").is_some());
+        // Same owner re-sending is a normal replace.
+        let mut resend = Entry::new("9", "Carol");
+        resend.entry_no = 3;
+        resend.owner = Some("@carol:localhost".into());
+        assert!(!ev.upsert_entry(resend));
+        assert_eq!(ev.entries.len(), 3);
+    }
+
+    #[test]
+    fn sorted_entries_orders_explicit_then_arrival() {
+        let mut ev = EventInfo::default();
+        ev.add_entry("1", "Alice");
+        ev.add_entry("2", "Bob");
+        ev.add_entry("3", "Carol");
+        // No explicit order -> arrival order.
+        let names: Vec<&str> = ev
+            .sorted_entries()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Alice", "Bob", "Carol"]);
+        // Explicit order wins; unset entries fall back to entry_no at the end.
+        ev.entries[2].order = 10; // Carol first
+        ev.entries[0].order = 20; // Alice second
+        let names: Vec<&str> = ev
+            .sorted_entries()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Carol", "Alice", "Bob"]);
+    }
+
+    #[test]
+    fn entry_default_owner_is_none() {
+        let entry = Entry::new("7", "Alice");
+        assert_eq!(entry.owner, None);
+    }
+
+    #[test]
+    fn normalize_car_number_rules() {
+        // Whitespace stripped, uppercased.
+        assert_eq!(normalize_car_number(" 007 ").unwrap(), "007");
+        assert_eq!(normalize_car_number("00a").unwrap(), "00A");
+        assert_eq!(normalize_car_number("0 07").unwrap(), "007");
+        assert_eq!(normalize_car_number("24TBC").unwrap(), "24TBC");
+        assert_eq!(normalize_car_number("7x").unwrap(), "7X");
+        // Invalid: empty, letters first, digits after letters, junk, too long.
+        assert!(normalize_car_number("").is_err());
+        assert!(normalize_car_number("  ").is_err());
+        assert!(normalize_car_number("A1").is_err());
+        assert!(normalize_car_number("7A2").is_err());
+        assert!(normalize_car_number("7-8").is_err());
+        assert!(normalize_car_number("1234567890").is_err());
+        assert!(validate_car_number("7A").is_ok());
+    }
+
+    #[test]
+    fn next_free_number_skips_numeric_equivalents() {
+        let mut used: HashSet<String> = ["1", "2", "007", "7X"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(next_free_number(&used), "3");
+        used.insert("3".into());
+        assert_eq!(next_free_number(&used), "4");
+        assert_eq!(next_free_number(&HashSet::new()), "1");
+    }
+
+    #[test]
+    fn suggest_car_number_prefers_when_free() {
+        let used: HashSet<String> = ["1", "2", "7A"].iter().map(|s| s.to_string()).collect();
+        // Preferred number free -> verbatim.
+        assert_eq!(suggest_car_number(&used, "42"), "42");
+        // Preferred taken -> next free.
+        assert_eq!(suggest_car_number(&used, "2"), "3");
+        // Invalid or blank preferred -> next free.
+        assert_eq!(suggest_car_number(&used, ""), "3");
+        assert_eq!(suggest_car_number(&used, "A9"), "3");
+        // Case/space-normalised preference is respected by callers; here raw.
+        assert_eq!(suggest_car_number(&used, "7a"), "3");
+    }
+
+    #[test]
+    fn shared_groups_require_two_members() {
+        let mut e1 = Entry::new("1", "Alice");
+        e1.entry_no = 1;
+        e1.shared_car = Some("ABC123".to_string());
+        let mut e2 = Entry::new("2", "Bob");
+        e2.entry_no = 2;
+        e2.shared_car = Some("abc123".to_string()); // same as e1 after case normalisation
+        let mut e3 = Entry::new("3", "Carol");
+        e3.entry_no = 3;
+        e3.shared_car = Some("Own car".to_string());
+        let entries = vec![e1, e2.clone(), e3.clone()];
+        let groups = shared_groups(&entries);
+        assert_eq!(groups.len(), 1);
+        let (name, members) = &groups[0];
+        assert_eq!(name, "ABC123"); // first-seen casing
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name, "Alice");
+        assert_eq!(members[1].name, "Bob");
+        // Singleton groups don't count as shared.
+        let solo = vec![e2, e3];
+        assert!(shared_groups(&solo).is_empty());
+        // Member entry numbers are flagged.
+        let shared = shared_entry_nos(&entries);
+        assert!(shared.contains(&1) && shared.contains(&2) && !shared.contains(&3));
+    }
+
+    #[test]
+    fn ensure_entry_nos_backfills_zeroes() {
+        let mut ev = EventInfo::default();
+        let mut a = Entry::new("7", "Alice");
+        let mut b = Entry::new("8", "Bob");
+        b.entry_no = 5;
+        ev.entries = vec![a.clone(), b.clone()];
+        ev.ensure_entry_nos();
+        assert_eq!(ev.find_entry_by_car("7").unwrap().entry_no, 6);
+        assert_eq!(ev.find_entry_by_car("8").unwrap().entry_no, 5);
+        // Idempotent.
+        ev.ensure_entry_nos();
+        assert_eq!(ev.find_entry_by_car("7").unwrap().entry_no, 6);
+        a.entry_no = 0;
+    }
+
+    #[test]
+    fn demo_event_has_shared_pair() {
+        let demo = demo_event();
+        let groups = shared_groups(&demo.entries);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    #[test]
+    fn normalize_car_number_edge_cases() {
+        // Internal whitespace stripped.
+        assert_eq!(normalize_car_number(" 0 07 ").unwrap(), "007");
+        assert_eq!(normalize_car_number("0\t07").unwrap(), "007");
+        assert_eq!(normalize_car_number("0\n07").unwrap(), "007");
+        // Whitespace only → empty → error.
+        assert!(normalize_car_number("  ").is_err());
+        assert!(normalize_car_number("\t\n").is_err());
+        // Leading zeros preserved.
+        assert_eq!(normalize_car_number("007").unwrap(), "007");
+        assert_eq!(normalize_car_number("000").unwrap(), "000");
+        // Length boundary.
+        assert_eq!(normalize_car_number("12345678").unwrap(), "12345678");
+        assert!(normalize_car_number("123456789").is_err());
+        assert!(
+            normalize_car_number("1234567A").is_ok(),
+            "digits then letter, 8 chars: valid"
+        );
+    }
+
+    #[test]
+    fn validate_car_number_direct() {
+        assert!(validate_car_number("0").is_ok());
+        assert!(validate_car_number("7A").is_ok());
+        assert!(validate_car_number("24TBC").is_ok());
+        assert!(validate_car_number("12X").is_ok());
+        // Starts with letter.
+        assert!(validate_car_number("A1").is_err());
+        // Digits after letters.
+        assert!(validate_car_number("7A2").is_err());
+        // Too long.
+        assert!(validate_car_number("123456789").is_err());
+        // Empty.
+        assert!(validate_car_number("").is_err());
+    }
+
+    #[test]
+    fn suggest_car_number_numeric_equivalence_input() {
+        let mut used: HashSet<String> = ["007", "7X"].iter().map(|s| s.to_string()).collect();
+        // "7" is string-wise free even though "007" is taken.
+        assert_eq!(suggest_car_number(&used, "7"), "7");
+        used.insert("7".into());
+        assert_eq!(suggest_car_number(&used, "7"), "1");
+        // "007" taken → preferred "8" free → verbatim.
+        assert_eq!(suggest_car_number(&used, "8"), "8");
+    }
+
+    #[test]
+    fn suggest_car_number_exhaustion_does_not_loop() {
+        // Block numbers 1..=100 so next_free must go beyond or hit the
+        // MAX_SUGGESTED_NUMBER guard.  We can't exhaust the full pool in a
+        // test, but we can verify the bounded loop doesn't hang.
+        let mut used: HashSet<String> = (1..=100u32).map(|n| n.to_string()).collect();
+        used.insert("101".into());
+        assert_eq!(suggest_car_number(&used, ""), "102");
+    }
+
+    #[test]
+    fn entry_diff_car_assignment_and_clearing() {
+        use crate::batch::{entry_diff, EditOp};
+        let current = vec![
+            // Entry without assigned number.
+            Entry {
+                entry_no: 1,
+                car: String::new(),
+                name: "Alice".into(),
+                ..Entry::new("", "")
+            },
+        ];
+        // Assign "77".
+        let mut assigned = current[0].clone();
+        assigned.car = "77".into();
+        let lines = entry_diff(&[EditOp::Upsert(assigned.clone())], &current);
+        assert!(lines.join("\n").contains("number: (unassigned) → 77"));
+
+        // Clear "77" back to "".
+        let cleared = current[0].clone();
+        let lines = entry_diff(&[EditOp::Upsert(cleared.clone())], &[assigned]);
+        assert!(lines.join("\n").contains("number: 77 → (unassigned)"));
+    }
+
+    #[test]
+    fn shared_groups_edge_cases() {
+        // Withdrawn entries with shared names are still grouped (visible for
+        // historical reference).
+        let mut e1 = Entry::new("1", "Alice");
+        e1.entry_no = 1;
+        e1.shared_car = Some("Team Car".into());
+        let mut e2 = Entry::new("2", "Bob");
+        e2.entry_no = 2;
+        e2.shared_car = Some("Team Car".into());
+        e2.status = EntryStatus::Withdrawn;
+        let items = vec![e1, e2];
+        let groups = shared_groups(&items);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].1.len(), 2);
+
+        // Whitespace-only name is treated as None (skipped).
+        let mut e3 = Entry::new("3", "Carol");
+        e3.entry_no = 3;
+        e3.shared_car = Some("   ".into());
+        assert!(shared_groups(&[e3]).is_empty());
+
+        // All None → empty groups.
+        let e4 = Entry::new("4", "Dan");
+        assert!(shared_groups(&[e4]).is_empty());
+    }
+
+    #[test]
+    fn close_entries_integration() {
+        use std::collections::HashSet;
+
+        // Simulate entries awaiting close-entries:
+        //   Alice: active, no preferred, no order
+        //   Bob: active, preferred 7, no order
+        //   Carol: draft (no number needed)
+        let mut alice = Entry::new("", "Alice");
+        alice.entry_no = 1;
+        alice.status = EntryStatus::Submitted;
+        let mut bob = Entry::new("", "Bob");
+        bob.entry_no = 2;
+        bob.preferred_car = "7".into();
+        bob.status = EntryStatus::Submitted;
+        let mut carol = Entry::new("", "Carol");
+        carol.entry_no = 3;
+        carol.status = EntryStatus::Draft; // not active
+
+        let entries = vec![alice, bob, carol];
+        let mut sorted = entries.clone();
+        sorted.sort_by_key(entry_sort_key);
+
+        let committed_cars: HashSet<String> = entries
+            .iter()
+            .map(|e| e.car.clone())
+            .filter(|c| !c.is_empty())
+            .collect();
+        let mut used = committed_cars;
+        let mut staged: Vec<Entry> = vec![];
+
+        for (idx, e) in sorted.iter_mut().enumerate() {
+            let active = matches!(
+                e.status,
+                EntryStatus::Submitted
+                    | EntryStatus::Accepted
+                    | EntryStatus::Confirmed
+                    | EntryStatus::Started
+            );
+            if !active {
+                continue;
+            }
+            let mut changed = false;
+            if e.order == 0 {
+                e.order = (idx as u32 + 1) * 10;
+                changed = true;
+            }
+            if e.car.is_empty() {
+                let suggest = suggest_car_number(&used, &e.preferred_car);
+                e.car = suggest.clone();
+                used.insert(suggest);
+                changed = true;
+            }
+            if changed {
+                staged.push(e.clone());
+            }
+        }
+
+        assert_eq!(
+            staged.len(),
+            2,
+            "Alice + Bob get numbers, Carol draft skipped"
+        );
+        // Alice has no preferred → next free number (1, since "1" not used).
+        let alice_result = staged.iter().find(|e| e.entry_no == 1).unwrap();
+        assert_eq!(alice_result.car, "1");
+        assert_eq!(alice_result.order, 10);
+        // Bob preferred "7" and "7" is free → gets it.
+        let bob_result = staged.iter().find(|e| e.entry_no == 2).unwrap();
+        assert_eq!(bob_result.car, "7");
+        assert_eq!(bob_result.order, 20);
+        // Carol unchanged.
+        assert!(staged.iter().all(|e| e.entry_no != 3));
+    }
+
+    #[test]
+    fn shared_car_key_normalises() {
+        assert_eq!(shared_car_key("ABC123"), "abc123");
+        assert_eq!(shared_car_key(" abc 123 "), "abc 123");
+        assert_eq!(shared_car_key("Bob's MX5"), "bob's mx5");
+        assert_eq!(shared_car_key("Erin's   MX-5"), "erin's mx-5");
     }
 }

@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod entries;
 pub mod event;
 pub mod events;
 pub mod finish;
@@ -67,4 +68,26 @@ pub fn enqueue_ktime(model: crate::Model, test: u8, car: &str, time: &crate::eve
     );
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
+}
+
+/// Enqueue an entry state message (upsert or tombstone) for the current event,
+/// apply it to the local event immediately, and flush + refresh.
+pub fn enqueue_entry(model: crate::Model, entry: &crate::event::Entry, delete: bool) {
+    let event_id = model.app.event.with(|e| e.id.clone());
+    if event_id.is_empty() {
+        return;
+    }
+    let body = crate::event::entry_body(&event_id, entry, delete);
+    let sender = model.app.identity.get_clone();
+    crate::log::enqueue_pending(&event_id, crate::log::LogMsg::new_pending(body, sender));
+    model.app.event.update(|e| {
+        if delete {
+            e.remove_entry(entry.entry_no);
+        } else {
+            e.upsert_entry(entry.clone());
+        }
+    });
+    crate::sync::flush_pending(model);
+    crate::app::refresh_feed(model);
+    crate::update(model, crate::Msg::Reload);
 }

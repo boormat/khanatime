@@ -56,6 +56,7 @@ pub fn input_clear(model: InputModel) {
     model.feedback.set(String::new());
 }
 
+#[allow(dead_code)]
 pub fn input_feedback(model: InputModel, msg: &str) {
     model.feedback.set(msg.to_string());
 }
