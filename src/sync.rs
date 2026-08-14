@@ -298,6 +298,7 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
     if crate::log::append_log(&id, log_msg) {
         crate::log::reconcile(&id);
     }
+    crate::app::refresh_feed(model);
 
     // Event setup manifest: adopt last-writer-wins when ids match (fresh
     // devices start with an empty local event).
