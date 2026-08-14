@@ -194,22 +194,17 @@ fn view_row(rr: &ResultRow) -> View {
 fn show_rs(rso: &Option<ResultScore>) -> View {
     match rso {
         Some(rs) => {
-            // let t = Pos::default();
-            let or: Pos = match &rs.cum_pos {
-                Some(pos) => pos.clone(),
-                None => Pos::default(),
-            };
             let time = show::ktime(&rs.time);
             let stage_score = format!("{}", rs.stage_pos.score_ds as f32 / 10.0);
             let stage_pos = format!("{}", rs.stage_pos.pos);
-            let cum_score = format!("{}", or.score_ds as f32 / 10.0);
-            let cum_pos = format!("{}", or.pos);
+            let cum_score = format!("{}", or_score(&rs.cum_pos) as f32 / 10.0);
+            let cum = cum_or(&rs.cum_pos);
             view! {
                 td { (time) }
                 td { (stage_score) }
                 td { (stage_pos) }
                 td { (cum_score) }
-                td { (cum_pos) }
+                td { (cum) }
             }
         }
         None => {
@@ -217,6 +212,33 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
                 .map(|_| view! { td {} })
                 .collect::<Vec<View>>();
             view! { (tds) }
+        }
+    }
+}
+
+fn or_score(cum: &Option<Pos>) -> u16 {
+    cum.as_ref().map(|p| p.score_ds).unwrap_or(0)
+}
+
+/// Cumulative position with the delta vs the previous completed stage.
+fn cum_or(cum: &Option<Pos>) -> View {
+    match cum {
+        None => view! { div(class="has-text-grey-light") { "\u{2014}" } },
+        Some(p) => {
+            let pos = p.pos.to_string();
+            let change = p.change;
+            let delta = if change == 0 {
+                view! {}
+            } else {
+                let class = if change > 0 {
+                    "has-text-success"
+                } else {
+                    "has-text-danger"
+                };
+                let s = format!("{:+}", change);
+                view! { span(class=class) { (s) } }
+            };
+            view! { div { (pos) (delta) } }
         }
     }
 }
