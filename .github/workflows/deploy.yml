@@ -37,8 +37,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
       - run: rustup target add wasm32-unknown-unknown
-      - name: Install trunk
-        run: cargo install trunk
+      - name: Install trunk (prebuilt binary)
+        uses: jetli/trunk-action@v0.5.1
+        with:
+          version: "v0.21.14"
       - name: Build
         run: trunk build --release --public-url khanatime
         working-directory: ./
