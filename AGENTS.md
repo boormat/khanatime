@@ -55,13 +55,15 @@ src/
 ├── sync.rs             # Matrix connect/logout/resume/join + merge sink (wasm)
 ├── view.rs             # small view helpers
 ├── event.rs            # EventInfo, Entry, ScoreData, KTime, KTimeTime
-│                       # + localStorage load/save (event + stage times)
+│                       # + car-number/shared-car helpers + localStorage
+├── batch.rs            # staged-edit ops (EditOp, compact_ops, diffs)
 ├── input.rs            # keyboard/input helpers
 └── page/
     ├── home.rs         # sign-in + current-event dashboard
     ├── events.rs       # event hub: demo / search published / plan new / saved
     ├── chat.rs         # read-only room message view
-    ├── event.rs        # event setup (entries, classes, stages, lifecycle)
+    ├── event.rs        # event setup (classes, stages, lifecycle)
+    ├── entries.rs      # competitor entry + admin close-entries workflow
     ├── stage.rs        # TIMER — command-line stopwatch entry
     │                   #   parse_command()/parse_car(), CmdParse, TimeCmd
     ├── results.rs      # results + score computation (ResultRow/ResultScore/Pos)
@@ -72,7 +74,13 @@ src/
 ### Domain model (see PLAN.md + docs/KhanacrossRules.md)
 
 - `EventInfo { name, stages_count, classes, entries }`
-- `Entry { car, name, vehicle, classes }` — car number is a string ("00 0B 24TBC")
+- `Entry { entry_no, car, preferred_car, name, vehicle, shared_car, order,
+  classes, status, owner }` — `entry_no` is the stable per-event PK (a
+  counter); `car` is the assigned number (text: digits-first, uppercase, no
+  whitespace, e.g. "00 0B 24TBC"), "" until the timekeeper assigns it at
+  close-entries; `preferred_car` is the entrant's nomination; `shared_car` is a
+  free-text (rego/owner/description) tying entries that share a physical car;
+  `order` is the running order (0 = arrival).  See `docs/plan/car-numbers.md`.
 - `ScoreData { stage, car, time }` — one record per stage per car
 - `KTime` enum + `KTimeTime { time_ds, flags, garage }` — time stored in
   **deciseconds** (`time_ds`), plus flag penalties (count) and garage flag.

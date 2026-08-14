@@ -10,6 +10,7 @@
 - `docs/KhanacrossStopwatch.md` — start/finish separate-record design
 - `docs/research/` — comms research (Matrix, BLE, Berty, mesh, crypto)
 - `docs/plan/timing-unknown.md` — UNKNOWN entry flow + resolver (timing screens)
+- `docs/plan/car-numbers.md` — car numbers, entry identity, shared cars
 - `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format (deferred: just in time for the first official release)
 - `AGENTS.md` — build/test commands and code layout
 
@@ -394,4 +395,9 @@ Carried from `docs/research/Architecture.md`:
   authorised in a serverless Matrix room?
 - Identity: Matrix accounts vs event-local officials table — which is the
   source of truth?
-- Car number format: string today ("00 0B 24TBC"); keep string?
+
+**Resolved:** Car number format is text-only — digits-first, uppercase, no
+whitespace (`^[0-9]+[A-Z]*$`, ≤8 chars).  Entry identity is a per-event counter
+(`entry_no`), not the car number; the number is assigned by the timekeeper at
+close-entries.  Shared cars = a free-text typed name (rego/owner/description).
+See `docs/plan/car-numbers.md`.
