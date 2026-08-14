@@ -18,17 +18,17 @@ pub struct Model {
     pub results: Signal<ResultView>,
 }
 
-pub fn init(event: &EventInfo, scores: &[ScoreData]) -> Model {
-    let results = create_signal(build_view(event, scores, &class_tabs(event)[0]));
+pub fn init(event: &EventInfo, runs: &[RunRecord]) -> Model {
+    let results = create_signal(build_view(event, runs, &class_tabs(event)[0]));
     Model { results }
 }
 
 /// Compute results for a tab: Outright = all active entries, others filtered.
-fn build_view(event: &EventInfo, scores: &[ScoreData], tab: &str) -> ResultView {
+fn build_view(event: &EventInfo, runs: &[RunRecord], tab: &str) -> ResultView {
     if tab == "Outright" {
-        create_outright_view(event, scores)
+        create_outright_view(event, runs)
     } else {
-        create_result_view(event, scores, tab)
+        create_result_view(event, runs, tab)
     }
 }
 
@@ -45,8 +45,8 @@ fn class_tabs(event: &EventInfo) -> Vec<String> {
 
 fn load_class(model: crate::Model, class: &str) {
     let event = model.app.event.get_clone();
-    let scores = model.app.scores.get_clone();
-    let results = build_view(&event, &scores, class);
+    let runs = model.app.runs.get_clone();
+    let results = build_view(&event, &runs, class);
     model.screens.results.results.set(results);
 }
 

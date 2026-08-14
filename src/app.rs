@@ -97,7 +97,6 @@ impl Model {
                     id: String::new(),
                     name: String::new(),
                     stages: vec![],
-                    stages_count: 0,
                     classes: vec![],
                     entries: vec![],
                     ..EventInfo::default()
@@ -111,7 +110,7 @@ impl Model {
                 &crate::log::load_pending(&session_key),
             )
         };
-        let results = page::results::init(&event_info, &scores);
+        let results = page::results::init(&event_info, &runs);
 
         let m = Model {
             screen: create_signal(Screen::Event),

@@ -53,8 +53,8 @@ pub enum TimingStyle {
 ///
 /// `num` gives the stage its display/ordering number.  `repeats` is the total
 /// number of runs each car attempts (the Y in "best X of Y") and `best_x` is
-/// how many of those count towards the score.  These are captured on the setup
-/// page; the results engine currently uses one best score per car per test.
+/// how many of those count towards the stage score.  These are captured on the
+/// setup page; the results engine sums the car's best `best_x` runs per test.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Stage {
     pub num: u8, // display/ordering number, e.g. 1..12
@@ -113,11 +113,6 @@ pub struct EventInfo {
     #[serde(default)]
     pub stages: Vec<Stage>,
 
-    /// Legacy planned-stage count, read from pre-per-stage payloads only
-    /// (never serialised back).  Migrated into `stages` by [Self::ensure_stages].
-    #[serde(default, skip_serializing)]
-    pub stages_count: u8,
-
     // scores: HashMap<i8, HashMap<String, CalcScore>>, // calculated for display.  Key is [stage][car] holding a Score.
     pub classes: Vec<String>, // list of known classes. Order as per display
     pub entries: Vec<Entry>,  // list of know entrants/drivers. Ordered by something
@@ -149,10 +144,6 @@ pub struct EventInfo {
     #[serde(default)]
     pub officials: Vec<Official>,
     #[serde(default)]
-    pub best_x: u8,
-    #[serde(default)]
-    pub best_y: u8,
-    #[serde(default)]
     pub status: EventStatus,
 
     // ---- Matrix (populated on publish) ----
@@ -178,7 +169,6 @@ pub enum EntryStatus {
     Draft,
     /// Entry submitted; being processed by the organisers.
     #[default]
-    #[serde(alias = "entered")]
     Submitted,
     /// Processed and OK, awaiting payment to finalise.
     Accepted,
@@ -427,7 +417,6 @@ impl Default for EventInfo {
         Self {
             name,
             stages,
-            stages_count: 0,
             classes,
             entries,
             id: String::new(),
@@ -442,8 +431,6 @@ impl Default for EventInfo {
             info_links: vec![],
             organisers: vec![],
             officials: vec![],
-            best_x: 1,
-            best_y: 1,
             status: EventStatus::Draft,
             space_id: None,
             space_alias: None,
@@ -480,28 +467,6 @@ impl EventInfo {
     /// Per-stage configuration for test `idx` (0-based).
     pub fn stage(&self, idx: usize) -> Stage {
         self.stages.get(idx).cloned().unwrap_or_default()
-    }
-
-    /// Backfill per-stage configuration from the legacy global fields
-    /// (`stages_count` / `best_x` / `best_y`).  No-op once `stages` is set.
-    pub fn ensure_stages(&mut self) {
-        if !self.stages.is_empty() {
-            return;
-        }
-        let count = if self.stages_count > 0 {
-            self.stages_count
-        } else {
-            3
-        };
-        self.stages = (1..=count)
-            .map(|num| Stage {
-                num,
-                name: format!("Test {num}"),
-                repeats: self.best_y.max(1),
-                best_x: self.best_x,
-                timing: TimingStyle::Stopwatch,
-            })
-            .collect();
     }
 
     // delete class, will ensure entries updated too
@@ -574,17 +539,6 @@ impl EventInfo {
         let mut v: Vec<&Entry> = self.entries.iter().collect();
         v.sort_by_key(|e| entry_sort_key(e));
         v
-    }
-
-    /// Backfill entry numbers for legacy entries (entry_no 0).  Idempotent.
-    pub fn ensure_entry_nos(&mut self) {
-        let mut next = self.next_entry_no();
-        for e in self.entries.iter_mut() {
-            if e.entry_no == 0 {
-                e.entry_no = next;
-                next += 1;
-            }
-        }
     }
 
     /// Set the lifecycle status of an entry by entry number.
@@ -833,17 +787,18 @@ pub fn shared_entry_nos(entries: &[Entry]) -> HashSet<u32> {
         .collect()
 }
 
-impl<'a> ResultView {
-    pub fn init(class: &str, event: &'a EventInfo, scores: &[ScoreData]) -> Self {
+impl ResultView {
+    pub fn init(class: &str, event: &EventInfo, runs: &[RunRecord]) -> Self {
         let entries = find_entries_in_class(&event.entries, class);
+
+        let base_times_ds = base_times_for(event, runs);
 
         let rows: IndexMap<u32, ResultRow> = entries
             .iter()
-            .map(|e| (e.entry_no, ResultRow::init(e, event, scores)))
+            .map(|e| (e.entry_no, ResultRow::init(e, event, runs, &base_times_ds)))
             .collect();
         let class = class.to_string();
 
-        let base_times_ds = vec![0; event.stage_count()];
         Self {
             class,
             event: event.clone(),
@@ -853,10 +808,19 @@ impl<'a> ResultView {
     }
 }
 
-impl<'a> ResultRow {
-    pub fn init(entry: &'a Entry, event: &'a EventInfo, scores: &[ScoreData]) -> Self {
+impl ResultRow {
+    pub fn init(entry: &Entry, event: &EventInfo, runs: &[RunRecord], base_times: &[u16]) -> Self {
         let columns = (0..event.stage_count())
-            .map(|col| find_score(scores, &entry.car[..], col as u8 + 1).map(ResultScore::init))
+            .map(|i| {
+                let stage = event.stage(i);
+                stage_result(&stage, runs, i as u8 + 1, &entry.car, base_times[i]).map(
+                    |(score, time)| ResultScore {
+                        time,
+                        stage_pos: Pos::init(score as u16),
+                        cum_pos: None,
+                    },
+                )
+            })
             .collect();
 
         Self {
@@ -866,24 +830,6 @@ impl<'a> ResultRow {
             total_pos: 0,
             total_eq: false,
         }
-    }
-}
-
-impl ResultScore {
-    pub fn init(score: &ScoreData) -> Self {
-        Self {
-            time: score.time.clone(),
-            stage_pos: Pos::default(),
-            cum_pos: None,
-        }
-    }
-}
-
-impl KTimeTime {
-    pub fn score_ds(&self) -> u32 {
-        let flag_ds = 5 * 10u16; // 5 seconds
-        let score = self.time_ds + (flag_ds * (self.flags as u16 + self.garage as u16));
-        score as u32
     }
 }
 
@@ -905,60 +851,164 @@ impl std::fmt::Display for KTime {
     }
 }
 
-// get base times for a stage
-// calc base. min  min*2 max
-pub fn calc_base_times(rv: &mut ResultView) {
-    for stage in 0..rv.event.stage_count() {
-        let mut fastest: u32 = u16::MAX as u32;
-        let mut slowest: u32 = 0;
-        for row in rv.rows.values() {
-            if let Some(ResultScore {
-                time: KTime::Time(kt),
-                ..
-            }) = &row.columns[stage]
-            {
-                // regs are unclear, but only thing that makes sense/fair
-                // is the slowest time includes penalties.
-                // (what is everyone got a penalty)
-                fastest = fastest.min(kt.score_ds());
-                slowest = slowest.max(kt.score_ds());
-                // log!(stage + 1, fastest, slowest, kt.time_ds, row.entry.car);
-            }
-        }
-        let base_time = slowest.min(fastest * 2);
-        rv.base_times_ds[stage] = base_time as u16;
-        // log!(
-        //     "stage",
-        //     stage + 1,
-        //     "base time",
-        //     base_time,
-        //     "min",
-        //     fastest,
-        //     "max",
-        //     slowest
-        // );
+/// Net score for a single completed run: elapsed deciseconds plus a 5s penalty
+/// per flag / garage return.  Aborted runs score a flat penalty against the
+/// stage base time (5s for DNF/FTS/WD, 10s for a no-show).
+fn run_net_score(run: &RunRecord, base_time: u16) -> u32 {
+    match finish_to_ktime(run) {
+        KTime::Time(t) => t.time_ds as u32 + 50 * (t.flags as u32 + t.garage as u32),
+        KTime::DNF | KTime::FTS | KTime::WD => base_time as u32 + 50,
+        KTime::NOSHO => base_time as u32 + 100,
     }
 }
 
-pub fn calc_penalties(rv: &mut ResultView) {
-    for stage in 0..rv.event.stage_count() {
-        for row in rv.rows.values_mut() {
-            let base_time = rv.base_times_ds[stage];
-            let plus10 = base_time + 100;
-            let plus5 = base_time + 50;
+/// Per-stage base time: `min(slowest, fastest * 2)` over clean runs, the same
+/// rule as before but read from the run log instead of collapsed scores.
+pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
+    (0..event.stage_count())
+        .map(|s| {
+            let test = s as u8 + 1;
+            let mut fastest: u32 = u16::MAX as u32;
+            let mut slowest: u32 = 0;
+            for run in runs
+                .iter()
+                .filter(|r| r.r#type == RUN_FINISH && r.test == test)
+            {
+                if let KTime::Time(t) = finish_to_ktime(run) {
+                    let score = t.time_ds as u32 + 50 * (t.flags as u32 + t.garage as u32);
+                    fastest = fastest.min(score);
+                    slowest = slowest.max(score);
+                }
+            }
+            if slowest == 0 {
+                0
+            } else {
+                slowest.min(fastest * 2) as u16
+            }
+        })
+        .collect()
+}
 
-            if let Some(rs) = &mut row.columns[stage] {
-                let score_ds = match &rs.time {
-                    KTime::NOSHO => plus10,
-                    KTime::WD => plus5,
-                    KTime::FTS => plus5,
-                    KTime::DNF => plus5,
-                    KTime::Time(t) => t.time_ds + (50u16 * (t.flags as u16 + t.garage as u16)),
-                };
-                rs.stage_pos.score_ds = score_ds;
-            };
+/// Best-X-of-Y aggregate for one car in one test: the sum of the car's best
+/// `best_x` counting runs of the (up to) `repeats` it attempted.  Returns the
+/// aggregate score and the best run's time (for display).  Falls back to the
+/// best status run (DNF/FTS/WD/NOSHO) when the car has no clean time; a DNS
+/// start with no finish scores NOSHO.  None when the car has no runs at all.
+fn stage_result(
+    stage: &Stage,
+    runs: &[RunRecord],
+    test: u8,
+    car: &str,
+    base_time: u16,
+) -> Option<(u32, KTime)> {
+    let mut counting: Vec<(u32, KTime)> = vec![];
+    let mut aborted: Vec<(u32, KTime)> = vec![];
+    for run in runs
+        .iter()
+        .filter(|r| r.r#type == RUN_FINISH && r.test == test && r.car == car)
+    {
+        let kt = finish_to_ktime(run);
+        let score = run_net_score(run, base_time);
+        match kt {
+            KTime::Time(_) => counting.push((score, kt)),
+            _ => aborted.push((score, kt)),
         }
     }
+
+    if counting.is_empty() {
+        // No clean time: keep the best status run, else a DNS start = NOSHO.
+        if let Some((best, time)) = aborted.iter().min_by_key(|(s, _)| *s) {
+            return Some((*best, time.clone()));
+        }
+        if runs.iter().any(|r| {
+            r.r#type == RUN_START
+                && r.test == test
+                && r.car == car
+                && r.status.as_deref() == Some("dns")
+        }) {
+            return Some((base_time as u32 + 100, KTime::NOSHO));
+        }
+        return None;
+    }
+
+    counting.sort_by_key(|(s, _)| *s);
+    let consider = stage.repeats.max(1).min(counting.len() as u8) as usize;
+    let keep = if stage.best_x == 0 {
+        consider
+    } else {
+        (stage.best_x.min(consider as u8) as usize).max(1)
+    };
+    let sum: u32 = counting.iter().take(keep).map(|(s, _)| s).sum();
+    let time = counting[0].1.clone();
+    Some((sum, time))
+}
+
+/// Per-car overall total: the plain sum of the per-stage scores — each stage
+/// already aggregates its runs via best-X-of-Y — plus the tie-aware rank.
+pub fn calc_totals(rv: &mut ResultView) {
+    for row in rv.rows.values_mut() {
+        row.total_ds = row
+            .columns
+            .iter()
+            .flatten()
+            .map(|rs| rs.stage_pos.score_ds as u32)
+            .sum();
+        row.total_pos = 0;
+        row.total_eq = false;
+    }
+    let mut rows: Vec<&mut ResultRow> = rv
+        .rows
+        .values_mut()
+        .filter(|r| r.total_ds != 0) // no completed runs yet
+        .collect();
+    rows.sort_by_key(|r| r.total_ds);
+    let mut last = u32::MAX;
+    let mut rank = 1u8;
+    for (idx, row) in rows.iter_mut().enumerate() {
+        let eq = row.total_ds == last;
+        last = row.total_ds;
+        if !eq {
+            rank = idx as u8 + 1;
+        }
+        row.total_pos = rank;
+        row.total_eq = eq;
+    }
+}
+
+pub fn calc(rv: &mut ResultView) {
+    calc_stage_positions(rv);
+    calc_cumulative_times(rv);
+    calc_cumulative_positions(rv);
+    calc_pos_changes(rv);
+    calc_totals(rv);
+}
+
+pub fn create_result_view(event: &EventInfo, runs: &[RunRecord], class: &str) -> ResultView {
+    let mut rv = ResultView::init(class, event, runs);
+    calc(&mut rv);
+    rv
+}
+
+/// The overall standing: every active entry, regardless of class membership.
+/// Always available, so the results page can show an Outright tab even when the
+/// event's classes list doesn't include one.
+pub fn create_outright_view(event: &EventInfo, runs: &[RunRecord]) -> ResultView {
+    let mut rv = ResultView::init("Outright", event, runs);
+    if !event.classes.iter().any(|c| c == "Outright") {
+        rv.rows = event
+            .sorted_entries()
+            .into_iter()
+            .filter(|e| is_active_entry(e))
+            .map(|e| {
+                (
+                    e.entry_no,
+                    ResultRow::init(e, event, runs, &rv.base_times_ds),
+                )
+            })
+            .collect();
+    }
+    calc(&mut rv);
+    rv
 }
 
 pub fn calc_cumulative_times(rv: &mut ResultView) {
@@ -1041,95 +1091,6 @@ pub fn calc_cumulative_positions(rv: &mut ResultView) {
     }
 }
 
-/// Best-X-of-Y aggregate score for a row, per the event's scoring rule.
-/// `best_y <= 1` (the default) means every completed test counts.
-fn best_x_of_y(event: &EventInfo, columns: &[Option<ResultScore>]) -> u32 {
-    let mut scores: Vec<u32> = columns
-        .iter()
-        .filter_map(|c| c.as_ref())
-        .map(|rs| rs.stage_pos.score_ds as u32)
-        .collect();
-    scores.sort_unstable();
-    let best_y = event.best_y;
-    let best_x = event.best_x;
-    if best_y <= 1 {
-        return scores.iter().sum();
-    }
-    let consider = best_y.min(scores.len() as u8) as usize;
-    let keep = if best_x == 0 || best_x >= best_y {
-        consider
-    } else {
-        (best_x.min(consider as u8)) as usize
-    };
-    scores[..consider].iter().take(keep).sum()
-}
-
-/// Per-row best-X-of-Y total + tie-aware overall rank (1,1,3).
-pub fn calc_totals(rv: &mut ResultView) {
-    for row in rv.rows.values_mut() {
-        row.total_ds = best_x_of_y(&rv.event, &row.columns);
-        row.total_pos = 0;
-        row.total_eq = false;
-    }
-    let mut rows: Vec<&mut ResultRow> = rv
-        .rows
-        .values_mut()
-        .filter(|r| r.total_ds != 0) // no completed runs yet
-        .collect();
-    rows.sort_by_key(|r| r.total_ds);
-    let mut last = u32::MAX;
-    let mut rank = 1u8;
-    for (idx, row) in rows.iter_mut().enumerate() {
-        let eq = row.total_ds == last;
-        last = row.total_ds;
-        if !eq {
-            rank = idx as u8 + 1;
-        }
-        row.total_pos = rank;
-        row.total_eq = eq;
-    }
-}
-
-pub fn calc(rv: &mut ResultView) {
-    calc_base_times(rv);
-    calc_penalties(rv);
-    calc_stage_positions(rv);
-    calc_cumulative_times(rv);
-    calc_cumulative_positions(rv);
-    calc_pos_changes(rv);
-    calc_totals(rv);
-}
-
-pub fn create_result_view(event: &EventInfo, scores: &[ScoreData], class: &str) -> ResultView {
-    // Calc min time per stage (for class)
-    // loop raw results... list of cars eligible.  Find relevant results.
-    // sort into stages.
-
-    // validate ? Complain about scores for non-existant cars
-    // times for non-existant stages
-
-    let mut rv = ResultView::init(class, event, scores);
-    calc(&mut rv);
-    rv
-}
-
-/// The overall standing: every active entry, regardless of class membership.
-/// Always available, so the results page can show an Outright tab even when the
-/// event's classes list doesn't include one.
-pub fn create_outright_view(event: &EventInfo, scores: &[ScoreData]) -> ResultView {
-    let mut rv = ResultView::init("Outright", event, scores);
-    if !event.classes.iter().any(|c| c == "Outright") {
-        rv.rows = event
-            .sorted_entries()
-            .into_iter()
-            .filter(|e| is_active_entry(e))
-            .map(|e| (e.entry_no, ResultRow::init(e, event, scores)))
-            .collect();
-    }
-    calc(&mut rv);
-    rv
-}
-
 // get entries  in class
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
     let mut v: Vec<&Entry> = entries
@@ -1148,14 +1109,10 @@ pub fn is_active_entry(e: &Entry) -> bool {
     )
 }
 
-// get available Raw scores for the list of cars in a stage
-pub fn find_score<'a>(scores: &'a [ScoreData], car: &str, stage: u8) -> Option<&'a ScoreData> {
-    scores.iter().find(|s| s.stage == stage && car == s.car)
-}
-
 // ---------------------------------------------------------------------------
 // Event id + slug helpers.  The event id is the primary key everywhere:
-// localStorage (`event:<id>`), Matrix aliases and timing payloads.
+// localStorage transaction log (`log:<id>` / `pending:<id>`), Matrix aliases
+// and timing payloads.
 // ---------------------------------------------------------------------------
 
 /// Slugify a string for use in ids/aliases: lowercase `[a-z0-9]` joined by `-`.
@@ -1391,9 +1348,8 @@ pub fn load_event(key: &str) -> EventInfo {
             ..Default::default()
         };
     }
-    let (mut ev, _, _) =
+    let (ev, _, _) =
         crate::replay::replay(&crate::log::load_log(key), &crate::log::load_pending(key));
-    ev.ensure_entry_nos();
     ev
 }
 
@@ -2007,31 +1963,76 @@ mod tests {
     }
 
     #[test]
-    fn best_x_of_y_rules() {
-        let mut ev = EventInfo {
-            stages_count: 3,
-            best_x: 1,
-            best_y: 1, // default: all count
+    fn stage_result_best_x_of_y() {
+        let ev = EventInfo::default();
+        let stage = Stage {
+            num: 1,
+            repeats: 3,
+            best_x: 2,
+            ..ev.stage(0).clone()
+        };
+        let finish = |ith: u8, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test: 1,
+            car: "7".into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(ds),
             ..Default::default()
         };
-        let cols = |ds: &[u32]| -> Vec<Option<ResultScore>> {
-            ds.iter()
-                .map(|d| {
-                    Some(ResultScore {
-                        stage_pos: Pos::init(*d as u16),
-                        ..Default::default()
-                    })
-                })
-                .collect()
+        let runs = vec![finish(1, 200), finish(2, 100), finish(3, 300)];
+        // Best 2 of 3 count: 100 + 200 = 300.
+        assert_eq!(
+            stage_result(&stage, &runs, 1, "7", 0).map(|(s, _)| s),
+            Some(300)
+        );
+        let mut best1 = stage.clone();
+        best1.best_x = 1;
+        assert_eq!(
+            stage_result(&best1, &runs, 1, "7", 0).map(|(s, _)| s),
+            Some(100)
+        );
+        let mut best0 = stage.clone();
+        best0.best_x = 0; // count all runs up to repeats
+        assert_eq!(
+            stage_result(&best0, &runs, 1, "7", 0).map(|(s, _)| s),
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn stage_result_status_and_dns() {
+        let ev = EventInfo::default();
+        let stage = ev.stage(0); // repeats=1, best_x=1
+        let run = |ith: u8, time_ds, flags| RunRecord {
+            r#type: "finish".into(),
+            test: 1,
+            car: "7".into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(time_ds),
+            flags: Some(flags),
+            ..Default::default()
         };
-        let row = cols(&[100, 200, 300]);
-        assert_eq!(best_x_of_y(&ev, &row), 600);
-        ev.best_x = 1;
-        ev.best_y = 2;
-        assert_eq!(best_x_of_y(&ev, &row), 100); // best 1 of first 2
-        ev.best_x = 2;
-        ev.best_y = 2;
-        assert_eq!(best_x_of_y(&ev, &row), 300); // best 2 of first 2
+        // A clean finish wins even when a slower one has lawn-dart flag penalties.
+        assert_eq!(
+            stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).map(|(s, _)| s),
+            Some(450)
+        );
+        // No finish at all: DNS start counts as a 1100 (no-time) score.
+        let dnss = vec![RunRecord {
+            r#type: "start".into(),
+            test: 1,
+            car: "9".into(),
+            run: 1,
+            ts: 1,
+            status: Some("dns".into()),
+            ..Default::default()
+        }];
+        assert_eq!(
+            stage_result(&stage, &dnss, 1, "9", 1000).map(|(s, _)| s),
+            Some(1100)
+        );
     }
 
     #[test]
@@ -2044,26 +2045,6 @@ mod tests {
         assert_eq!(first.repeats, 1);
         assert_eq!(first.best_x, 1);
         assert_eq!(first.timing, TimingStyle::Stopwatch);
-    }
-
-    #[test]
-    fn legacy_event_migrates_to_stages() {
-        // A pre-per-stage event: only stages_count / best_x / best_y set.
-        let json = r#"{
-            "name": "Legacy",
-            "stages_count": 3,
-            "classes": ["Outright"],
-            "entries": [],
-            "best_x": 1,
-            "best_y": 2
-        }"#;
-        let mut ev: EventInfo = serde_json::from_str(json).unwrap();
-        ev.ensure_stages();
-        assert_eq!(ev.stage_count(), 3);
-        let s = ev.stage(0);
-        assert_eq!(s.num, 1);
-        assert_eq!(s.repeats, 2);
-        assert_eq!(s.best_x, 1);
     }
 
     #[test]
@@ -2120,13 +2101,9 @@ mod tests {
             assert_eq!(back.status, s);
         }
 
-        // Legacy entries (no status field) read as the default (submitted),
-        // and the old "entered" value is still accepted.
+        // Legacy entries (no status field) read as the default (submitted).
         let legacy = r#"{"car":"8","name":"Bob","classes":["Outright"]}"#;
         let back: Entry = serde_json::from_str(legacy).unwrap();
-        assert_eq!(back.status, EntryStatus::Submitted);
-        let old = r#"{"car":"9","name":"Carol","status":"entered"}"#;
-        let back: Entry = serde_json::from_str(old).unwrap();
         assert_eq!(back.status, EntryStatus::Submitted);
     }
 
@@ -2153,45 +2130,22 @@ mod tests {
             entries: vec![a, b],
             ..Default::default()
         };
-        let scores = vec![
-            ScoreData {
-                stage: 1,
-                car: "1".into(),
-                time: KTime::Time(KTimeTime {
-                    time_ds: 450,
-                    flags: 0,
-                    garage: false,
-                }),
-            },
-            ScoreData {
-                stage: 2,
-                car: "1".into(),
-                time: KTime::Time(KTimeTime {
-                    time_ds: 470,
-                    flags: 0,
-                    garage: false,
-                }),
-            },
-            ScoreData {
-                stage: 1,
-                car: "2".into(),
-                time: KTime::Time(KTimeTime {
-                    time_ds: 500,
-                    flags: 0,
-                    garage: false,
-                }),
-            },
-            ScoreData {
-                stage: 2,
-                car: "2".into(),
-                time: KTime::Time(KTimeTime {
-                    time_ds: 520,
-                    flags: 0,
-                    garage: false,
-                }),
-            },
+        let finish = |test: u8, car: &str, ith: u8, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test,
+            car: car.into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(ds),
+            ..Default::default()
+        };
+        let runs = vec![
+            finish(1, "1", 1, 450),
+            finish(2, "1", 1, 470),
+            finish(1, "2", 1, 500),
+            finish(2, "2", 1, 520),
         ];
-        let rv = create_result_view(&ev, &scores, "Outright");
+        let rv = create_result_view(&ev, &runs, "Outright");
         assert_eq!(
             rv.rows.keys().cloned().collect::<Vec<_>>(),
             vec![1u32, 2u32],
@@ -2384,22 +2338,6 @@ mod tests {
         // Member entry numbers are flagged.
         let shared = shared_entry_nos(&entries);
         assert!(shared.contains(&1) && shared.contains(&2) && !shared.contains(&3));
-    }
-
-    #[test]
-    fn ensure_entry_nos_backfills_zeroes() {
-        let mut ev = EventInfo::default();
-        let mut a = Entry::new("7", "Alice");
-        let mut b = Entry::new("8", "Bob");
-        b.entry_no = 5;
-        ev.entries = vec![a.clone(), b.clone()];
-        ev.ensure_entry_nos();
-        assert_eq!(ev.find_entry_by_car("7").unwrap().entry_no, 6);
-        assert_eq!(ev.find_entry_by_car("8").unwrap().entry_no, 5);
-        // Idempotent.
-        ev.ensure_entry_nos();
-        assert_eq!(ev.find_entry_by_car("7").unwrap().entry_no, 6);
-        a.entry_no = 0;
     }
 
     #[test]

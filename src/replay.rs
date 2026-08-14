@@ -17,7 +17,6 @@ pub fn replay(log: &[LogMsg], pending: &[LogMsg]) -> (EventInfo, Vec<ScoreData>,
     for msg in log.iter().chain(pending.iter()) {
         apply(&mut ev, &mut scores, &mut runs, &msg.body);
     }
-    ev.ensure_entry_nos();
     (ev, scores, runs)
 }
 

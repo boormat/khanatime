@@ -338,14 +338,7 @@ fn load_details(model: crate::Model) {
         .edit_entry_close
         .set(e.entry_close.clone());
     model.screens.setup.edit_stripe.set(e.stripe_link.clone());
-    let mut stages = e.stages.clone();
-    if stages.is_empty() {
-        // Legacy event: migrate the global count/best-X-Y into per-stage rows.
-        let mut ev = e.clone();
-        ev.ensure_stages();
-        stages = ev.stages;
-    }
-    model.screens.setup.edit_stages.set(stages);
+    model.screens.setup.edit_stages.set(e.stages.clone());
     model.screens.setup.edit_classes.set(e.classes.clone());
 }
 
