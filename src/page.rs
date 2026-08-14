@@ -66,6 +66,13 @@ pub fn enqueue_ktime(model: crate::Model, test: u8, car: &str, time: &crate::eve
         &event_id,
         crate::log::LogMsg::new_pending(te.body(), sender),
     );
+    // Mirror the finish into the local run log (results read runs, not the
+    // collapsed scores) so manually entered times show up even before the
+    // room echoes the message back.
+    let run = crate::event::record_from_timing(&te);
+    model.app.runs.update(|runs| {
+        crate::event::add_run(runs, run);
+    });
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
 }
