@@ -168,12 +168,24 @@ const COLS_PER_TEST: usize = 5;
 fn view_row(rr: &ResultRow) -> View {
     let car = rr.entry.car.clone();
     let name = rr.entry.name.clone();
+    // Outright rank in the current tab: only ranked once totals exist.
+    let or = match (rr.total_pos, rr.total_eq) {
+        (0, _) => view! { td(class="has-text-grey-light") { "\u{2014}" } },
+        (p, true) => {
+            let s = format!("={p}");
+            view! { td { (s) } }
+        }
+        (p, _) => {
+            let s = p.to_string();
+            view! { td { (s) } }
+        }
+    };
     let columns = rr.columns.iter().map(show_rs).collect::<Vec<View>>();
     view! {
         tr(class="is-together-print") {
             td { (car) }
             td { (name) }
-            td { "TBA" }
+            (or)
             (columns)
         }
     }
@@ -257,7 +269,7 @@ fn table_header(results: &ResultView) -> View {
             (first_row)
         }
     });
-    //Time	Flags	Score	Pos	Total	Out
+    // per test: Time  Score  Pos  Cum  O/R
     head.push(view! {
         tr {
             th { "#" }
