@@ -912,11 +912,13 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 }
 
 /// Best-X-of-Y aggregate for one car in one test: the sum of the car's best
-/// `best_x` counting runs of the (up to) `repeats` it attempted.  Returns the
-/// aggregate score together with every run (in run order, counted runs
-/// flagged) so the results view can show which runs counted.  Falls back to
-/// the best status run (DNF/FTS/WD/NOSHO) when the car has no clean time; a
-/// DNS start with no finish scores NOSHO.  None when the car has no runs.
+/// `best_x` counting runs of the (up to) `repeats` it attempted, where only
+/// the first `repeats` runs (by run order) may count — extra runs beyond Y
+/// are excluded no matter their time.  Returns the aggregate score together
+/// with every run (in run order, counted runs flagged) so the results view can
+/// show which runs counted.  Falls back to the best status run
+/// (DNF/FTS/WD/NOSHO) when the car has no clean time; a DNS start with no
+/// finish scores NOSHO.  None when the car has no runs.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
@@ -938,9 +940,11 @@ fn stage_result(
     all.sort_by_key(|r| r.run);
 
     // Indices of clean (counting-eligible) runs, best first; ties resolved by
-    // run order so the earlier run wins.
+    // run order so the earlier run wins.  Only the first `repeats` runs (the Y
+    // in best-X-of-Y) may count: if the car did more than Y runs, the later
+    // ones are excluded no matter how fast.
     let mut clean: Vec<usize> = (0..all.len())
-        .filter(|&i| matches!(all[i].time, KTime::Time(_)))
+        .filter(|&i| all[i].run <= stage.repeats && matches!(all[i].time, KTime::Time(_)))
         .collect();
     clean.sort_by_key(|&i| (all[i].score, all[i].run));
 
@@ -957,8 +961,11 @@ fn stage_result(
             sum += all[i].score;
             all[i].counted = true;
         }
-    } else if let Some(i) = (0..all.len()).min_by_key(|&i| all[i].score) {
-        // No clean time: keep the best status run.
+    } else if let Some(i) = (0..all.len())
+        .filter(|&i| all[i].run <= stage.repeats)
+        .min_by_key(|&i| all[i].score)
+    {
+        // No clean time: keep the best status run (still within the first Y).
         all[i].counted = true;
         sum = all[i].score;
     } else {
@@ -2035,6 +2042,37 @@ mod tests {
             stage_result(&best0, &runs, 1, "7", 0).map(|ss| ss.sum),
             Some(600)
         );
+    }
+
+    #[test]
+    fn stage_result_beyond_y_runs_are_excluded() {
+        let ev = EventInfo::default();
+        let stage = Stage {
+            num: 1,
+            repeats: 3, // Y = 3: only the first three runs may count
+            best_x: 2,
+            ..ev.stage(0).clone()
+        };
+        let finish = |ith: u8, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test: 1,
+            car: "7".into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(ds),
+            ..Default::default()
+        };
+        // A very fast 4th run must NOT steal a counting slot from the first Y.
+        let runs = vec![
+            finish(1, 400),
+            finish(2, 500),
+            finish(3, 600),
+            finish(4, 50),
+        ];
+        let ss = stage_result(&stage, &runs, 1, "7", 0).unwrap();
+        assert_eq!(ss.sum, 900); // best 2 of the first 3, run 4 ignored
+        let shown: Vec<(u8, bool)> = ss.runs.iter().map(|r| (r.run, r.counted)).collect();
+        assert_eq!(shown, vec![(1, true), (2, true), (3, false), (4, false)]);
     }
 
     #[test]
