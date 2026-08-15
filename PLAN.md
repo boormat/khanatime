@@ -16,6 +16,7 @@
 - `docs/plan/multi-transport.md` — multi-transport timing: QR parcel handoff + dual homeserver relay, and event/observation ids with amendments
 - `docs/plan/identity-amendments.md` — Phase 1: event/observation ids + `amend`/`void` wire format v2 (implementation detail)
 - `docs/plan/layout-navigation.md` — nav/layout rework: burger menu, unified stopwatch, COC event status, About page
+- `docs/plan/matrix-login.md` — passwordless matrix.org login via OIDC (MAS) SSO: auth-code + PKCE flow, new-tab BroadcastChannel handoff
 - `AGENTS.md` — build/test commands and code layout
 
 ---

@@ -46,6 +46,9 @@ unlinted code.
   `docs/plan/multi-transport.md`). `matrix-sdk` 0.18 (features `js`,
   `indexeddb`) is already a dependency. `getrandom` 0.3/0.4 `wasm_js` backends
   are pinned for wasm32-unknown-unknown — keep those if you touch `Cargo.toml`.
+- Sign-in is username/password (+ local self-register) with an OIDC/SSO path
+  for passwordless accounts (matrix.org/MAS) — see `docs/plan/matrix-login.md`
+  before touching `sync.rs` connect or `services/matrix.rs` auth/session.
 
 ## Architecture
 
