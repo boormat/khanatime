@@ -196,6 +196,41 @@ pub fn setup_effects(model: Model) {
         let cmd = page::stage::parse_command(&input);
         model.screens.stage.preview.set(cmd);
     });
+    #[cfg(target_arch = "wasm32")]
+    listen_for_tab_sync(model);
+}
+
+/// Cross-tab sync.  Every write to this event's log/pending outbox lands in
+/// shared localStorage, so a `storage` event in *this* tab means another tab
+/// changed the current event.  Re-replay and refresh so both tabs agree — the
+/// demo event never joins a room, so this is its only live sync path.  The
+/// writing tab doesn't get the event, so there's no echo loop.
+#[cfg(target_arch = "wasm32")]
+fn listen_for_tab_sync(model: Model) {
+    use wasm_bindgen::JsCast;
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::StorageEvent)>::wrap(Box::new(
+        move |ev: web_sys::StorageEvent| {
+            let id = model.app.event.with(|e| e.id.clone());
+            if id.is_empty() {
+                return;
+            }
+            // Filter on the key for the event this tab currently has open.
+            let key = ev.key().unwrap_or_default();
+            if key != format!("log:{id}") && key != format!("pending:{id}") {
+                return;
+            }
+            let (event, scores, runs) =
+                crate::replay::replay(&crate::log::load_log(&id), &crate::log::load_pending(&id));
+            model.app.event.set(event);
+            model.app.scores.set(scores);
+            model.app.runs.set(runs);
+            crate::app::refresh_feed(model);
+            crate::update(model, crate::Msg::Reload);
+        },
+    ));
+    let window = web_sys::window().expect("window exists");
+    let _ = window.add_event_listener_with_callback("storage", cb.as_ref().unchecked_ref());
+    cb.forget();
 }
 
 // ------ ------
