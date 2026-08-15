@@ -323,6 +323,25 @@ fn opt_cum(row: &ResultRow, test: u8) -> Option<u8> {
         .map(|p| p.pos)
 }
 
+/// The final test of the event.
+fn last_test(model: crate::Model) -> u8 {
+    model
+        .screens
+        .results
+        .results
+        .with(|r| r.event.stage_count() as u8)
+}
+
+/// Column count for a collapsed test's per-test block.  The last test keeps
+/// its O/R column (final ordering for officials), so it spans 3.
+fn collapsed_span(model: crate::Model, test: u8) -> usize {
+    if test == last_test(model) {
+        3
+    } else {
+        2
+    }
+}
+
 /// Footer under each test: the stage base time and the derived no-time scores
 /// (WD / FTS / DNF = base + 5s, DNS = base + 10s) so officials can see what
 /// aborted runs are worth.
@@ -331,7 +350,7 @@ fn table_footer(model: crate::Model, results: &ResultView) -> View {
     for i in 0..results.event.stage_count() {
         let test = i as u8 + 1;
         if model.screens.results.collapsed.with(|c| c.contains(&test)) {
-            cells.push(view! { td(colspan="2") {} });
+            cells.push(view! { td(colspan=collapsed_span(model, test).to_string()) {} });
             continue;
         }
         let base = results.base_times_ds.get(i).copied().unwrap_or(0);
@@ -387,10 +406,18 @@ fn show_rs(model: crate::Model, test: u8, rso: &Option<ResultScore>) -> View {
             };
             if collapsed {
                 // Collapsed: keep the full Time cell (all runs, struck ones
-                // included) and Pos; drop Score, Cum, O/R.
+                // included) and Pos; drop Score and Cum.  The last test keeps
+                // its O/R column as well.
+                let or = if test == last_test(model) {
+                    let cell = cum_or(&rs.cum_pos);
+                    view! { td { (cell) } }
+                } else {
+                    view! {}
+                };
                 view! {
                     td { (runs) }
                     (pos)
+                    (or)
                 }
             } else {
                 let (score, cum) = match &rs.stage_pos {
@@ -421,7 +448,11 @@ fn show_rs(model: crate::Model, test: u8, rso: &Option<ResultScore>) -> View {
             }
         }
         None => {
-            let n = if collapsed { 2 } else { COLS_PER_TEST };
+            let n = if collapsed {
+                collapsed_span(model, test)
+            } else {
+                COLS_PER_TEST
+            };
             let tds = (0..n).map(|_| view! { td {} }).collect::<Vec<View>>();
             view! { (tds) }
         }
@@ -546,7 +577,11 @@ fn table_header(model: crate::Model, results: &ResultView) -> View {
         } else {
             "fa-chevron-down"
         };
-        let span = if collapsed { "2" } else { "5" };
+        let span = if collapsed {
+            collapsed_span(model, test).to_string()
+        } else {
+            "5".to_string()
+        };
         first_row.push(view! {
             th(
                 colspan=span,
@@ -594,6 +629,19 @@ fn table_header(model: crate::Model, results: &ResultView) -> View {
                                 "Pos"
                                 (sort_icon(model, SortKey::TestPos(test)))
                             }
+                            (if test == last_test(model) {
+                                view! {
+                                    th(
+                                        class="kt-sortable",
+                                        on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Sort(SortKey::TestOr(test)))),
+                                    ) {
+                                        "O/R"
+                                        (sort_icon(model, SortKey::TestOr(test)))
+                                    }
+                                }
+                            } else {
+                                view! {}
+                            })
                         }
                     } else {
                         view! {
