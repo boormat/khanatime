@@ -321,29 +321,30 @@ pub fn import_parcel(model: Model) {
     let Some(parcel) = parse_parcel_text(model) else {
         return;
     };
-    if id.is_empty() {
-        model
-            .app
-            .parcel_status
-            .set("Open the event to import into first.".to_string());
-        return;
-    }
-    // A parcel always names its event; mismatch (including an unidentified
-    // draft, uid empty) means it would land in the wrong event — warn first.
-    if parcel.event_uid != uid {
+    // No current event, or the parcel names a different one (including an
+    // unidentified draft, uid empty): offer to open the parcel's own event and
+    // import there.  A parcel whose event is the current one imports directly.
+    if id.is_empty() || parcel.event_uid != uid {
         match parcel_event_name(&parcel) {
             Some((eid, name)) => {
                 model.app.parcel_open_event.set(Some((eid, name.clone())));
                 model.app.parcel_status.set(format!(
-                    "This parcel is for \"{name}\" — a different event. Open it to import."
+                    "This parcel is for \"{name}\" — open it to import."
                 ));
             }
             None => {
                 model.app.parcel_open_event.set(None);
-                model.app.parcel_status.set(format!(
-                    "This parcel is for a different event (uid {}) — open that event first.",
-                    parcel.event_uid
-                ));
+                if id.is_empty() {
+                    model
+                        .app
+                        .parcel_status
+                        .set("Open the event to import into first.".to_string());
+                } else {
+                    model.app.parcel_status.set(format!(
+                        "This parcel is for a different event (uid {}) — open that event first.",
+                        parcel.event_uid
+                    ));
+                }
             }
         }
         return;
