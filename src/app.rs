@@ -103,6 +103,8 @@ pub struct AppState {
     pub parcel_export: Signal<String>,
     pub parcel_import: Signal<String>,
     pub parcel_status: Signal<String>,
+    /// Parcel for a different event: `(event id, name)` to offer open-and-import.
+    pub parcel_open_event: Signal<Option<(String, String)>>,
 }
 
 /// Per-screen UI state. Kept alive across navigation so leaving and returning
@@ -143,6 +145,8 @@ pub enum Msg {
     ExportParcel,
     /// Import a pasted/scanned QR parcel into the current event.
     ImportParcel,
+    /// Open the event a mismatched parcel belongs to and import it there.
+    OpenParcelEvent,
 }
 
 impl Model {
@@ -184,6 +188,7 @@ impl Model {
                 parcel_export: create_signal(String::new()),
                 parcel_import: create_signal(String::new()),
                 parcel_status: create_signal(String::new()),
+                parcel_open_event: create_signal(None),
             },
             screens: Screens {
                 home: page::home::init(),
@@ -233,6 +238,8 @@ pub fn update(model: Model, msg: Msg) {
             model.screens.entries.confirm.set(None);
             model.screens.entries.admin.set(false);
             model.screens.entries.show_form.set(false);
+            // And any pending "open the parcel's event" offer.
+            model.app.parcel_open_event.set(None);
             refresh_feed(model);
             page::event::update(model, page::event::Msg::LoadDetails);
             page::results::update(model, page::results::Msg::Reload);
@@ -253,6 +260,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::Conn(msg) => crate::sync::update(model, msg),
         Msg::ExportParcel => crate::sync::export_parcel(model),
         Msg::ImportParcel => crate::sync::import_parcel(model),
+        Msg::OpenParcelEvent => crate::sync::open_parcel_event(model),
     }
 }
 

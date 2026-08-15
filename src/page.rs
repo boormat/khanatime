@@ -199,6 +199,23 @@ pub fn view_handoff(model: crate::Model) -> View {
         let s = status.clone();
         view! { p(class="help has-text-info") { (s) } }
     };
+    let open_event = model.app.parcel_open_event.get_clone();
+    let open_view = if open_event.is_some() {
+        let (_, name) = open_event.clone().unwrap();
+        view! {
+            div(class="control") {
+                button(
+                    class="button is-small is-warning",
+                    on:click=move |_| crate::update(model, crate::Msg::OpenParcelEvent),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-folder-open") }
+                    span { (format!("Open {name} and import")) }
+                }
+            }
+        }
+    } else {
+        view! {}
+    };
     view! {
         div(class="box is-hidden-print") {
             h2(class="title is-5") {
@@ -239,6 +256,7 @@ pub fn view_handoff(model: crate::Model) -> View {
                         span { "Import parcel" }
                     }
                 }
+                (open_view)
             }
             (status_view)
         }

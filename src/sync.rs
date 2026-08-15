@@ -246,32 +246,15 @@ pub fn export_parcel(model: Model) {
 
 /// Import a QR parcel: parse it, gate on the current event's uid, then append
 /// each message to the durable log exactly like a room message (content-id
-/// dedup makes re-import idempotent).  Reload rebuilds event/scores/runs.
+/// dedup makes re-import idempotent).  When the parcel names a different event
+/// the user is warned and offered an open-and-import button (a parcel for the
+/// current event imports straight in).
 pub fn import_parcel(model: Model) {
     let id = model.app.event.with(|e| e.id.clone());
     let uid = model.app.event.with(|e| e.uid.clone());
-    let text = model.app.parcel_import.get_clone();
-    if text.trim().is_empty() {
-        model
-            .app
-            .parcel_status
-            .set("Paste or scan a parcel first.".to_string());
+    let Some(parcel) = parse_parcel_text(model) else {
         return;
-    }
-    let parcel = match crate::services::qr::unpack_parcel(&text) {
-        Ok(p) => p,
-        Err(e) => {
-            model.app.parcel_status.set(format!("Import failed: {e}"));
-            return;
-        }
     };
-    if !uid.is_empty() && parcel.event_uid != uid {
-        model.app.parcel_status.set(format!(
-            "This parcel is for a different event — open {} first.",
-            parcel.event_uid
-        ));
-        return;
-    }
     if id.is_empty() {
         model
             .app
@@ -279,18 +262,101 @@ pub fn import_parcel(model: Model) {
             .set("Open the event to import into first.".to_string());
         return;
     }
+    // A parcel always names its event; mismatch (including an unidentified
+    // draft, uid empty) means it would land in the wrong event — warn first.
+    if parcel.event_uid != uid {
+        match parcel_event_name(&parcel) {
+            Some((eid, name)) => {
+                model.app.parcel_open_event.set(Some((eid, name.clone())));
+                model.app.parcel_status.set(format!(
+                    "This parcel is for \"{name}\" — a different event. Open it to import."
+                ));
+            }
+            None => {
+                model.app.parcel_open_event.set(None);
+                model.app.parcel_status.set(format!(
+                    "This parcel is for a different event (uid {}) — open that event first.",
+                    parcel.event_uid
+                ));
+            }
+        }
+        return;
+    }
+    apply_parcel(model, &id, &parcel);
+}
+
+/// Open the event a mismatched parcel belongs to and import it there.  Used by
+/// the handoff's "Open <event> and import" button: after opening, the parcel
+/// imports without the uid gate (the fresh event has no uid until its setup
+/// manifest is imported).
+pub fn open_parcel_event(model: Model) {
+    let Some(parcel) = parse_parcel_text(model) else {
+        return;
+    };
+    let Some((eid, name)) = parcel_event_name(&parcel) else {
+        model
+            .app
+            .parcel_status
+            .set("This parcel has no setup manifest — can't tell which event to open.".into());
+        model.app.parcel_open_event.set(None);
+        return;
+    };
+    crate::update(model, crate::Msg::SetEvent(eid.clone()));
+    apply_parcel(model, &eid, &parcel);
+    model.app.parcel_open_event.set(None);
+    model
+        .app
+        .parcel_status
+        .set(format!("Opened {name} and imported the parcel."));
+}
+
+/// Read and parse the staged parcel text, surfacing errors on the status line.
+fn parse_parcel_text(model: Model) -> Option<crate::services::qr::Parcel> {
+    let text = model.app.parcel_import.get_clone();
+    if text.trim().is_empty() {
+        model
+            .app
+            .parcel_status
+            .set("Paste or scan a parcel first.".to_string());
+        return None;
+    }
+    match crate::services::qr::unpack_parcel(&text) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            model.app.parcel_status.set(format!("Import failed: {e}"));
+            None
+        }
+    }
+}
+
+/// The `(event id, name)` a parcel belongs to, from its setup manifest.
+fn parcel_event_name(parcel: &crate::services::qr::Parcel) -> Option<(String, String)> {
+    parcel.msgs.iter().find_map(|pm| {
+        if pm
+            .body
+            .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
+        {
+            crate::event::from_setup_body(&pm.body).map(|e| (e.id, e.name))
+        } else {
+            None
+        }
+    })
+}
+
+/// Append a parcel's messages to an event's log and rebuild local state.
+fn apply_parcel(model: Model, id: &str, parcel: &crate::services::qr::Parcel) {
     let mut added = 0;
     for pm in &parcel.msgs {
         let msg = crate::log::LogMsg::from_parcel(pm.body.clone(), pm.ts, pm.sender.clone());
-        if crate::log::append_log(&id, msg) {
+        if crate::log::append_log(id, msg) {
             added += 1;
         }
     }
-    crate::log::reconcile(&id);
+    crate::log::reconcile(id);
     if added > 0 {
         // Rebuild event/scores/runs from the now-merged log, like SetEvent.
         let (event, scores, runs) =
-            crate::replay::replay(&crate::log::load_log(&id), &crate::log::load_pending(&id));
+            crate::replay::replay(&crate::log::load_log(id), &crate::log::load_pending(id));
         model.app.event.set(event);
         model.app.scores.set(scores);
         model.app.runs.set(runs);
