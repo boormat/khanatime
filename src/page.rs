@@ -57,8 +57,8 @@ pub fn enqueue_ktime(model: crate::Model, test: u8, car: &str, time: &crate::eve
     }
     let run = model
         .app
-        .scores
-        .with(|s| s.iter().filter(|x| x.stage == test && x.car == car).count() as u8 + 1);
+        .runs
+        .with(|runs| crate::event::next_run(runs, test, car));
     let mut te = crate::timing_event::TimingEvent::finish(&event_id, test, car, run, time);
     te.official_id = Some(model.app.identity.get_clone());
     let sender = model.app.identity.get_clone();
