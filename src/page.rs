@@ -344,14 +344,14 @@ fn view_qr(model: crate::Model) -> View {
 }
 
 /// The camera scan panel.  The video element is always in the DOM (so the
-/// scanner can bind it) but only shown while a scan is active.
+/// scanner can bind it) but the viewfinder frame is only shown while scanning.
 fn view_scan(model: crate::Model) -> View {
     let active = model.app.scan_active.get();
     let status = model.app.scan_status.get_clone();
-    let video_class = if active {
-        "kt-scan-video"
+    let frame_class = if active {
+        "kt-scan-frame"
     } else {
-        "kt-scan-video is-hidden"
+        "kt-scan-frame is-hidden"
     };
     let status_view = if status.is_empty() {
         view! {}
@@ -361,13 +361,21 @@ fn view_scan(model: crate::Model) -> View {
     };
     view! {
         div {
-            video(
-                id="kt-scan-video",
-                class=video_class,
-                autoplay=true,
-                playsinline=true,
-                muted=true,
-            ) {}
+            div(class=frame_class) {
+                video(
+                    id="kt-scan-video",
+                    autoplay=true,
+                    playsinline=true,
+                    muted=true,
+                ) {}
+                div(class="kt-scan-corners") {
+                    i(class="kt-corner kt-corner-tl") {}
+                    i(class="kt-corner kt-corner-tr") {}
+                    i(class="kt-corner kt-corner-bl") {}
+                    i(class="kt-corner kt-corner-br") {}
+                }
+                div(class="kt-scan-mask") {}
+            }
             (status_view)
         }
     }

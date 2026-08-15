@@ -28,9 +28,11 @@ thread_local! {
 }
 
 /// Ask for the camera and begin scanning.  No-op if a session is already live
-/// or the browser can't do it.
+/// or the browser can't do it.  The viewfinder is shown immediately (a hidden
+/// video doesn't produce frames for the detector), then hidden again on error.
 pub fn start_scan(model: Model) {
     stop_scan();
+    model.app.scan_active.set(true);
     model.app.scan_status.set("Starting camera…".to_string());
     wasm_bindgen_futures::spawn_local(async move {
         run_scan(model).await;
@@ -39,12 +41,14 @@ pub fn start_scan(model: Model) {
 
 async fn run_scan(model: Model) {
     let Some(window) = web_sys::window() else {
+        model.app.scan_active.set(false);
         return;
     };
     // Feature-detect BarcodeDetector.
     let ctor = match js_sys::Reflect::get(&window, &"BarcodeDetector".into()) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
         _ => {
+            model.app.scan_active.set(false);
             model
                 .app
                 .scan_status
@@ -59,6 +63,7 @@ async fn run_scan(model: Model) {
     let detector = match js_sys::Reflect::construct(&ctor_fn, &js_sys::Array::of1(&opts)) {
         Ok(d) => d,
         Err(_) => {
+            model.app.scan_active.set(false);
             model
                 .app
                 .scan_status
@@ -72,6 +77,7 @@ async fn run_scan(model: Model) {
 
     let nav = window.navigator();
     let Ok(media) = nav.media_devices() else {
+        model.app.scan_active.set(false);
         model
             .app
             .scan_status
@@ -91,6 +97,7 @@ async fn run_scan(model: Model) {
         Ok(p) => match wasm_bindgen_futures::JsFuture::from(p).await {
             Ok(s) => s.unchecked_into::<web_sys::MediaStream>(),
             Err(_) => {
+                model.app.scan_active.set(false);
                 model
                     .app
                     .scan_status
@@ -99,6 +106,7 @@ async fn run_scan(model: Model) {
             }
         },
         Err(_) => {
+            model.app.scan_active.set(false);
             model
                 .app
                 .scan_status
@@ -112,6 +120,7 @@ async fn run_scan(model: Model) {
         .and_then(|d| d.get_element_by_id(VIDEO_ID))
         .map(|el| el.unchecked_into::<web_sys::HtmlVideoElement>())
     else {
+        model.app.scan_active.set(false);
         model
             .app
             .scan_status

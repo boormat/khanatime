@@ -94,12 +94,55 @@
   margin-top: 0.25rem;
 }
 
-// Offline handoff: the live camera feed while scanning a parcel.
-.kt-scan-video video {
-  width: 100%;
-  max-width: 320px;
-  border-radius: 6px;
+// Offline handoff: the live camera viewfinder while scanning a parcel.  A
+// square frame with corner brackets guides where to aim; the video fills it.
+.kt-scan-frame {
+  position: relative;
+  width: min(320px, 100%);
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
   background: #000;
+
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+}
+
+// Dim the outer area of the viewfinder, leaving a clear scan zone in the middle.
+.kt-scan-mask {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at center,
+    transparent 0%,
+    transparent 34%,
+    rgba(0, 0, 0, 0.4) 36%
+  );
+  pointer-events: none;
+}
+
+// Corner brackets marking the scan zone.
+.kt-scan-corners {
+  position: absolute;
+  inset: 12%;
+  pointer-events: none;
+
+  .kt-corner {
+    position: absolute;
+    display: block;
+    width: 22px;
+    height: 22px;
+    border: 3px solid #4ade80;
+  }
+  .kt-corner-tl { top: 0; left: 0; border-right: none; border-bottom: none; }
+  .kt-corner-tr { top: 0; right: 0; border-left: none; border-bottom: none; }
+  .kt-corner-bl { bottom: 0; left: 0; border-right: none; border-top: none; }
+  .kt-corner-br { bottom: 0; right: 0; border-left: none; border-top: none; }
 }
 
 // Print: the results table must print without the scroll container, shrunk so
