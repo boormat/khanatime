@@ -136,13 +136,24 @@ state so the button shows "Waiting for browser tab…" and stays disabled until
   foreign callback can't hijack an unrelated login.
 - **Mixed content**: matrix.org is HTTPS → fine from GitHub Pages. LAN dev stays
   password-based (dev Synapse has no OIDC).
+- **MAS registration policy**: matrix.org's MAS refuses dynamic client
+  registration whose `client_uri`/`redirect_uris` are **http or on localhost**
+  (its `client_registration.rego` enforces https + non-localhost hosts).  SSO
+  therefore only works from a real https origin — the deployed GitHub Pages
+  app, the local `scripts/serve_https.sh` (trunk over TLS on the
+  `khanatime.test` host alias), or a https tunnel.  `sso_login` pre-empts this
+  with a clear message instead of surfacing the raw 400.
 - **Concurrent edits**: another instance edits this repo; re-read files before
   touching.
 
 ## Manual matrix.org test
 
-1. `trunk serve`; sign in form: enter `https://matrix-client.matrix.org`,
-   tap "Sign in with SSO".
+1. Serve over https: `scripts/serve_https.sh` (one-time `/etc/hosts` alias +
+   self-signed cert, accept the browser warning once) and open
+   `https://khanatime.test:8081`, or deploy to GitHub Pages (SSO needs a real
+   https origin — matrix.org rejects http/localhost redirects).  Sign in form:
+   enter `https://matrix.org` (the "Use Matrix.org" button prefills it), tap
+   "SSO sign-in".
 2. New tab opens at MAS; pick **Google**, grant access.
 3. Tab returns to the app URL with `?code&state`; original tab completes,
    shows the user logged in; Results/sync work.

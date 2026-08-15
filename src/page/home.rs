@@ -16,6 +16,8 @@ pub struct Model {
     pub username: Signal<String>,
     pub password: Signal<String>,
     pub busy: Signal<bool>,
+    /// The homeserver advertises OIDC support (enables the SSO button).
+    pub sso: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -24,6 +26,7 @@ pub fn init() -> Model {
         username: create_signal(String::new()),
         password: create_signal(String::new()),
         busy: create_signal(false),
+        sso: create_signal(false),
     }
 }
 
@@ -194,6 +197,7 @@ fn view_comms(model: crate::Model) -> View {
         }
         ConnState::LoggedIn(_) => ("is-warning", "Logged in · no timing room".to_string()),
         ConnState::Connecting => ("is-warning", "Connecting...".to_string()),
+        ConnState::SsoPending => ("is-warning", "Waiting for the sign-in tab…".to_string()),
         ConnState::Error(e) => ("is-danger", e),
         _ => ("is-danger", "Not connected".to_string()),
     };
@@ -469,7 +473,24 @@ fn view_login_form(model: crate::Model, state: ConnState) -> View {
         div(class="field") {
             label(class="label") { "Homeserver" }
             div(class="control") {
-                input(class="input", placeholder="http://localhost:8008", bind:value=sm.homeserver)
+                input(
+                    class="input",
+                    placeholder="http://localhost:8008",
+                    bind:value=sm.homeserver,
+                    on:change=move |_| crate::sync::probe_oidc(model),
+                )
+            }
+            p(class="help") {
+                button(
+                    class="button is-small is-text",
+                    on:click=move |_| {
+                        sm.homeserver.set("https://matrix.org".to_string());
+                        crate::sync::probe_oidc(model);
+                    },
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-id-badge") }
+                    span { "Use Matrix.org" }
+                }
             }
         }
         div(class="field") {
@@ -494,9 +515,21 @@ fn view_login_form(model: crate::Model, state: ConnState) -> View {
                     (if sm.busy.get() { "Connecting..." } else { "Connect" })
                 }
             }
+            div(class="control") {
+                button(
+                    class="button is-info",
+                    disabled=sm.busy.get() || !sm.sso.get(),
+                    on:click=move |_| crate::update(model, crate::Msg::Conn(crate::sync::Msg::SsoLogin)),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-id-badge") }
+                    span { "SSO sign-in" }
+                }
+            }
         }
         div { (status_html(state.clone())) }
-        p(class="help") { "The localhost dev server registers a new account for you." }
+        p(class="help") {
+            "The localhost dev server registers a new account for you. Passwordless accounts (e.g. matrix.org via Google) use SSO sign-in."
+        }
     }
 }
 
@@ -504,6 +537,7 @@ fn status_html(state: ConnState) -> View {
     match state {
         ConnState::Idle => view! { p(class="help") { "Not connected." } },
         ConnState::Connecting => view! { p(class="help") { "Connecting..." } },
+        ConnState::SsoPending => view! { p(class="help") { "Waiting for the sign-in tab…" } },
         ConnState::LoggedIn(_) => view! { p(class="help is-success") { "Logged in." } },
         ConnState::Error(e) => view! { p(class="help is-danger") { (e) } },
     }

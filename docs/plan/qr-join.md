@@ -146,8 +146,7 @@ spawn_local(async move {
   an id in `open_published_event`) deriving `#<ev>:<server_name(client)>`.
 - **Ordering matters**: `enqueue_event_setup(&ev)` before `SetEvent`, same as
   `open_result` — the seeded manifest is what gives the replayed event its
-  `timing_alias`/`timing_id`, so `join_current_event` joins the per-event room
-  instead of falling back to `join_or_create_room`.
+  `timing_alias`/`timing_id`, so `join_current_event` joins the per-event room.
 - **Demo events never appear in links** (local-only, as today). Link join
   requires a *published* event (`open_published_event` reads `io.kt.event`
   space state) — consistent with "publish before timing".

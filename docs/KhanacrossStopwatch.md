@@ -303,7 +303,7 @@ Orphan finish (no car selected yet):
 ## Sync
 
 1. Save locally first  
-2. WiFi → Matrix #timing  
+2. WiFi → Matrix `timing` room  
 3. Later: BLE multihop  
 4. Timekeeper live feed shows starts, finishes, and in-progress separately  
 

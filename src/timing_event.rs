@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Wire format for timing events exchanged over Matrix.
 ///
 /// Payload carried as the `khanatime` content key of an `m.room.message`
-/// event in the `#timing` room (see `docs/research/MessagingSpike.md`).
+/// event in the event's `timing` room (see `docs/research/MessagingSpike.md`).
 ///
 /// Every observation carries a generated `uid` — the indelible record.  A
 /// correction is a *new* message (`amend`/`void`) that targets an existing

@@ -37,11 +37,44 @@ fn main() {
     render(move || {
         let model = Model::init();
         app::setup_effects(model);
-        app::show(model, initial_screen());
         #[cfg(target_arch = "wasm32")]
-        sync::resume_on_load(model);
+        let sso_callback = oauth_callback().is_some();
+        #[cfg(not(target_arch = "wasm32"))]
+        let sso_callback = false;
+        if !sso_callback {
+            app::show(model, initial_screen());
+            #[cfg(target_arch = "wasm32")]
+            sync::resume_on_load(model);
+        } else {
+            // OAuth/SSO callback tab: it posted the result to the initiating
+            // tab over BroadcastChannel and is closing itself.
+            app::show(model, Screen::Home);
+        }
         app::view(model)
     });
+}
+
+/// Handle an OAuth/SSO callback in the sign-in tab.  The homeserver redirected
+/// here with `?code=…&state=…` (or `?error=…&state=…`); post the full callback
+/// URL to the initiating tab over a BroadcastChannel named by `state`, then
+/// close this tab.  Returns `Some(())` when the URL was an OAuth callback.
+#[cfg(target_arch = "wasm32")]
+fn oauth_callback() -> Option<()> {
+    let window = web_sys::window()?;
+    let location = window.location();
+    let href = location.href().ok()?;
+    let url = url::Url::parse(&href).ok()?;
+    let query: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
+    let state = query.get("state")?;
+    let is_callback = query.contains_key("code") || query.contains_key("error");
+    if !is_callback {
+        return None;
+    }
+    let channel = web_sys::BroadcastChannel::new(state).ok()?;
+    let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&href));
+    channel.close();
+    let _ = window.close();
+    Some(())
 }
 
 /// Screen to land on after a reload: the one named by the URL hash (trunk's

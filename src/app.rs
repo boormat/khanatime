@@ -80,6 +80,8 @@ impl Screen {
 pub enum ConnState {
     Idle,
     Connecting,
+    /// Waiting on the browser tab opened for the OAuth/SSO sign-in.
+    SsoPending,
     LoggedIn(String),
     Error(String),
 }

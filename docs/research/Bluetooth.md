@@ -353,7 +353,7 @@ checkpoint.
 Connect the BLE sync to the Matrix homeserver.
 
 1. When a phone gets connectivity, POST pending entries to the homeserver
-2. Entries appear in the `#timing` room in Element
+2. Entries appear in the `timing` room in Element
 3. Timekeeper sees BLE-relayed data alongside WiFi-submitted data
 4. Verify: no duplicates, correct ordering, audit trail intact
 

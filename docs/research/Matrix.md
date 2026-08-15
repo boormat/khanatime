@@ -86,7 +86,7 @@ self-hosted messaging system at events.
 - WiFi access point setup guide for organisers
 - Room structure created automatically on event setup:
   - `#general` — open chat for all participants
-  - `#timing` — officials submit timing data to timekeeper
+  - `timing` — officials submit timing data to timekeeper
   - `#results` — timekeeper publishes finalised results
   - `#safety` — safety-critical messages with @room alerts
   - `#location` — competitor GPS pings (compacted by bot)
@@ -98,7 +98,7 @@ self-hosted messaging system at events.
 - On-site QR code scan joins them to the event WiFi and auto-configures
   their Element client (homeserver address, room invites)
 - Officials send timing data as structured text messages or voice notes
-- Timekeeper reviews submissions in `#timing`, adjusts, and publishes
+- Timekeeper reviews submissions in `timing`, adjusts, and publishes
   to `#results`
 - Safety official monitors `#safety` and `#location`
 - Competitors join `#results` read-only to see published results
@@ -118,7 +118,7 @@ self-hosted messaging system at events.
 timing submissions that the timekeeper's tool can ingest directly.
 
 **What gets added:**
-- A Matrix bot (via Maubot or custom appservice) that listens in `#timing`
+- A Matrix bot (via Maubot or custom appservice) that listens in `timing`
   and parses structured timing submissions:
   ```
   T 05 car23 01:12.34
@@ -247,7 +247,7 @@ hops through competitors' phones as they physically travel between locations.
 | Before Matrix | With Matrix (Phase 1+) |
 |--------------|----------------------|
 | Paper stopwatch, manual entry | Phone-based timing via Element message or PWA form |
-| Walkie-talkie to relay times | Voice message or structured text in `#timing` |
+| Walkie-talkie to relay times | Voice message or structured text in `timing` |
 | Drive to HQ to deliver results | Data syncs automatically over WiFi or via competitor relay |
 | Multiple radios, batteries, frequencies | Single app on existing phone |
 

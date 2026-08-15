@@ -10,6 +10,10 @@
 # Dev server (Trunk, auto-reload on save)
 trunk serve
 
+# HTTPS dev server — OIDC/SSO testing against matrix.org (needs the /etc/hosts
+# alias khanatime.test; see the script header for one-time sudo setup)
+scripts/serve_https.sh
+
 # Release build
 trunk build --release
 
@@ -152,9 +156,9 @@ scripts/serve_element.sh stop|restart|status|log
 ```
 
 Synapse registration is open (no verification); users register via the app's
-sync page or Element. The shared room `#timing:localhost` is public, so any
-account on the server can join it from Element and exchange chat/timing
-messages with the app.
+sync page or Element. Each published event creates public per-event space +
+timing rooms, so Element can join them to exchange chat/timing messages with
+the app.
 
 ## Conventions
 

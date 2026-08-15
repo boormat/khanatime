@@ -1,8 +1,9 @@
 //! Matrix sync transport (browser only).
 //!
-//! Thin wrapper around `matrix-sdk` 0.18 for the shared `#timing` room:
-//! register/login, session persistence, join-or-create the room, send chat /
-//! timing payloads and stream incoming messages from the sync loop.
+//! Thin wrapper around `matrix-sdk` 0.18 for per-event timing rooms (created
+//! only on publish): register/login, session persistence, join the current
+//! event's room, send chat / timing payloads and stream incoming messages from
+//! the sync loop.
 //!
 //! Compiled only for `wasm32` — see the `[target.'cfg(target_arch = "wasm32")']`
 //! section in `Cargo.toml`.
@@ -13,9 +14,18 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use matrix_sdk::{
-    authentication::{matrix::MatrixSession, AuthSession, SessionTokens},
+    authentication::{
+        matrix::MatrixSession,
+        oauth::{
+            registration::{ApplicationType, ClientMetadata, Localized, OAuthGrantType},
+            ClientId, ClientRegistrationData, OAuthSession, UserSession,
+        },
+        AuthSession, SessionTokens,
+    },
     config::SyncSettings,
     deserialized_responses::{TimelineEvent, TimelineEventKind},
+    store::RoomLoadSettings,
+    utils::UrlOrQuery,
     Client, Room, SessionMeta,
 };
 use ruma::{
@@ -48,7 +58,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::timing_event::TimingEvent;
 
-pub const ROOM_ALIAS: &str = "#timing:localhost";
 const SESSION_KEY: &str = "kt_sync_session";
 const STORE_NAME: &str = "khanatime_sync";
 const DEVICE_NAME: &str = "khanatime-wasm";
@@ -97,9 +106,24 @@ pub fn room() -> Option<Room> {
 pub struct StoredSession {
     pub homeserver: String,
     pub user_id: String,
-    pub device_id: String,
-    pub access_token: String,
-    pub refresh_token: Option<String>,
+    #[serde(flatten)]
+    pub kind: StoredAuth,
+}
+
+/// Which auth method the stored session uses; the session is rebuilt from the
+/// matching matrix-sdk session type on restore.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "auth", rename_all = "snake_case")]
+pub enum StoredAuth {
+    Matrix {
+        device_id: String,
+        access_token: String,
+        refresh_token: Option<String>,
+    },
+    OAuth {
+        client_id: String,
+        user: UserSession,
+    },
 }
 
 fn storage() -> Option<web_sys::Storage> {
@@ -107,15 +131,26 @@ fn storage() -> Option<web_sys::Storage> {
 }
 
 pub fn save_session(client: &Client, homeserver: &str) {
-    let Some(AuthSession::Matrix(ms)) = client.session() else {
+    let Some(session) = client.session() else {
         return;
+    };
+    let user_id = session.meta().user_id.to_string();
+    let kind = match session {
+        AuthSession::Matrix(ms) => StoredAuth::Matrix {
+            device_id: ms.meta.device_id.to_string(),
+            access_token: ms.tokens.access_token,
+            refresh_token: ms.tokens.refresh_token,
+        },
+        AuthSession::OAuth(oauth) => StoredAuth::OAuth {
+            client_id: oauth.client_id.to_string(),
+            user: oauth.user.clone(),
+        },
+        _ => return, // AuthSession is non-exhaustive; future variants
     };
     let stored = StoredSession {
         homeserver: homeserver.to_string(),
-        user_id: ms.meta.user_id.to_string(),
-        device_id: ms.meta.device_id.to_string(),
-        access_token: ms.tokens.access_token,
-        refresh_token: ms.tokens.refresh_token,
+        user_id,
+        kind,
     };
     if let Some(st) = storage() {
         if let Ok(json) = serde_json::to_string(&stored) {
@@ -138,12 +173,126 @@ pub fn clear_session() {
     }
 }
 
+// ----- OAuth / OIDC SSO (passwordless matrix.org accounts) -----
+
+const OAUTH_CLIENT_KEY: &str = "kt_oauth_clients";
+
+/// True when `client`'s homeserver advertises OIDC discovery metadata — i.e.
+/// it runs MAS and supports the browser auth-code sign-in flow rather than
+/// only username/password.
+pub async fn oidc_supported(client: &Client) -> bool {
+    client.oauth().server_metadata().await.is_ok()
+}
+
+/// This app's OAuth redirect URI: current origin + path, query/hash stripped.
+/// The homeserver redirects the browser here after authorization.
+pub fn oauth_redirect_uri() -> Result<url::Url, String> {
+    let location = web_sys::window()
+        .ok_or_else(|| "no window".to_string())?
+        .location();
+    let href = location
+        .href()
+        .map_err(|e| e.as_string().unwrap_or_default())?;
+    let mut redirect = url::Url::parse(&href).map_err(|e| e.to_string())?;
+    redirect.set_query(None);
+    redirect.set_fragment(None);
+    Ok(redirect)
+}
+
+/// Cached OAuth client id for `homeserver` plus the redirect URI it was
+/// registered with (dynamic registration is idempotent but needs a round trip;
+/// a registered client id stays valid for the server).
+fn oauth_client_id(homeserver: &str) -> Option<(String, String)> {
+    let st = storage()?;
+    let map: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&st.get_item(OAUTH_CLIENT_KEY).ok().flatten()?).ok()?;
+    let reg = map.get(homeserver)?;
+    Some((
+        reg.get("client_id")?.as_str()?.to_string(),
+        reg.get("redirect_uri")?.as_str()?.to_string(),
+    ))
+}
+
+fn save_oauth_client_id(homeserver: &str, client_id: &str, redirect_uri: &str) {
+    let Some(st) = storage() else {
+        return;
+    };
+    let mut map: serde_json::Map<String, serde_json::Value> = st
+        .get_item(OAUTH_CLIENT_KEY)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    map.insert(
+        homeserver.to_string(),
+        serde_json::json!({ "client_id": client_id, "redirect_uri": redirect_uri }),
+    );
+    if let Ok(json) = serde_json::to_string(&map) {
+        let _ = st.set_item(OAUTH_CLIENT_KEY, &json);
+    }
+}
+
+/// Registration payload for the OAuth login, or `None` when we already have a
+/// cached client id registered for this homeserver *and* the same redirect URI
+/// (then it is restored instead — a different origin re-registers, since MAS
+/// validates the redirect URI against the registration).
+pub async fn oauth_client_data(
+    client: &Client,
+    redirect_uri: &url::Url,
+) -> Result<Option<ClientRegistrationData>, String> {
+    let homeserver = client.homeserver().to_string();
+    let redirect = redirect_uri.to_string();
+    if let Some((id, cached_redirect)) = oauth_client_id(&homeserver) {
+        if cached_redirect == redirect {
+            client.oauth().restore_registered_client(ClientId::new(id));
+            return Ok(None);
+        }
+    }
+    let mut metadata = ClientMetadata::new(
+        ApplicationType::Web,
+        vec![OAuthGrantType::AuthorizationCode {
+            redirect_uris: vec![redirect_uri.clone()],
+        }],
+        Localized::new(redirect_uri.clone(), std::iter::empty()),
+    );
+    metadata.client_name = Some(Localized::new(
+        "Khana Time Tracker".to_string(),
+        std::iter::empty(),
+    ));
+    let data = ClientRegistrationData::new(
+        Raw::new(&metadata).map_err(|e: serde_json::Error| e.to_string())?,
+    );
+    Ok(Some(data))
+}
+
+/// Complete the OAuth login after the user authorized in the browser tab:
+/// exchange the callback URL's authorization code for tokens and activate the
+/// session, then record the registered client id for next time.
+pub async fn finish_oauth_login(client: &Client, callback_url: &str) -> Result<(), String> {
+    let full = url::Url::parse(callback_url).map_err(|e| e.to_string())?;
+    client
+        .oauth()
+        .finish_login(UrlOrQuery::Url(full))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = client.oauth().client_id() {
+        let redirect = oauth_redirect_uri()?;
+        save_oauth_client_id(
+            &client.homeserver().to_string(),
+            &id.to_string(),
+            &redirect.to_string(),
+        );
+    }
+    Ok(())
+}
+
 // ----- client lifecycle -----
 
 pub async fn new_client(homeserver: &str) -> Result<Client, String> {
     Client::builder()
         .server_name_or_homeserver_url(homeserver)
         .indexeddb_store(STORE_NAME, None)
+        .handle_refresh_tokens()
         .build()
         .await
         .map_err(|e| e.to_string())
@@ -284,43 +433,45 @@ pub async fn register_or_login(
 }
 
 pub async fn restore_session(client: &Client, stored: &StoredSession) -> Result<(), String> {
-    let session = AuthSession::Matrix(MatrixSession {
-        meta: SessionMeta {
-            user_id: ruma::UserId::parse(&stored.user_id).map_err(|e| e.to_string())?,
-            device_id: stored.device_id.as_str().into(),
-        },
-        tokens: SessionTokens {
-            access_token: stored.access_token.clone(),
-            refresh_token: stored.refresh_token.clone(),
-        },
-    });
-    client
-        .restore_session(session)
-        .await
-        .map_err(|e| e.to_string())
+    match &stored.kind {
+        StoredAuth::Matrix {
+            device_id,
+            access_token,
+            refresh_token,
+        } => {
+            let session = AuthSession::Matrix(MatrixSession {
+                meta: SessionMeta {
+                    user_id: ruma::UserId::parse(&stored.user_id).map_err(|e| e.to_string())?,
+                    device_id: device_id.as_str().into(),
+                },
+                tokens: SessionTokens {
+                    access_token: access_token.clone(),
+                    refresh_token: refresh_token.clone(),
+                },
+            });
+            client
+                .restore_session(session)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        StoredAuth::OAuth { client_id, user } => {
+            let session = OAuthSession {
+                client_id: ClientId::new(client_id.clone()),
+                user: user.clone(),
+            };
+            client
+                .oauth()
+                .restore_session(session, RoomLoadSettings::default())
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 pub async fn logout(client: &Client) -> Result<(), String> {
     let res = client.logout().await.map_err(|e| e.to_string());
     clear_session();
     res
-}
-
-// ----- room -----
-
-pub async fn join_or_create_room(client: &Client) -> Result<Room, String> {
-    let alias: ruma::OwnedRoomOrAliasId = ROOM_ALIAS
-        .parse()
-        .map_err(|e: ruma::IdParseError| e.to_string())?;
-    if let Ok(room) = client.join_room_by_id_or_alias(&alias, &[]).await {
-        return Ok(room);
-    }
-    let mut request = create_room::v3::Request::default();
-    request.name = Some("timing".to_string());
-    request.room_alias_name = Some("timing".to_string());
-    request.preset = Some(RoomPreset::PublicChat);
-    request.is_direct = false;
-    client.create_room(request).await.map_err(|e| e.to_string())
 }
 
 // ----- per-event spaces (publish) -----
@@ -617,25 +768,23 @@ pub async fn join_room_by_alias(client: &Client, alias: &str) -> Result<Room, St
         .map_err(|e| e.to_string())
 }
 
-/// Join the current event's timing room. Prefers the published alias, then the
-/// published room id, then falls back to the shared `#timing` room.
-pub async fn join_room_for_event(
-    client: &Client,
-    event: &crate::event::EventInfo,
-) -> Result<Room, String> {
+/// Join the current event's timing room by published alias, then published id.
+/// Returns `None` when the event has no room yet (draft) or the join fails —
+/// rooms are only created by the publish workflow, never here.
+pub async fn join_room_for_event(client: &Client, event: &crate::event::EventInfo) -> Option<Room> {
     if let Some(alias) = &event.timing_alias {
         if let Ok(room) = join_room_by_alias(client, alias).await {
-            return Ok(room);
+            return Some(room);
         }
     }
     if let Some(id) = &event.timing_id {
         if let Ok(room_id) = id.parse::<ruma::OwnedRoomId>() {
             if let Ok(room) = client.join_room_by_id(&room_id).await {
-                return Ok(room);
+                return Some(room);
             }
         }
     }
-    join_or_create_room(client).await
+    None
 }
 
 // ----- send -----

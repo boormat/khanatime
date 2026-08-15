@@ -1297,7 +1297,7 @@ pub fn valid_event_id(id: &str) -> bool {
 pub struct Invite {
     pub homeserver: String,
     pub event: String,  // event id
-    pub timing: String, // timing room alias, e.g. "#kt-2026-..-timing:localhost"
+    pub timing: String, // timing room alias, e.g. "#kt-2026-..-timing:matrix.org"
     pub space: String,  // space room alias
 }
 
@@ -1756,7 +1756,7 @@ mod tests {
         let inv = Invite {
             homeserver: "http://localhost:8008".to_string(),
             event: "kt-2026-ndc-kcr1".to_string(),
-            timing: "#kt-2026-ndc-kcr1-timing:localhost".to_string(),
+            timing: "#kt-2026-ndc-kcr1-timing:matrix.org".to_string(),
             space: "#kt-2026-ndc-kcr1:localhost".to_string(),
         };
         let q = inv.to_query();

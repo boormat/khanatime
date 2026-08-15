@@ -1561,6 +1561,7 @@ dependencies = [
  "serde_json",
  "sycamore",
  "thiserror 2.0.20",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

@@ -16,12 +16,16 @@ use crate::Model;
 #[cfg(target_arch = "wasm32")]
 use crate::app::ConnState;
 #[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 
 /// Connection actions driven from the Home page.
 #[derive(Clone)]
 pub enum Msg {
     Connect,
+    /// Browser-based OAuth/SSO sign-in (passwordless matrix.org accounts).
+    SsoLogin,
     Logout,
 }
 
@@ -52,18 +56,20 @@ pub fn resume_on_load(model: Model) {
             crate::services::matrix::set_client(Some(client.clone()));
             let room =
                 crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
-                    .await?;
-            crate::services::matrix::set_room(Some(room.clone()));
+                    .await;
+            crate::services::matrix::set_room(room.clone());
             crate::services::matrix::start_sync(client, sink_for(model));
-            spawn_backfill(model);
-            Ok::<_, String>(room.room_id().to_string())
+            if room.is_some() {
+                spawn_backfill(model);
+            }
+            Ok::<_, String>(room.map(|r| r.room_id().to_string()))
         }
         .await;
         match res {
             Ok(room_id) => {
                 model.app.identity.set(stored.user_id.clone());
                 model.app.conn.set(ConnState::LoggedIn(stored.user_id));
-                model.app.room.set(Some(room_id));
+                model.app.room.set(room_id);
                 flush_pending(model);
             }
             Err(e) => model.app.conn.set(ConnState::Error(e)),
@@ -82,17 +88,18 @@ pub fn join_current_event(model: Model) {
         return;
     };
     wasm_bindgen_futures::spawn_local(async move {
-        match crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
-            .await
-        {
-            Ok(room) => {
-                crate::services::matrix::set_room(Some(room.clone()));
-                model.app.room.set(Some(room.room_id().to_string()));
-                spawn_backfill(model);
-                flush_pending(model);
-            }
-            Err(e) => model.app.conn.set(ConnState::Error(e)),
+        let room =
+            crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
+                .await;
+        crate::services::matrix::set_room(room.clone());
+        model
+            .app
+            .room
+            .set(room.as_ref().map(|r| r.room_id().to_string()));
+        if room.is_some() {
+            spawn_backfill(model);
         }
+        flush_pending(model);
     });
 }
 
@@ -147,6 +154,7 @@ fn flush_pending_wasm(model: Model) {
 fn update_wasm(model: Model, msg: Msg) {
     match msg {
         Msg::Connect => connect(model),
+        Msg::SsoLogin => sso_login(model),
         Msg::Logout => logout(model),
     }
 }
@@ -190,11 +198,13 @@ fn connect(model: Model) {
             crate::services::matrix::set_client(Some(client.clone()));
             let room =
                 crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
-                    .await?;
-            crate::services::matrix::set_room(Some(room.clone()));
+                    .await;
+            crate::services::matrix::set_room(room.clone());
             crate::services::matrix::start_sync(client, sink_for(model));
-            spawn_backfill(model);
-            Ok::<_, String>(room.room_id().to_string())
+            if room.is_some() {
+                spawn_backfill(model);
+            }
+            Ok::<_, String>(room.map(|r| r.room_id().to_string()))
         }
         .await;
         match res {
@@ -204,7 +214,7 @@ fn connect(model: Model) {
                     .unwrap_or_else(|| user.clone());
                 model.app.identity.set(user_id.clone());
                 model.app.conn.set(ConnState::LoggedIn(user_id));
-                model.app.room.set(Some(room_id));
+                model.app.room.set(room_id);
                 // Land on the Home dashboard (event status hub) once connected.
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
                 flush_pending(model);
@@ -239,6 +249,167 @@ fn logout(model: Model) {
         sm.busy.set(false);
     });
 }
+
+// ----- OAuth / SSO -----
+
+/// Probe the current homeserver for OIDC support and expose it on the Home
+/// form (toggles the SSO button).  Called when the homeserver field changes.
+#[cfg(target_arch = "wasm32")]
+pub fn probe_oidc(model: Model) {
+    let sm = model.screens.home;
+    let hs = sm.homeserver.get_clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let ok = match crate::services::matrix::new_client(&hs).await {
+            Ok(client) => crate::services::matrix::oidc_supported(&client).await,
+            Err(_) => false,
+        };
+        sm.sso.set(ok);
+    });
+}
+
+/// Start the OAuth/SSO sign-in: build the authorization URL and open it in a
+/// new browser tab.  The tab finishes the login at the homeserver and is
+/// redirected back to this app with `?code&state`; [sso_wait_for_callback]
+/// picks that up over a BroadcastChannel named by the state token.
+#[cfg(target_arch = "wasm32")]
+fn sso_login(model: Model) {
+    let sm = model.screens.home;
+    let hs = sm.homeserver.get_clone();
+    sm.busy.set(true);
+    model.app.conn.set(ConnState::Connecting);
+    // Open the tab synchronously from the click handler — popup blockers
+    // reject `window.open` after an await.  Its URL is set once the
+    // authorization URL is built (a few network round trips later).
+    let tab = match web_sys::window().map(|w| w.open()) {
+        Some(Ok(Some(tab))) => tab,
+        _ => {
+            model.app.conn.set(ConnState::Error(
+                "couldn't open the sign-in tab — allow popups for this site".to_string(),
+            ));
+            sm.busy.set(false);
+            return;
+        }
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let res = async {
+            let client = crate::services::matrix::new_client(&hs).await?;
+            if !crate::services::matrix::oidc_supported(&client).await {
+                return Err(
+                    "This homeserver doesn't offer SSO sign-in — use a username and password"
+                        .to_string(),
+                );
+            }
+            let redirect_uri = crate::services::matrix::oauth_redirect_uri()?;
+            // MAS (matrix.org's auth server) refuses to register clients whose
+            // redirect URIs are http or on localhost, so SSO only works when the
+            // app is served from a real https origin (the deployed app).  Fail
+            // with a clear message instead of a raw 400.
+            if redirect_uri.scheme() != "https"
+                || matches!(
+                    redirect_uri.host_str(),
+                    Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+                )
+            {
+                return Err(
+                    "SSO sign-in only works from a real https address — matrix.org rejects http/localhost redirects. Use the dev server's username/password, or test SSO on the deployed app."
+                        .to_string(),
+                );
+            }
+            let data = crate::services::matrix::oauth_client_data(&client, &redirect_uri).await?;
+            let auth = client
+                .oauth()
+                .login(redirect_uri, None, data, None)
+                .build()
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>((client, auth))
+        }
+        .await;
+        match res {
+            Ok((client, auth)) => {
+                crate::services::matrix::set_client(Some(client));
+                let state = auth.state.secret().to_string();
+                let _ = tab.location().set_href(&auth.url.to_string());
+                model.app.conn.set(ConnState::SsoPending);
+                // Not blocking: the user is in the sign-in tab now; if it never
+                // completes they can retry with the password path.
+                sm.busy.set(false);
+                sso_wait_for_callback(model, &state);
+            }
+            Err(e) => {
+                model.app.conn.set(ConnState::Error(e));
+                sm.busy.set(false);
+            }
+        }
+    });
+}
+
+// Keeps the BroadcastChannel (and its message listener) alive for the SSO
+// wait; dropping it would close the channel and drop the callback.
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static SSO_CHANNEL: RefCell<Option<web_sys::BroadcastChannel>> =
+        const { RefCell::new(None) };
+}
+
+/// Listen on a BroadcastChannel named by the OAuth `state` token.  The tab we
+/// opened posts the callback URL back here when the homeserver redirects to it.
+#[cfg(target_arch = "wasm32")]
+fn sso_wait_for_callback(model: Model, state: &str) {
+    use wasm_bindgen::JsCast;
+    let channel = web_sys::BroadcastChannel::new(state).expect("broadcast channel");
+    let on_msg = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::MessageEvent)>::wrap(
+        Box::new(move |ev: web_sys::MessageEvent| {
+            let data = ev.data().as_string().unwrap_or_default();
+            sso_complete(model, data);
+        }),
+    );
+    channel.set_onmessage(Some(on_msg.as_ref().unchecked_ref()));
+    on_msg.forget();
+    SSO_CHANNEL.with(|c| *c.borrow_mut() = Some(channel));
+}
+
+/// Complete the OAuth login with the callback URL the sign-in tab posted, then
+/// proceed exactly like a password connect (identity, room, sync, backfill).
+#[cfg(target_arch = "wasm32")]
+fn sso_complete(model: Model, callback_url: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let res = async {
+            let Some(client) = crate::services::matrix::client() else {
+                return Err("sign-in session lost — try again".to_string());
+            };
+            crate::services::matrix::finish_oauth_login(&client, &callback_url).await?;
+            crate::services::matrix::save_session(&client, &client.homeserver().to_string());
+            let room =
+                crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
+                    .await;
+            crate::services::matrix::set_room(room.clone());
+            crate::services::matrix::start_sync(client, sink_for(model));
+            if room.is_some() {
+                spawn_backfill(model);
+            }
+            Ok::<_, String>(room.map(|r| r.room_id().to_string()))
+        }
+        .await;
+        match res {
+            Ok(room_id) => {
+                let user_id = crate::services::matrix::client()
+                    .and_then(|c| c.user_id().map(|u| u.to_string()))
+                    .unwrap_or_default();
+                model.app.identity.set(user_id.clone());
+                model.app.conn.set(ConnState::LoggedIn(user_id));
+                model.app.room.set(room_id);
+                crate::update(model, crate::Msg::Show(crate::Screen::Home));
+                flush_pending(model);
+            }
+            Err(e) => model.app.conn.set(ConnState::Error(e)),
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub fn probe_oidc(_model: Model) {}
 
 // ----- merge sink -----
 

@@ -16,7 +16,7 @@ Two candidate transports were considered:
 
 | Option | Description |
 |---|---|
-| **A. Direct room events** | Every app is a member of the `#timing` room. Timing payloads are sent as Matrix events by the client that recorded them. Room history is the source of truth. |
+| **A. Direct room events** | Every app is a member of the event's `timing` room. Timing payloads are sent as Matrix events by the client that recorded them. Room history is the source of truth. |
 | **B. Bot-mediated (Maubot)** | A bot (appservice) ingests events and re-broadcasts / persists them; clients only ever talk to the bot. |
 
 ## What we proved (WP1–WP3)
@@ -53,7 +53,7 @@ Rationale:
 - No extra infrastructure (Maubot appservice) and no single point of failure
   on the write path.
 - Room history is naturally the source of truth: any client can replay the
-  full event log from `#timing` and rebuild consistent local state.
+  full event log from the `timing` room and rebuild consistent local state.
 - A bot adds server-side code, config, and a deployment step for zero benefit
   at a grassroots event (one room, handful of officials).
 
@@ -67,7 +67,7 @@ federation, or a central results authority that all clients must defer to.
   invites may be needed once room access is tightened in the identity sprint).
 - Every timing record is a single `m.room.message` whose content carries the
   `khanatime` payload — one Matrix event per start/finish/penalty/result.
-- App DB (drift) becomes a cache; the `#timing` room is the source of truth.
+- App DB (drift) becomes a cache; the `timing` room is the source of truth.
 - Chat / voice stays out of the app — Element X handles that.
 
 ## Local test environment
@@ -87,4 +87,4 @@ federation, or a central results authority that all clients must defer to.
 - Reconcile drift cache against room history on reconnect.
 - Identity: official UUIDs (`@official:<server>`) replace the placeholder
   `official_id`; Ed25519 signatures on payloads move to v2.
-- Access control on the `#timing` room once onboarding exists.
+- Access control on the `timing` room once onboarding exists.
