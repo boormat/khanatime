@@ -911,12 +911,12 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 /// the first `repeats` runs (by run order) may count — extra runs beyond Y
 /// are excluded no matter their time.  A car that hasn't completed X runs yet
 /// scores nothing: the real runs are returned for display but `sum` stays
-/// None.  A cancelled stage (Y = 0) has no counting-eligible runs, so nothing
-/// ever scores.  DNF/FTS/WD finishes and a declared DNS (a `start` marked
-/// `dns`, no finish) are completed attempts; a DNS scores the no-time
-/// `base + 100`.  Returns the aggregate score together with every real run
-/// (in run order, counted runs flagged).  None when the car has no attempts
-/// in the test.
+/// None.  A 0-of-0 stage (Y = 0) is completed by every entrant with a total
+/// time of zero — any runs recorded are display-only (struck out).  DNF/FTS/WD
+/// finishes and a declared DNS (a `start` marked `dns`, no finish) are
+/// completed attempts; a DNS scores the no-time `base + 100`.  Returns the
+/// aggregate score together with every real run (in run order, counted runs
+/// flagged).  None when the car has no attempts in the test.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
@@ -928,6 +928,37 @@ fn stage_result(
         .iter()
         .filter(|r| r.test == test && r.car == car)
         .collect();
+
+    // A 0-of-0 stage (Y = 0): zero required runs, so every entrant has
+    // completed it with a total time of zero.  Any runs recorded are
+    // display-only (struck out, never counted).
+    if stage.repeats == 0 {
+        let all: Vec<RunScore> = relevant
+            .iter()
+            .filter(|r| {
+                r.r#type == RUN_FINISH
+                    || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
+            })
+            .map(|r| {
+                let (time, score) = if r.r#type == RUN_FINISH {
+                    (finish_to_ktime(r), run_net_score(r, base_time))
+                } else {
+                    (KTime::NOSHO, base_time as u32 + 100)
+                };
+                RunScore {
+                    run: r.run,
+                    time,
+                    score,
+                    counted: false,
+                }
+            })
+            .collect();
+        return Some(StageScore {
+            sum: Some(0),
+            runs: all,
+        });
+    }
+
     if relevant.is_empty() {
         return None; // car hasn't appeared in this test at all
     }
@@ -1032,8 +1063,8 @@ pub fn create_outright_view(event: &EventInfo, runs: &[RunRecord]) -> ResultView
 /// Cumulative score per test: the running sum of completed stage scores.  An
 /// entrant who hasn't completed a test (unscored, or never attempted) gets no
 /// cumulative from then on — later tests still show their own Score/Pos but
-/// their Cum and O/R stay blank (a cancelled stage blanks every following
-/// test's cumulative columns).
+/// their Cum and O/R stay blank.  A 0-of-0 stage is completed by everyone
+/// (zero total), so the cumulative chain runs straight through it.
 pub fn calc_cumulative_times(rv: &mut ResultView) {
     for row in rv.rows.values_mut() {
         let mut score = 0;
@@ -1418,12 +1449,11 @@ pub fn demo_event() -> EventInfo {
     // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
     ev.stages[1].repeats = 3;
     ev.stages[1].best_x = 2;
-    // Stage 3 is a cancelled stage: best 0 of 0 — nobody runs it, so every
-    // entrant's cumulative chain breaks there.
+    // Stage 3 is 0 of 0: everyone completes it with a total time of zero, so
+    // positions tie and the cumulative chain continues on to stage 4.
     ev.stages[2].repeats = 0;
     ev.stages[2].best_x = 0;
-    // Stage 4 is a normal single run after the gap: it shows per-test
-    // Score/Pos but blank Cum/O-R, demonstrating the cancelled stage.
+    // Stage 4 is a normal single run after the zero stage.
     ev.stages[3].repeats = 1;
     ev.stages[3].best_x = 1;
     for (car, name, classes) in [
@@ -2357,26 +2387,26 @@ mod tests {
     }
 
     #[test]
-    fn demo_event_has_cancelled_stage() {
+    fn demo_event_has_zero_run_stage() {
         let ev = demo_event();
         assert_eq!(ev.stage_count(), 4);
         // Stage 2 stays the multi-run test.
         assert_eq!(ev.stages[1].repeats, 3);
         assert_eq!(ev.stages[1].best_x, 2);
-        // Stage 3 is cancelled: best 0 of 0, so nobody can complete it.
+        // Stage 3 is 0 of 0: everyone completes it with a zero total.
         assert_eq!(ev.stages[2].repeats, 0);
         assert_eq!(ev.stages[2].best_x, 0);
-        // Stage 4 is a normal single run after the gap.
+        // Stage 4 is a normal single run after the zero stage.
         assert_eq!(ev.stages[3].repeats, 1);
         assert_eq!(ev.stages[3].best_x, 1);
     }
 
     #[test]
-    fn cancelled_stage_shows_runs_but_scores_nothing() {
+    fn zero_run_stage_scores_zero_and_shows_runs() {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 3,
-            repeats: 0, // cancelled: best 0 of 0
+            repeats: 0, // 0 of 0: everyone completes with a zero total
             best_x: 0,
             ..ev.stage(0).clone()
         };
@@ -2389,12 +2419,74 @@ mod tests {
             time_ds: Some(450),
             ..Default::default()
         };
-        // A run recorded on a cancelled stage is shown for display (struck
-        // out) but never counts toward a score.
+        // A recorded run is shown for display (struck out) but the stage score
+        // is zero regardless.
         let ss = stage_result(&stage, &[finish], 3, "7", 0).unwrap();
-        assert!(ss.sum.is_none());
+        assert_eq!(ss.sum, Some(0));
         assert_eq!(ss.runs.len(), 1);
         assert!(!ss.runs[0].counted);
+        // An entrant who never appeared also completed it with a zero total.
+        let none = stage_result(&stage, &[], 3, "9", 0).unwrap();
+        assert_eq!(none.sum, Some(0));
+        assert!(none.runs.is_empty());
+    }
+
+    #[test]
+    fn zero_stage_propagates_positions_and_cumulative() {
+        let mut a = Entry::new("1", "Alice");
+        a.entry_no = 1;
+        let mut b = Entry::new("2", "Bob");
+        b.entry_no = 2;
+        // Stage 2 becomes 0 of 0; stages 1 and 3 stay normal single runs.
+        let mut stages: Vec<Stage> = (1..=3).map(Stage::for_test).collect();
+        stages[1].repeats = 0;
+        stages[1].best_x = 0;
+        let ev = EventInfo {
+            entries: vec![a, b],
+            stages,
+            ..Default::default()
+        };
+        let finish = |test: u8, car: &str, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test,
+            car: car.into(),
+            run: 1,
+            ts: test as i64,
+            time_ds: Some(ds),
+            ..Default::default()
+        };
+        let runs = vec![
+            finish(1, "1", 450),
+            finish(3, "1", 600),
+            finish(1, "2", 500),
+            finish(3, "2", 300),
+        ];
+        let rv = create_result_view(&ev, &runs, "Outright");
+        let alice = &rv.rows[&1u32].columns;
+        let bob = &rv.rows[&2u32].columns;
+        // Stage 2: everyone ties on a zero total.
+        for row in [alice, bob] {
+            let s2 = row[1].as_ref().unwrap();
+            let sp = s2.stage_pos.as_ref().unwrap();
+            assert_eq!(sp.score_ds, 0);
+            assert_eq!(sp.pos, 1);
+        }
+        // Cumulative runs through the zero stage: 450 + 0 + 600 = 1050, and
+        // 500 + 0 + 300 = 800.
+        assert_eq!(
+            alice[2]
+                .as_ref()
+                .unwrap()
+                .cum_pos
+                .as_ref()
+                .unwrap()
+                .score_ds,
+            1050
+        );
+        assert_eq!(
+            bob[2].as_ref().unwrap().cum_pos.as_ref().unwrap().score_ds,
+            800
+        );
     }
 
     #[test]

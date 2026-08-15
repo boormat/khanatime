@@ -278,7 +278,6 @@ fn stage_progress(
         .stages
         .iter()
         .map(|st| {
-            let cancelled = st.repeats == 0;
             let done = |min: u8| {
                 active_cars
                     .iter()
@@ -294,8 +293,8 @@ fn stage_progress(
                 num: st.num,
                 name: st.name.clone(),
                 completed: completed.get(&st.num).copied().unwrap_or(0),
-                min_runs: if cancelled { 0 } else { done(st.best_x) },
-                all_runs: if cancelled { 0 } else { done(st.repeats) },
+                min_runs: done(st.best_x),
+                all_runs: done(st.repeats),
             }
         })
         .collect()
