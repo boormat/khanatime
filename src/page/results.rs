@@ -172,7 +172,6 @@ fn view_publish(model: crate::Model) -> View {
                     }
                 }
             }
-            p(class="help") { "Publishes a results snapshot to the timing room for the official record." }
         }
     }
 }
@@ -180,7 +179,7 @@ fn view_publish(model: crate::Model) -> View {
 fn view_results(model: crate::Model, results: &ResultView) -> View {
     let class_btns = clasess(model, results);
     let header = table_header(model, results);
-    let footer = table_footer(results);
+    let footer = table_footer(model, results);
     let rows = results
         .rows
         .values()
@@ -216,9 +215,14 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
 /// Footer under each test: the stage base time and the derived no-time scores
 /// (WD / FTS / DNF = base + 5s, DNS = base + 10s) so officials can see what
 /// aborted runs are worth.
-fn table_footer(results: &ResultView) -> View {
+fn table_footer(model: crate::Model, results: &ResultView) -> View {
     let mut cells: Vec<View> = vec![view! { td(colspan="2") { "No-time" } }];
     for i in 0..results.event.stage_count() {
+        let test = i as u8 + 1;
+        if model.screens.results.collapsed.with(|c| c.contains(&test)) {
+            cells.push(view! { td(colspan="2") {} });
+            continue;
+        }
         let base = results.base_times_ds.get(i).copied().unwrap_or(0);
         let lines: Vec<View> = if base == 0 {
             vec![view! { div(class="has-text-grey-light") { "\u{2014}" } }]
@@ -259,58 +263,57 @@ fn view_row(model: crate::Model, rr: &ResultRow) -> View {
 }
 
 fn show_rs(model: crate::Model, test: u8, rso: &Option<ResultScore>) -> View {
+    let collapsed = model.screens.results.collapsed.with(|c| c.contains(&test));
     match rso {
         Some(rs) => {
-            let collapsed = model.screens.results.collapsed.with(|c| c.contains(&test));
-            let runs = if collapsed {
-                show_runs_collapsed(rs)
+            let runs = show_runs(rs);
+            let pos = match &rs.stage_pos {
+                Some(p) => {
+                    let pos = p.pos.to_string();
+                    view! { td { (pos) } }
+                }
+                None => view! { td {} },
+            };
+            if collapsed {
+                // Collapsed: keep the full Time cell (all runs, struck ones
+                // included) and Pos; drop Score, Cum, O/R.
+                view! {
+                    td { (runs) }
+                    (pos)
+                }
             } else {
-                show_runs(rs)
-            };
-            let (score, pos) = match &rs.stage_pos {
-                Some(p) => {
-                    let s = format!("{:.1}", p.score_ds as f32 / 10.0);
-                    let pos = format!("{}", p.pos);
-                    (view! { td { (s) } }, view! { td { (pos) } })
+                let (score, cum) = match &rs.stage_pos {
+                    Some(p) => {
+                        let s = format!("{:.1}", p.score_ds as f32 / 10.0);
+                        let cum = match &rs.cum_pos {
+                            Some(cp) => {
+                                let cs = format!("{:.1}", cp.score_ds as f32 / 10.0);
+                                view! { td { (cs) } }
+                            }
+                            None => view! { td(class="has-text-grey-light") { "\u{2014}" } },
+                        };
+                        (view! { td { (s) } }, cum)
+                    }
+                    None => (
+                        view! { td(class="has-text-grey-light") { "\u{2014}" } },
+                        view! { td(class="has-text-grey-light") { "\u{2014}" } },
+                    ),
+                };
+                let cum_or_cell = cum_or(&rs.cum_pos);
+                view! {
+                    td { (runs) }
+                    (score)
+                    (pos)
+                    (cum)
+                    td { (cum_or_cell) }
                 }
-                None => (
-                    view! { td(class="has-text-grey-light") { "\u{2014}" } },
-                    view! { td {} },
-                ),
-            };
-            let cum = match &rs.cum_pos {
-                Some(p) => {
-                    let s = format!("{:.1}", p.score_ds as f32 / 10.0);
-                    view! { td { (s) } }
-                }
-                None => view! { td(class="has-text-grey-light") { "\u{2014}" } },
-            };
-            let cum_or_cell = cum_or(&rs.cum_pos);
-            view! {
-                td { (runs) }
-                (score)
-                (pos)
-                (cum)
-                td { (cum_or_cell) }
             }
         }
         None => {
-            let tds = (0..COLS_PER_TEST)
-                .map(|_| view! { td {} })
-                .collect::<Vec<View>>();
+            let n = if collapsed { 2 } else { COLS_PER_TEST };
+            let tds = (0..n).map(|_| view! { td {} }).collect::<Vec<View>>();
             view! { (tds) }
         }
-    }
-}
-
-/// Collapsed Time cell: just the test total, no per-run detail.
-fn show_runs_collapsed(rs: &ResultScore) -> View {
-    match &rs.stage_pos {
-        Some(p) => {
-            let s = format!("{:.1}", p.score_ds as f32 / 10.0);
-            view! { span(class="has-text-weight-semibold") { (s) } }
-        }
-        None => view! { span(class="has-text-grey-light") { "\u{2014}" } },
     }
 }
 
@@ -432,9 +435,10 @@ fn table_header(model: crate::Model, results: &ResultView) -> View {
         } else {
             "fa-chevron-down"
         };
+        let span = if collapsed { "2" } else { "5" };
         first_row.push(view! {
             th(
-                colspan="5",
+                colspan=span,
                 class="kt-test-header",
                 on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ToggleCollapse(test))),
             ) {
@@ -449,19 +453,27 @@ fn table_header(model: crate::Model, results: &ResultView) -> View {
             (first_row)
         }
     });
-    // per test: Time  Score  Pos  Cum  O/R
+    // per test: collapsed -> Time Pos; expanded -> Time Score Pos Cum O/R
     head.push(view! {
         tr {
             th { "#" }
             th { "Driver" }
             ((0..stages_count)
-                .map(|_| {
-                    view! {
-                        th { "Time" }
-                        th { "Score" }
-                        th { "Pos" }
-                        th { "Cum" }
-                        th { "O/R" }
+                .map(|i| {
+                    let test = i as u8 + 1;
+                    if model.screens.results.collapsed.with(|c| c.contains(&test)) {
+                        view! {
+                            th { "Time" }
+                            th { "Pos" }
+                        }
+                    } else {
+                        view! {
+                            th { "Time" }
+                            th { "Score" }
+                            th { "Pos" }
+                            th { "Cum" }
+                            th { "O/R" }
+                        }
                     }
                 })
                 .collect::<Vec<View>>())

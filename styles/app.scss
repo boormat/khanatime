@@ -60,3 +60,18 @@
   font-weight: 600;
   line-height: 1.2;
 }
+
+// Print: the results table must print without the scroll container, shrunk so
+// the whole board fits the page (orientation is chosen in the print dialog).
+@media print {
+  .table-container {
+    overflow: visible !important;
+  }
+  .table {
+    font-size: 0.7rem;
+  }
+  .table td,
+  .table th {
+    padding: 0.25em 0.4em;
+  }
+}
