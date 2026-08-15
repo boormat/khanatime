@@ -406,7 +406,7 @@ Milestone order; check items off as done.
   together (and `++` folded them to one id). `FeedEntry` now carries
   `local_id`; expansion keys on `local_id` for pending messages, `mid` for
   room messages, so each line toggles independently.
-- [ ] Unit tests for `pretty_body` / `line_key` (chat.rs has none today).
+- [x] Unit tests for `pretty_body` / `line_key` (chat.rs has none today).
 - [ ] Uncommitted — working tree `src/page/chat.rs` pending; gate green
   (fmt + clippy + tests + wasm build). Note: a second agent edits code/docs
   concurrently (see `docs/plan/layout-navigation.md` gotchas).

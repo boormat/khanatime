@@ -13,6 +13,8 @@ use crate::timing_event::TimingEvent;
 pub struct FeedEntry {
     /// Matrix event id, used to dedupe across live sync + backfill.
     pub mid: String,
+    /// Client-generated id for pending (unsent) messages; empty for room ones.
+    pub local_id: String,
     pub ts: i64,
     pub sender: String,
     pub body: String,
@@ -27,6 +29,7 @@ impl From<&crate::log::LogMsg> for FeedEntry {
     fn from(m: &crate::log::LogMsg) -> Self {
         Self {
             mid: m.mid.clone(),
+            local_id: m.local_id.clone(),
             ts: m.ts,
             sender: m.sender.clone(),
             body: m.body.clone(),
@@ -54,10 +57,18 @@ pub fn init() -> Model {
     }
 }
 
+/// Per-line expansion key: pending messages have no Matrix id yet, so their
+/// client-generated local id stands in (all pending lines share `mid == ""`).
+fn line_key(e: &FeedEntry) -> String {
+    if !e.local_id.is_empty() {
+        e.local_id.clone()
+    } else {
+        e.mid.clone()
+    }
+}
+
 fn expand_all(chat: Model) {
-    let ids: HashSet<String> = chat
-        .feed
-        .with(|v| v.iter().map(|e| e.mid.clone()).collect());
+    let ids: HashSet<String> = chat.feed.with(|v| v.iter().map(line_key).collect());
     chat.expanded.set(ids);
 }
 
@@ -65,10 +76,10 @@ fn fold_all(chat: Model) {
     chat.expanded.set(HashSet::new());
 }
 
-fn toggle_expand(chat: Model, mid: String) {
+fn toggle_expand(chat: Model, key: String) {
     chat.expanded.update(|s| {
-        if !s.insert(mid.clone()) {
-            s.remove(&mid);
+        if !s.insert(key.clone()) {
+            s.remove(&key);
         }
     });
 }
@@ -131,18 +142,25 @@ pub fn view(model: crate::Model) -> View {
                         let lines: Vec<View> = entries
                             .iter()
                             .map(|e| {
-                                let mid = e.mid.clone();
+                                let key = line_key(e);
+                                let click_key = key.clone();
                                 let summary = line_summary(e);
                                 let head = view! {
                                     div(
                                         class="kt-log-line",
-                                        on:click=move |_| toggle_expand(chat, mid.clone()),
+                                        on:click=move |_| toggle_expand(chat, click_key.clone()),
                                     ) {
                                         (summary)
                                     }
                                 };
-                                if expanded.contains(&e.mid) {
-                                    let pretty = pretty_json(&e.raw);
+                                if expanded.contains(&key) {
+                                    // Pending messages carry no server raw JSON
+                                    // yet — show the wire body instead.
+                                    let pretty = if e.pending {
+                                        pretty_body(&e.body)
+                                    } else {
+                                        pretty_json(&e.raw)
+                                    };
                                     view! {
                                         div {
                                             (head)
@@ -188,6 +206,22 @@ fn pretty_json(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
+/// Wire body of a pending (unsent) message, pretty-printed.  Strips the known
+/// `KT `/`khanatime_*:` prefix and pretty-prints the JSON payload, falling
+/// back to the body text when it doesn't parse.
+fn pretty_body(body: &str) -> String {
+    let prefix = [
+        "KT ",
+        TimingEvent::SETUP_PREFIX,
+        TimingEvent::RESULT_PREFIX,
+        TimingEvent::ENTRY_PREFIX,
+    ]
+    .into_iter()
+    .find(|p| body.starts_with(p));
+    let json = prefix.map(|p| &body[p.len()..]).unwrap_or(body);
+    pretty_json(json)
+}
+
 fn fmt_ts(ms: i64) -> String {
     let d = js_sys::Date::new(&js_sys::Number::from(ms as f64).into());
     format!(
@@ -196,4 +230,60 @@ fn fmt_ts(ms: i64) -> String {
         d.get_minutes(),
         d.get_seconds()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(local_id: &str, mid: &str, pending: bool) -> FeedEntry {
+        FeedEntry {
+            mid: mid.into(),
+            local_id: local_id.into(),
+            ts: 0,
+            sender: String::new(),
+            body: String::new(),
+            timing: None,
+            raw: String::new(),
+            pending,
+        }
+    }
+
+    #[test]
+    fn pretty_body_strips_timing_prefix() {
+        let body = "KT {\"r#type\":\"finish\",\"uid\":\"OBS1\"}";
+        let out = pretty_body(body);
+        assert!(out.contains("\"r#type\": \"finish\""), "{out}");
+        assert!(out.contains("\"uid\": \"OBS1\""), "{out}");
+        assert!(!out.contains("KT "), "{out}");
+    }
+
+    #[test]
+    fn pretty_body_strips_khanatime_prefixes() {
+        for p in [
+            TimingEvent::SETUP_PREFIX,
+            TimingEvent::RESULT_PREFIX,
+            TimingEvent::ENTRY_PREFIX,
+        ] {
+            let out = pretty_body(&format!("{p}{{\"a\":1}}"));
+            assert!(out.contains("\"a\": 1"), "prefix {p}: {out}");
+        }
+    }
+
+    #[test]
+    fn pretty_body_falls_back_to_text() {
+        assert_eq!(pretty_body("not json"), "not json");
+    }
+
+    #[test]
+    fn line_key_uses_local_id_when_pending() {
+        let e = entry("l1", "", true);
+        assert_eq!(line_key(&e), "l1");
+    }
+
+    #[test]
+    fn line_key_uses_mid_for_room_messages() {
+        let e = entry("", "!mid", false);
+        assert_eq!(line_key(&e), "!mid");
+    }
 }
