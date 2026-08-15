@@ -160,39 +160,11 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str, 
     crate::update(model, crate::Msg::Reload);
 }
 
-/// Offline handoff box: export the current event's log as a QR parcel (shown
-/// as text to copy/scan until QR rendering lands) or import a parcel pasted
-/// from another device.  See `sync::export_parcel` / `sync::import_parcel`.
+/// Offline handoff box: export the current event's log as a QR parcel, scan or
+/// paste one to import.  The exporter and scanner open as full-screen modals
+/// (see [`view_handoff_modals`]); this box stays compact.
 pub fn view_handoff(model: crate::Model) -> View {
-    let exported = model.app.parcel_export.get_clone();
     let status = model.app.parcel_status.get_clone();
-    let exported_view = if exported.is_empty() {
-        view! {}
-    } else {
-        let text_view = exported.clone();
-        let copy = exported.clone();
-        view! {
-            div(class="field") {
-                label(class="label is-small") { "Copy this parcel" }
-                div(class="control") {
-                    textarea(
-                        class="textarea is-small",
-                        readonly=true,
-                        rows="6",
-                    ) { (text_view) }
-                }
-                div(class="control") {
-                    button(
-                        class="button is-small is-light",
-                        on:click=move |_| copy_text(&copy),
-                    ) {
-                        span(class="icon is-small") { i(class="fa fa-copy") }
-                        span { "Copy" }
-                    }
-                }
-            }
-        }
-    };
     let status_view = if status.is_empty() {
         view! {}
     } else {
@@ -223,42 +195,28 @@ pub fn view_handoff(model: crate::Model) -> View {
                 span(class="tag is-light is-pulled-right") { "QR parcel" }
             }
             p(class="help") {
-                "Carry the event's messages device-to-device with no network: export on one phone, paste or scan the parcel on another."
+                "Carry the event's messages device-to-device with no network: export on one phone, scan or paste the parcel on another."
             }
-            div(class="field") {
-                div(class="control") {
-                    button(
-                        class="button is-small is-primary",
-                        on:click=move |_| crate::update(model, crate::Msg::ExportParcel),
-                    ) {
-                        span(class="icon is-small") { i(class="fa fa-qrcode") }
-                        span { "Export parcel" }
-                    }
-                }
-            }
-            (move || view_qr(model))
-            (exported_view)
             div(class="field is-grouped") {
                 div(class="control") {
                     button(
-                        class="button is-small is-warning",
-                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
+                        class="button is-primary",
+                        on:click=move |_| crate::update(model, crate::Msg::ExportParcel),
                     ) {
-                        span(class="icon is-small") { i(class="fa fa-camera") }
-                        span { "Scan" }
+                        span(class="icon") { i(class="fa fa-qrcode") }
+                        span { "Export parcel" }
                     }
                 }
                 div(class="control") {
                     button(
-                        class="button is-small is-light",
-                        on:click=move |_| crate::update(model, crate::Msg::ScanStop),
+                        class="button is-warning",
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
                     ) {
-                        span(class="icon is-small") { i(class="fa fa-stop") }
-                        span { "Stop" }
+                        span(class="icon") { i(class="fa fa-camera") }
+                        span { "Scan parcel" }
                     }
                 }
             }
-            (move || view_scan(model))
             div(class="field") {
                 label(class="label is-small") { "Import a parcel" }
                 div(class="control") {
@@ -285,17 +243,31 @@ pub fn view_handoff(model: crate::Model) -> View {
     }
 }
 
-/// The exported parcel's QR display: the current frame as an SVG, animated
-/// across frames when the parcel spans more than one code.
-fn view_qr(model: crate::Model) -> View {
-    let svgs = model.app.parcel_qr_svgs.get_clone();
-    if svgs.is_empty() {
-        return view! {};
+/// Full-screen modal overlays for the QR exporter and camera scanner.  Shown
+/// whenever either is active; rendered at app level so it covers any screen.
+pub fn view_handoff_modals(model: crate::Model) -> View {
+    view! {
+        (move || {
+            if model.app.scan_active.get() {
+                view_scan_modal(model)
+            } else if !model.app.parcel_qr_svgs.with(|v| v.is_empty()) {
+                view_qr_modal(model)
+            } else {
+                view! {}
+            }
+        })
     }
+}
+
+/// The exported parcel's QR modal: the current frame as a large SVG, animated
+/// across frames when the parcel spans more than one code.
+fn view_qr_modal(model: crate::Model) -> View {
+    let svgs = model.app.parcel_qr_svgs.get_clone();
     let i = model.app.parcel_qr_index.get();
     let total = model.app.parcel_qr_total.get();
     let paused = model.app.parcel_qr_paused.get();
     let svg = svgs.get(i).cloned().unwrap_or_default();
+    let exported = model.app.parcel_export.get_clone();
     let hint = if total > 1 {
         let anim = if paused {
             "paused — resume to cycle frames."
@@ -308,75 +280,98 @@ fn view_qr(model: crate::Model) -> View {
     };
     let pause_label = if paused { "Resume" } else { "Pause" };
     view! {
-        div(class="field") {
-            div(class="kt-qr-box") {
-                div(dangerously_set_inner_html=svg) {}
-            }
-            div(class="field is-grouped is-grouped-centered") {
-                (if total > 1 {
-                    view! {
-                        div(class="control") {
-                            button(
-                                class="button is-small is-light",
-                                on:click=move |_| crate::update(model, crate::Msg::QrPauseToggle),
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-pause") }
-                                span { (pause_label) }
+        div(class="kt-modal") {
+            div(class="kt-modal-card") {
+                h3(class="title is-5") { "QR export" }
+                div(class="kt-qr-box") {
+                    div(dangerously_set_inner_html=svg) {}
+                }
+                p(class="help kt-qr-hint") { (hint) }
+                div(class="field is-grouped is-grouped-centered") {
+                    (if total > 1 {
+                        view! {
+                            div(class="control") {
+                                button(
+                                    class="button is-small is-light",
+                                    on:click=move |_| crate::update(model, crate::Msg::QrPauseToggle),
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-pause") }
+                                    span { (pause_label) }
+                                }
                             }
                         }
+                    } else {
+                        view! {}
+                    })
+                    div(class="control") {
+                        button(
+                            class="button is-small is-link",
+                            on:click=move |_| crate::update(model, crate::Msg::QrClear),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-times") }
+                            span { "Close" }
+                        }
                     }
-                } else {
-                    view! {}
-                })
-                div(class="control") {
-                    button(
-                        class="button is-small is-light",
-                        on:click=move |_| crate::update(model, crate::Msg::QrClear),
-                    ) {
-                        span(class="icon is-small") { i(class="fa fa-times") }
-                        span { "Clear" }
-                    }
+                    (if exported.is_empty() {
+                        view! {}
+                    } else {
+                        let copy_btn = exported.clone();
+                        view! {
+                            div(class="control") {
+                                button(
+                                    class="button is-small is-light",
+                                    on:click=move |_| copy_text(&copy_btn),
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-copy") }
+                                    span { "Copy text" }
+                                }
+                            }
+                        }
+                    })
                 }
             }
-            p(class="help kt-qr-hint") { (hint) }
         }
     }
 }
 
-/// The camera scan panel.  The video element is always in the DOM (so the
-/// scanner can bind it) but the viewfinder frame is only shown while scanning.
-fn view_scan(model: crate::Model) -> View {
-    let active = model.app.scan_active.get();
+/// Full-screen camera viewfinder modal for scanning a parcel.
+fn view_scan_modal(model: crate::Model) -> View {
     let status = model.app.scan_status.get_clone();
-    let frame_class = if active {
-        "kt-scan-frame"
-    } else {
-        "kt-scan-frame is-hidden"
-    };
     let status_view = if status.is_empty() {
         view! {}
     } else {
         let s = status.clone();
-        view! { p(class="help has-text-info") { (s) } }
+        view! { p(class="help has-text-white") { (s) } }
     };
     view! {
-        div {
-            div(class=frame_class) {
-                video(
-                    id="kt-scan-video",
-                    autoplay=true,
-                    playsinline=true,
-                    muted=true,
-                ) {}
-                div(class="kt-scan-corners") {
-                    i(class="kt-corner kt-corner-tl") {}
-                    i(class="kt-corner kt-corner-tr") {}
-                    i(class="kt-corner kt-corner-bl") {}
-                    i(class="kt-corner kt-corner-br") {}
+        div(class="kt-modal kt-modal-dark") {
+            div(class="kt-modal-scan") {
+                div(class="kt-scan-frame") {
+                    video(
+                        id="kt-scan-video",
+                        autoplay=true,
+                        playsinline=true,
+                        muted=true,
+                    ) {}
+                    div(class="kt-scan-corners") {
+                        i(class="kt-corner kt-corner-tl") {}
+                        i(class="kt-corner kt-corner-tr") {}
+                        i(class="kt-corner kt-corner-bl") {}
+                        i(class="kt-corner kt-corner-br") {}
+                    }
+                    div(class="kt-scan-mask") {}
                 }
-                div(class="kt-scan-mask") {}
+                (status_view)
             }
-            (status_view)
+            div(class="kt-modal-topbar") {
+                button(
+                    class="button is-light is-small",
+                    on:click=move |_| crate::update(model, crate::Msg::ScanStop),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-times") }
+                    span { "Close" }
+                }
+            }
         }
     }
 }

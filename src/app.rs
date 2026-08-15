@@ -454,6 +454,7 @@ pub fn view(model: Model) -> View {
         div {
             (move || view_navbar(model))
             (move || view_content(model))
+            (crate::page::view_handoff_modals(model))
         }
     }
 }
