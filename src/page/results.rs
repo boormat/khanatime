@@ -135,6 +135,7 @@ fn view_publish(model: crate::Model) -> View {
 fn view_results(model: crate::Model, results: &ResultView) -> View {
     let class_btns = clasess(model, results);
     let header = table_header(results);
+    let footer = table_footer(results);
     let rows = results.rows.values().map(view_row).collect::<Vec<View>>();
     let name = results.event.name.clone();
     let class = results.class.clone();
@@ -156,10 +157,36 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
                 table(class="table is-bordered is-narrow") {
                     (header)
                     (rows)
+                    (footer)
                 }
             }
         }
     }
+}
+
+/// Footer under each test: the stage base time and the derived no-time scores
+/// (WD / FTS / DNF = base + 5s, DNS = base + 10s) so officials can see what
+/// aborted runs are worth.
+fn table_footer(results: &ResultView) -> View {
+    let mut cells: Vec<View> = vec![view! { td(colspan="3") { "No-time" } }];
+    for i in 0..results.event.stage_count() {
+        let base = results.base_times_ds.get(i).copied().unwrap_or(0);
+        let lines: Vec<View> = if base == 0 {
+            vec![view! { div(class="has-text-grey-light") { "\u{2014}" } }]
+        } else {
+            let base_s = base as f32 / 10.0;
+            let wd_s = (base as u32 + 50) as f32 / 10.0;
+            let dns_s = (base as u32 + 100) as f32 / 10.0;
+            vec![
+                view! { div { ("Base ") (format!("{base_s:.1}")) } },
+                view! { div { ("WD / FTS / DNF ") (format!("{wd_s:.1}")) } },
+                view! { div { ("DNS ") (format!("{dns_s:.1}")) } },
+            ]
+        };
+        let cell = view! { td(colspan="5") { (lines) } };
+        cells.push(cell);
+    }
+    view! { tfoot { tr(class="is-together-print") { (cells) } } }
 }
 
 const COLS_PER_TEST: usize = 5;
