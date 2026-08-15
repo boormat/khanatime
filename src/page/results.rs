@@ -168,7 +168,7 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
 /// (WD / FTS / DNF = base + 5s, DNS = base + 10s) so officials can see what
 /// aborted runs are worth.
 fn table_footer(results: &ResultView) -> View {
-    let mut cells: Vec<View> = vec![view! { td(colspan="3") { "No-time" } }];
+    let mut cells: Vec<View> = vec![view! { td(colspan="2") { "No-time" } }];
     for i in 0..results.event.stage_count() {
         let base = results.base_times_ds.get(i).copied().unwrap_or(0);
         let lines: Vec<View> = if base == 0 {
@@ -194,24 +194,11 @@ const COLS_PER_TEST: usize = 5;
 fn view_row(rr: &ResultRow) -> View {
     let car = rr.entry.car.clone();
     let name = rr.entry.name.clone();
-    // Outright rank in the current tab: only ranked once totals exist.
-    let or = match (rr.total_pos, rr.total_eq) {
-        (0, _) => view! { td(class="has-text-grey-light") { "\u{2014}" } },
-        (p, true) => {
-            let s = format!("={p}");
-            view! { td { (s) } }
-        }
-        (p, _) => {
-            let s = p.to_string();
-            view! { td { (s) } }
-        }
-    };
     let columns = rr.columns.iter().map(show_rs).collect::<Vec<View>>();
     view! {
         tr(class="is-together-print") {
             td { (car) }
             td { (name) }
-            (or)
             (columns)
         }
     }
@@ -221,16 +208,31 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
     match rso {
         Some(rs) => {
             let runs = show_runs(rs);
-            let stage_score = format!("{}", rs.stage_pos.score_ds as f32 / 10.0);
-            let stage_pos = format!("{}", rs.stage_pos.pos);
-            let cum_score = format!("{}", or_score(&rs.cum_pos) as f32 / 10.0);
-            let cum = cum_or(&rs.cum_pos);
+            let (score, pos) = match &rs.stage_pos {
+                Some(p) => {
+                    let s = format!("{}", p.score_ds as f32 / 10.0);
+                    let pos = format!("{}", p.pos);
+                    (view! { td { (s) } }, view! { td { (pos) } })
+                }
+                None => (
+                    view! { td(class="has-text-grey-light") { "\u{2014}" } },
+                    view! { td {} },
+                ),
+            };
+            let cum = match &rs.cum_pos {
+                Some(p) => {
+                    let s = format!("{}", p.score_ds as f32 / 10.0);
+                    view! { td { (s) } }
+                }
+                None => view! { td(class="has-text-grey-light") { "\u{2014}" } },
+            };
+            let cum_or_cell = cum_or(&rs.cum_pos);
             view! {
                 td { (runs) }
-                td { (stage_score) }
-                td { (stage_pos) }
-                td { (cum_score) }
-                td { (cum) }
+                (score)
+                (pos)
+                (cum)
+                (cum_or_cell)
             }
         }
         None => {
@@ -244,16 +246,22 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
 
 /// The car's runs in this test: all times comma-separated in run order, with
 /// the runs that didn't count (dropped by best-X) struck out and the fastest
-/// counting run highlighted in green.
+/// counting run highlighted in green.  An incomplete test has no counting
+/// runs yet, so everything renders plainly.
 fn show_runs(rs: &ResultScore) -> View {
-    let fastest = rs.runs.iter().filter(|r| r.counted).map(|r| r.score).min();
+    let any_counted = rs.runs.iter().any(|r| r.counted);
+    let fastest = if any_counted {
+        rs.runs.iter().filter(|r| r.counted).map(|r| r.score).min()
+    } else {
+        None
+    };
     let mut cells: Vec<View> = Vec::new();
     for (i, r) in rs.runs.iter().enumerate() {
         if i > 0 {
             cells.push(view! { span { ", " } });
         }
         let content = run_time_text(&r.time);
-        let cell = if !r.counted {
+        let cell = if any_counted && !r.counted {
             view! { span(class="kt-struck has-text-grey-light") { (content) } }
         } else if Some(r.score) == fastest {
             view! { span(class="has-text-success has-text-weight-bold") { (content) } }
@@ -287,11 +295,6 @@ fn run_time_text(time: &crate::event::KTime) -> View {
     }
 }
 
-fn or_score(cum: &Option<Pos>) -> u16 {
-    cum.as_ref().map(|p| p.score_ds).unwrap_or(0)
-}
-
-/// Cumulative position with the delta vs the previous completed stage.
 fn cum_or(cum: &Option<Pos>) -> View {
     match cum {
         None => view! { div(class="has-text-grey-light") { "\u{2014}" } },
@@ -352,7 +355,7 @@ fn table_header(results: &ResultView) -> View {
             }
         })
         .collect();
-    let mut first_row: Vec<View> = vec![view! { th(colspan="3") { "Entry" } }];
+    let mut first_row: Vec<View> = vec![view! { th(colspan="2") { "Entry" } }];
     for label in labels {
         first_row.push(view! { th(colspan="5") { (label) } });
     }
@@ -367,7 +370,6 @@ fn table_header(results: &ResultView) -> View {
         tr {
             th { "#" }
             th { "Driver" }
-            th { "O/R pos" }
             ((0..stages_count)
                 .map(|_| {
                     view! {

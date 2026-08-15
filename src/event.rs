@@ -368,11 +368,6 @@ pub struct ResultView {
 pub struct ResultRow {
     pub entry: Entry, //todo use from context &'a [Entry];
     pub columns: Vec<Option<ResultScore>>,
-    //cum_pos: Option<Pos>, // current/last cumulative position. None after a missed a stage
-    // best-X-of-Y aggregate over the completed stages + its tie-aware rank
-    pub total_ds: u32,
-    pub total_pos: u8,
-    pub total_eq: bool,
 }
 
 /// Results Position
@@ -403,7 +398,8 @@ pub struct ResultScore {
     /// The car's runs for this test, in run order, with counting flags set
     /// (the non-counting ones are struck out in the results view).
     pub runs: Vec<RunScore>,
-    pub stage_pos: Pos,       // result within stage
+    /// Result within stage; None until the test is completed (enough runs).
+    pub stage_pos: Option<Pos>,
     pub cum_pos: Option<Pos>, // pos in event.
 }
 
@@ -423,7 +419,8 @@ pub struct RunScore {
 /// Result of the best-X-of-Y aggregation for one car in one test.
 #[derive(Default, Debug)]
 pub struct StageScore {
-    pub sum: u32,
+    /// Aggregate score, or None until the entrant has completed enough runs.
+    pub sum: Option<u32>,
     pub runs: Vec<RunScore>,
 }
 
@@ -837,7 +834,7 @@ impl ResultRow {
                 let stage = event.stage(i);
                 stage_result(&stage, runs, i as u8 + 1, &entry.car, base_times[i]).map(|ss| {
                     ResultScore {
-                        stage_pos: Pos::init(ss.sum as u16),
+                        stage_pos: ss.sum.map(|s| Pos::init(s as u16)),
                         cum_pos: None,
                         runs: ss.runs,
                     }
@@ -848,9 +845,6 @@ impl ResultRow {
         Self {
             entry: entry.clone(),
             columns,
-            total_ds: 0,
-            total_pos: 0,
-            total_eq: false,
         }
     }
 }
@@ -914,13 +908,13 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 /// Best-X-of-Y aggregate for one car in one test: the sum of the car's best
 /// `best_x` counting runs of the (up to) `repeats` it attempted, where only
 /// the first `repeats` runs (by run order) may count — extra runs beyond Y
-/// are excluded no matter their time.  A car that hasn't completed X runs
-/// gets a DNS (no-time, `base + 100`) for each missing counting slot, so a
-/// cut-short attempt still scores a full best-X; DNF/FTS/WD finishes are
-/// completed attempts and score their penalty.  Returns the aggregate score
-/// together with every run (in run order, counted runs flagged) so the
-/// results view can show which runs counted.  None when the car has no runs
-/// (or only a still-pending start) in the test.
+/// are excluded no matter their time.  A car that hasn't completed X runs yet
+/// (or is on a cancelled stage with no runs) scores nothing: the real runs are
+/// returned for display but `sum` stays None.  DNF/FTS/WD finishes and a
+/// declared DNS (a `start` marked `dns`, no finish) are completed attempts; a
+/// DNS scores the no-time `base + 100`.  Returns the aggregate score together
+/// with every real run (in run order, counted runs flagged).  None when the
+/// car has no attempts in the test.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
@@ -938,56 +932,48 @@ fn stage_result(
 
     let y = stage.repeats.max(1);
 
-    // Completed attempts (any run number), kept for display.
+    // Real attempts only: finishes (clean/DNF/FTS/WD) and declared-DNS starts.
     let mut all: Vec<RunScore> = relevant
         .iter()
-        .filter(|r| r.r#type == RUN_FINISH)
-        .map(|r| RunScore {
-            run: r.run,
-            time: finish_to_ktime(r),
-            score: run_net_score(r, base_time),
-            counted: false,
+        .filter(|r| {
+            r.r#type == RUN_FINISH || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
+        })
+        .map(|r| {
+            let (time, score) = if r.r#type == RUN_FINISH {
+                (finish_to_ktime(r), run_net_score(r, base_time))
+            } else {
+                (KTime::NOSHO, base_time as u32 + 100)
+            };
+            RunScore {
+                run: r.run,
+                time,
+                score,
+                counted: false,
+            }
         })
         .collect();
+    all.sort_by_key(|r| r.run);
+    if all.is_empty() {
+        return None; // only in-progress starts: nothing to show or score yet
+    }
 
-    // Missing counting slots score DNS: if the car completed fewer than X
-    // runs, the shortfall is made up from the runs it didn't do (skipping
-    // slots that are in progress — a started-but-unfinished run).
-    let done = all.iter().filter(|r| r.run <= y).count();
+    // Completeness gate: no score until the entrant has done enough runs.
     let fill_target = if stage.best_x == 0 {
         y
     } else {
         stage.best_x.max(1)
     };
-    let mut dns_needed = fill_target.saturating_sub(done as u8) as usize;
-    let mut slot = 1;
-    while dns_needed > 0 && slot <= y {
-        if !all.iter().any(|r| r.run == slot) {
-            let in_progress = relevant.iter().any(|r| {
-                r.r#type == RUN_START && r.run == slot && r.status.as_deref() != Some("dns")
-            });
-            if !in_progress {
-                let dns_score = base_time as u32 + 100;
-                all.push(RunScore {
-                    run: slot,
-                    time: KTime::NOSHO,
-                    score: dns_score,
-                    counted: false,
-                });
-                dns_needed -= 1;
-            }
-        }
-        slot += 1;
+    let done = all.iter().filter(|r| r.run <= y).count() as u8;
+    if done < fill_target {
+        return Some(StageScore {
+            sum: None,
+            runs: all,
+        });
     }
-    all.sort_by_key(|r| r.run);
 
     // Counting-eligible slots: the first Y runs (by run order).  Beyond-Y runs
     // are excluded no matter how fast.
     let eligible: Vec<usize> = (0..all.len()).filter(|&i| all[i].run <= y).collect();
-    if eligible.is_empty() {
-        return None; // only a pending start, no finish or DNS yet
-    }
-
     let keep = if stage.best_x == 0 {
         eligible.len()
     } else {
@@ -1000,39 +986,10 @@ fn stage_result(
     }
     let sum: u32 = best.iter().take(keep).map(|&i| all[i].score).sum();
 
-    Some(StageScore { sum, runs: all })
-}
-
-/// Per-car overall total: the plain sum of the per-stage scores — each stage
-/// already aggregates its runs via best-X-of-Y — plus the tie-aware rank.
-pub fn calc_totals(rv: &mut ResultView) {
-    for row in rv.rows.values_mut() {
-        row.total_ds = row
-            .columns
-            .iter()
-            .flatten()
-            .map(|rs| rs.stage_pos.score_ds as u32)
-            .sum();
-        row.total_pos = 0;
-        row.total_eq = false;
-    }
-    let mut rows: Vec<&mut ResultRow> = rv
-        .rows
-        .values_mut()
-        .filter(|r| r.total_ds != 0) // no completed runs yet
-        .collect();
-    rows.sort_by_key(|r| r.total_ds);
-    let mut last = u32::MAX;
-    let mut rank = 1u8;
-    for (idx, row) in rows.iter_mut().enumerate() {
-        let eq = row.total_ds == last;
-        last = row.total_ds;
-        if !eq {
-            rank = idx as u8 + 1;
-        }
-        row.total_pos = rank;
-        row.total_eq = eq;
-    }
+    Some(StageScore {
+        sum: Some(sum),
+        runs: all,
+    })
 }
 
 pub fn calc(rv: &mut ResultView) {
@@ -1040,7 +997,6 @@ pub fn calc(rv: &mut ResultView) {
     calc_cumulative_times(rv);
     calc_cumulative_positions(rv);
     calc_pos_changes(rv);
-    calc_totals(rv);
 }
 
 pub fn create_result_view(event: &EventInfo, runs: &[RunRecord], class: &str) -> ResultView {
@@ -1071,12 +1027,35 @@ pub fn create_outright_view(event: &EventInfo, runs: &[RunRecord]) -> ResultView
     rv
 }
 
+/// Cumulative score per test: the running sum of completed stage scores.  An
+/// entrant who hasn't completed a test (unscored, or never attempted) gets no
+/// cumulative from then on — later tests still show their own Score/Pos but
+/// their Cum and O/R stay blank (a cancelled stage blanks every following
+/// test's cumulative columns).
 pub fn calc_cumulative_times(rv: &mut ResultView) {
     for row in rv.rows.values_mut() {
         let mut score = 0;
-        for rs in row.columns.iter_mut().flatten() {
-            score += rs.stage_pos.score_ds;
-            rs.cum_pos = Some(Pos::init(score));
+        let mut broken = false;
+        for rs in row.columns.iter_mut() {
+            if broken {
+                if let Some(rs) = rs {
+                    rs.cum_pos = None;
+                }
+                continue;
+            }
+            match rs {
+                Some(rs) => match &rs.stage_pos {
+                    Some(sp) => {
+                        score += sp.score_ds;
+                        rs.cum_pos = Some(Pos::init(score));
+                    }
+                    None => {
+                        rs.cum_pos = None;
+                        broken = true;
+                    }
+                },
+                None => broken = true, // test never attempted -> no cum after this
+            }
         }
     }
 }
@@ -1110,7 +1089,9 @@ pub fn calc_stage_positions(rv: &mut ResultView) {
         let mut positions: Vec<&mut Pos> = vec![];
         for rr in rv.rows.values_mut() {
             if let Some(rs) = &mut rr.columns[stage] {
-                positions.push(&mut rs.stage_pos);
+                if let Some(sp) = &mut rs.stage_pos {
+                    positions.push(sp);
+                }
             }
         }
         calc_rank(&mut positions);
@@ -1425,7 +1406,7 @@ pub fn demo_event() -> EventInfo {
         name: "Khanatime Demo".to_string(),
         sponsoring_club: "Demo Club".to_string(),
         status: EventStatus::Draft,
-        stages: (1..=3).map(Stage::for_test).collect(),
+        stages: (1..=4).map(Stage::for_test).collect(),
         classes: ["Outright", "Female", "Junior"]
             .iter()
             .map(|s| s.to_string())
@@ -1435,6 +1416,14 @@ pub fn demo_event() -> EventInfo {
     // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
     ev.stages[1].repeats = 3;
     ev.stages[1].best_x = 2;
+    // Stage 3 is a cancelled stage: best 1 of 0 — nobody runs it, so every
+    // entrant's cumulative chain breaks there.
+    ev.stages[2].repeats = 0;
+    ev.stages[2].best_x = 1;
+    // Stage 4 is a normal single run after the gap: it shows per-test
+    // Score/Pos but blank Cum/O-R, demonstrating the cancelled stage.
+    ev.stages[3].repeats = 1;
+    ev.stages[3].best_x = 1;
     for (car, name, classes) in [
         ("1", "Alice", &["Outright", "Female"][..]),
         ("2", "Bob", &["Outright"][..]),
@@ -1907,7 +1896,7 @@ mod tests {
         assert!(demo.is_demo());
         assert!(!valid_event_id(&demo.id), "demo id must not be publishable");
         assert_eq!(demo.name, "Khanatime Demo");
-        assert_eq!(demo.stages.len(), 3);
+        assert_eq!(demo.stages.len(), 4);
         assert!(!demo.entries.is_empty());
         assert!(!demo.classes.is_empty());
         // A demo event carries no timing data.
@@ -2046,19 +2035,19 @@ mod tests {
         let runs = vec![finish(1, 200), finish(2, 100), finish(3, 300)];
         // Best 2 of 3 count: 100 + 200 = 300.
         assert_eq!(
-            stage_result(&stage, &runs, 1, "7", 0).map(|ss| ss.sum),
+            stage_result(&stage, &runs, 1, "7", 0).and_then(|ss| ss.sum),
             Some(300)
         );
         let mut best1 = stage.clone();
         best1.best_x = 1;
         assert_eq!(
-            stage_result(&best1, &runs, 1, "7", 0).map(|ss| ss.sum),
+            stage_result(&best1, &runs, 1, "7", 0).and_then(|ss| ss.sum),
             Some(100)
         );
         let mut best0 = stage.clone();
         best0.best_x = 0; // count all runs up to repeats
         assert_eq!(
-            stage_result(&best0, &runs, 1, "7", 0).map(|ss| ss.sum),
+            stage_result(&best0, &runs, 1, "7", 0).and_then(|ss| ss.sum),
             Some(600)
         );
     }
@@ -2089,13 +2078,13 @@ mod tests {
             finish(4, 50),
         ];
         let ss = stage_result(&stage, &runs, 1, "7", 0).unwrap();
-        assert_eq!(ss.sum, 900); // best 2 of the first 3, run 4 ignored
+        assert_eq!(ss.sum, Some(900)); // best 2 of the first 3, run 4 ignored
         let shown: Vec<(u8, bool)> = ss.runs.iter().map(|r| (r.run, r.counted)).collect();
         assert_eq!(shown, vec![(1, true), (2, true), (3, false), (4, false)]);
     }
 
     #[test]
-    fn stage_result_dns_fills_missing_counting_slots() {
+    fn stage_result_no_score_until_enough_attempts() {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 1,
@@ -2113,29 +2102,54 @@ mod tests {
             ..Default::default()
         };
 
-        // One run of best-2-of-3: the missing counting slot scores DNS.
+        // One run of best-2-of-3: the real run is shown but scores nothing.
         let ss = stage_result(&stage, &[finish(1, 450)], 1, "7", 0).unwrap();
-        assert_eq!(ss.sum, 550); // 450 + DNS(100)
+        assert_eq!(ss.sum, None);
         let shown: Vec<(u8, u32, bool)> = ss
             .runs
             .iter()
             .map(|r| (r.run, r.score, r.counted))
             .collect();
-        assert_eq!(shown, vec![(1, 450, true), (2, 100, true)]);
+        assert_eq!(shown, vec![(1, 450, false)]);
 
-        // Two runs of best-2-of-3: no DNS, both count.
+        // Two runs of best-2-of-3: enough attempts, both count.
         let ss = stage_result(&stage, &[finish(1, 450), finish(2, 470)], 1, "7", 0).unwrap();
-        assert_eq!(ss.sum, 920);
+        assert_eq!(ss.sum, Some(920));
         assert!(ss.runs.iter().all(|r| r.counted));
 
-        // A DNF is still a completed attempt: no DNS shortfall.
+        // A DNF is a completed attempt: clean + DNF scores both.
         let mut dnf = finish(2, 0);
         dnf.status = Some("dnf".into());
         let ss = stage_result(&stage, &[finish(1, 450), dnf], 1, "7", 0).unwrap();
-        assert_eq!(ss.sum, 500); // 450 + DNF(50)
+        assert_eq!(ss.sum, Some(500)); // 450 + DNF(50)
 
-        // No runs at all stays blank (None), not a pile of DNS.
+        // A declared DNS (start marked dns, no finish) is a completed attempt
+        // scoring the no-time: clean + DNS is enough for best-2-of-3.
+        let dns_start = RunRecord {
+            r#type: "start".into(),
+            test: 1,
+            car: "7".into(),
+            run: 2,
+            ts: 2,
+            status: Some("dns".into()),
+            ..Default::default()
+        };
+        let ss = stage_result(&stage, &[finish(1, 450), dns_start], 1, "7", 0).unwrap();
+        assert_eq!(ss.sum, Some(550)); // 450 + DNS(100)
+
+        // No runs at all stays blank (None).
         assert!(stage_result(&stage, &[], 1, "7", 0).is_none());
+
+        // Only an in-progress start: nothing to show or score yet.
+        let pending = RunRecord {
+            r#type: "start".into(),
+            test: 1,
+            car: "7".into(),
+            run: 1,
+            ts: 1,
+            ..Default::default()
+        };
+        assert!(stage_result(&stage, &[pending], 1, "7", 0).is_none());
     }
 
     #[test]
@@ -2154,10 +2168,11 @@ mod tests {
         };
         // A clean finish wins even when a slower one has lawn-dart flag penalties.
         assert_eq!(
-            stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).map(|ss| ss.sum),
+            stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).and_then(|ss| ss.sum),
             Some(450)
         );
-        // No finish at all: DNS start counts as a 1100 (no-time) score.
+        // Declared DNS (start marked dns, no finish) on a 1:1 stage: a real
+        // recorded attempt scoring the no-time base + 100.
         let dnss = vec![RunRecord {
             r#type: "start".into(),
             test: 1,
@@ -2168,7 +2183,7 @@ mod tests {
             ..Default::default()
         }];
         assert_eq!(
-            stage_result(&stage, &dnss, 1, "9", 1000).map(|ss| ss.sum),
+            stage_result(&stage, &dnss, 1, "9", 1000).and_then(|ss| ss.sum),
             Some(1100)
         );
     }
@@ -2329,7 +2344,7 @@ mod tests {
         let alice_entry_no = ev.entries[0].entry_no;
         let stage2 = &rv.rows[&alice_entry_no].columns[1].as_ref().unwrap();
         // Best 2 of 3 = 450 + 100 = 550.
-        assert_eq!(stage2.stage_pos.score_ds, 550);
+        assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 550);
         // Display order is run order, with the non-counting run struck out.
         let shown: Vec<(u8, u32, bool)> = stage2
             .runs
@@ -2337,6 +2352,63 @@ mod tests {
             .map(|r| (r.run, r.score, r.counted))
             .collect();
         assert_eq!(shown, vec![(1, 450, true), (2, 470, false), (3, 100, true)]);
+    }
+
+    #[test]
+    fn demo_event_has_cancelled_stage() {
+        let ev = demo_event();
+        assert_eq!(ev.stage_count(), 4);
+        // Stage 2 stays the multi-run test.
+        assert_eq!(ev.stages[1].repeats, 3);
+        assert_eq!(ev.stages[1].best_x, 2);
+        // Stage 3 is cancelled: best 1 of 0, so nobody can complete it.
+        assert_eq!(ev.stages[2].repeats, 0);
+        assert_eq!(ev.stages[2].best_x, 1);
+        // Stage 4 is a normal single run after the gap.
+        assert_eq!(ev.stages[3].repeats, 1);
+        assert_eq!(ev.stages[3].best_x, 1);
+    }
+
+    #[test]
+    fn cumulative_chain_breaks_on_missing_test() {
+        let mut a = Entry::new("1", "Alice");
+        a.entry_no = 1;
+        let mut b = Entry::new("2", "Bob");
+        b.entry_no = 2;
+        let ev = EventInfo {
+            entries: vec![a, b],
+            ..Default::default()
+        };
+        let finish = |test: u8, car: &str, ith: u8, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test,
+            car: car.into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(ds),
+            ..Default::default()
+        };
+        // Alice misses test 2 entirely; Bob completes all three tests.
+        let runs = vec![
+            finish(1, "1", 1, 450),
+            finish(3, "1", 1, 600),
+            finish(1, "2", 1, 500),
+            finish(2, "2", 1, 520),
+            finish(3, "2", 1, 300),
+        ];
+        let rv = create_result_view(&ev, &runs, "Outright");
+        let alice = &rv.rows[&1u32].columns;
+        // Test 3 is scored (she ran it), but its Cum/O-R is blank because
+        // test 2 was never completed.
+        let t3 = alice[2].as_ref().unwrap();
+        assert_eq!(t3.stage_pos.as_ref().unwrap().score_ds, 600);
+        assert!(t3.cum_pos.is_none());
+        // Bob's chain runs through all three tests.
+        let bob = &rv.rows[&2u32].columns;
+        assert_eq!(
+            bob[2].as_ref().unwrap().cum_pos.as_ref().unwrap().score_ds,
+            1320
+        );
     }
 
     #[test]
