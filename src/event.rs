@@ -1648,6 +1648,7 @@ pub fn session_screen() -> String {
         .unwrap_or_default()
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm: app::show persists the screen
 pub fn session_set_screen(screen: &str) {
     if let Some(st) = session_storage() {
         let _ = st.set_item(SCREEN_SESSION, screen);
