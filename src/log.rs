@@ -153,7 +153,9 @@ pub fn enqueue_pending(id: &str, msg: LogMsg) {
     save_pending(id, &pending);
 }
 
-/// Append a received room message to the log, skipping a duplicate `mid`.
+/// Append a received room message to the log, skipping a duplicate `mid` or a
+/// message whose body resolves to an already-logged content id (the same
+/// observation arriving via room, relay or QR collapses to one entry).
 /// Returns true when the message was new.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink
 pub fn append_log(id: &str, msg: LogMsg) -> bool {
@@ -162,6 +164,10 @@ pub fn append_log(id: &str, msg: LogMsg) -> bool {
     }
     let mut log = load_log(id);
     if dedup_by_mid(&log, &msg.mid) {
+        return false;
+    }
+    let cid = crate::ids::content_id(&msg.body);
+    if log.iter().any(|m| crate::ids::content_id(&m.body) == cid) {
         return false;
     }
     log.push(msg);
@@ -198,14 +204,18 @@ pub fn promote(id: &str, local_id: &str, mid: &str) -> bool {
     true
 }
 
-/// Indexes of pending entries whose body already appears in the log (echoes
-/// that arrived via sync while the send-ack was lost).
+/// Indexes of pending entries whose body (or content id) already appears in
+/// the log (echoes that arrived via sync while the send-ack was lost).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
 pub fn stale_pending(log: &[LogMsg], pending: &[LogMsg]) -> Vec<usize> {
     pending
         .iter()
         .enumerate()
-        .filter(|(_, p)| log.iter().any(|l| l.body == p.body))
+        .filter(|(_, p)| {
+            let cid = crate::ids::content_id(&p.body);
+            log.iter()
+                .any(|l| l.body == p.body || crate::ids::content_id(&l.body) == cid)
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -292,6 +302,19 @@ mod tests {
     fn stale_pending_matches_by_body() {
         let log = vec![msg("KT {\"r#type\":\"finish\"}", 100).with_mid("!1")];
         let pending = vec![msg("KT {\"r#type\":\"finish\"}", 99), msg("other", 5)];
+        let stale = stale_pending(&log, &pending);
+        assert_eq!(stale, vec![0]);
+    }
+
+    #[test]
+    fn stale_pending_matches_by_content_id() {
+        // Same observation uid, different serialization -> content-id match.
+        let log =
+            vec![msg("KT {\"r#type\":\"finish\",\"uid\":\"OBS1\",\"ts\":1}", 100).with_mid("!1")];
+        let pending = vec![msg(
+            "KT {\"ts\":1,\"uid\":\"OBS1\",\"r#type\":\"finish\"}",
+            99,
+        )];
         let stale = stale_pending(&log, &pending);
         assert_eq!(stale, vec![0]);
     }

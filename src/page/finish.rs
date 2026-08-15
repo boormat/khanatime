@@ -102,6 +102,7 @@ fn do_finish(model: crate::Model) {
         None => model.app.runs.with(|runs| next_run(runs, test, &car)),
     };
     let finish = RunRecord {
+        uid: String::new(), // stamped at enqueue
         r#type: RUN_FINISH.to_string(),
         test,
         car: car.clone(),
@@ -111,6 +112,7 @@ fn do_finish(model: crate::Model) {
         status: Some(sm.penalty.status.get_clone()),
         flags: Some(sm.penalty.flags.get()),
         official_id: Some(model.app.identity.get_clone()),
+        voided: false,
     };
 
     model.app.scores.update(|s| {

@@ -59,8 +59,10 @@ src/
 ├── view.rs             # small view helpers
 ├── event.rs            # EventInfo, Entry, EntryMsg, RunRecord, KTime, KTimeTime,
 │                       #   car-number/shared-car helpers, Invite, results calc
-├── batch.rs            # staged-edit ops (EditOp, compact_ops, diffs)
-├── input.rs            # keyboard/input helpers
+├── batch.rs             # staged-edit ops (EditOp, compact_ops, diffs)
+├── ids.rs               # generated short ids (Crocker base32) + content_id(body)
+│                       #   dedup key: KT bodies -> embedded observation uid
+├── input.rs             # keyboard/input helpers
 ├── log.rs              # per-event message log + pending outbox (localStorage)
 ├── replay.rs           # pure rebuild of event/scores/runs from the log
 ├── timing_event.rs     # TimingEvent wire format (KT {json}, khanatime_* prefixes)
@@ -128,7 +130,9 @@ src/
   v2 in `docs/plan/multi-transport.md`; Phase 1 (ids + amend/void wire v2)
   implementation in `docs/plan/identity-amendments.md`; scan-to-join bootstrap
   in `docs/plan/qr-join.md`. Touch the wire format (`timing_event.rs`) and
-  sync plumbing with that in mind.
+  sync plumbing with that in mind. **Wire v2 is live** (event/observation
+  uids, `amend`/`void` with `target`); no fallback for old v1 bodies — they
+  fail parse and are dropped, so clear localStorage + room history once.
 - Voice = Push-to-Talk via an embedded Element Call voice widget (MatrixRTC /
   LiveKit), driven host-side through the Rust SDK `widget` module; needs a
   LAN homeserver + LiveKit SFU + `lk-jwt-service`. See "Voice — Push-to-Talk"
@@ -160,3 +164,6 @@ messages with the app.
   `amend`/`void`) is planned — read `docs/plan/multi-transport.md` and its
   Phase 1 detail `docs/plan/identity-amendments.md` before touching the wire
   format (`timing_event.rs`) or sync plumbing.
+- Navigation/layout rework (burger menu, unified stopwatch, COC event status,
+  About page) is planned — see `docs/plan/layout-navigation.md` before
+  restructuring `Screen`/`view_navbar` or the timing pages.

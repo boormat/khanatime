@@ -301,13 +301,14 @@ fn create_draft(model: crate::Model) {
         crate::update(model, crate::Msg::SetEvent(id));
         return;
     }
-    let e = crate::event::EventInfo {
+    let mut e = crate::event::EventInfo {
         name,
         sponsoring_club: club,
         year,
         id: id.clone(),
         ..Default::default()
     };
+    e.ensure_uid();
     model.app.event.set(e);
     crate::app::enqueue_setup(model);
     model.screens.setup.new_name.set(String::new());

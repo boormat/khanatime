@@ -265,7 +265,7 @@ fn stage_progress(
     // Distinct finished runs per (stage, car).
     let mut runs_done: HashMap<(u8, String), HashSet<u8>> = HashMap::new();
     for r in runs {
-        if r.r#type != RUN_FINISH {
+        if r.r#type != RUN_FINISH || r.voided {
             continue;
         }
         runs_done
@@ -550,11 +550,11 @@ mod tests {
 
     fn sample_runs() -> Vec<RunRecord> {
         serde_json::from_str(
-            r#"[{"type":"finish","test":1,"car":"1","run":1,"ts":1},
-                 {"type":"finish","test":1,"car":"1","run":2,"ts":2},
-                 {"type":"finish","test":2,"car":"1","run":1,"ts":3},
-                 {"type":"finish","test":2,"car":"1","run":2,"ts":4},
-                 {"type":"finish","test":1,"car":"2","run":1,"ts":5}]"#,
+            r#"[{"uid":"r1","type":"finish","test":1,"car":"1","run":1,"ts":1},
+                 {"uid":"r2","type":"finish","test":1,"car":"1","run":2,"ts":2},
+                 {"uid":"r3","type":"finish","test":2,"car":"1","run":1,"ts":3},
+                 {"uid":"r4","type":"finish","test":2,"car":"1","run":2,"ts":4},
+                 {"uid":"r5","type":"finish","test":1,"car":"2","run":1,"ts":5}]"#,
         )
         .unwrap()
     }

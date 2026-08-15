@@ -40,6 +40,14 @@ single-room direction); `docs/research/` (original Matrix/BLE/mesh research).
 
 ## Pillar 1 — Identity + amendments
 
+> **Status: implemented (backend).** `src/ids.rs`, `EventInfo.uid`,
+> `TimingEvent` v2 (`amend`/`void` + `target`), uid-keyed dedup in
+> `add_run`/`log::append_log`, and replay adoption/corrections are in.
+> The Correct/Void **UI** (Start/Finish/Stage screens) is not wired yet —
+> `page::enqueue_amend`/`enqueue_void` exist as plumbing. Clear
+> localStorage + room history once, since old wire v1 messages fail the
+> strict v2 parse and are dropped.
+
 Implementation detail (file-by-file, wire spec, task list, gotchas):
 `docs/plan/identity-amendments.md`.
 

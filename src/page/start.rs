@@ -49,6 +49,7 @@ fn start_car(model: crate::Model) {
     let test = model.screens.start.test.get();
     let run = model.app.runs.with(|runs| next_run(runs, test, &car));
     let record_run = RunRecord {
+        uid: String::new(), // stamped at enqueue
         r#type: RUN_START.to_string(),
         test,
         car: car.clone(),
@@ -58,6 +59,7 @@ fn start_car(model: crate::Model) {
         status: Some("clean".to_string()),
         flags: None,
         official_id: Some(model.app.identity.get_clone()),
+        voided: false,
     };
     crate::page::enqueue_run(model, &record_run);
     model.screens.start.feedback.set(None);
@@ -78,6 +80,7 @@ fn mark_dns(model: crate::Model) {
     let test = model.screens.start.test.get();
     let run = model.app.runs.with(|runs| next_run(runs, test, &car));
     let record_run = RunRecord {
+        uid: String::new(), // stamped at enqueue
         r#type: RUN_START.to_string(),
         test,
         car: car.clone(),
@@ -87,6 +90,7 @@ fn mark_dns(model: crate::Model) {
         status: Some("dns".to_string()),
         flags: None,
         official_id: Some(model.app.identity.get_clone()),
+        voided: false,
     };
     crate::page::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".

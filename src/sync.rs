@@ -316,17 +316,17 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
     }
 
     // Per-entry state message: upsert (or tombstone) in the local event, the
-    // same way replay would.  Guarded by event id like setup.
+    // same way replay would.  Guarded by event uid like setup.
     if msg
         .body
         .starts_with(crate::timing_event::TimingEvent::ENTRY_PREFIX)
     {
         if let Some(entry_msg) = crate::event::from_entry_body(&msg.body) {
             model.app.event.update(|e| {
-                if e.id.is_empty() {
-                    e.id = entry_msg.event_id.clone();
+                if e.uid.is_empty() {
+                    e.uid = entry_msg.event_id.clone();
                 }
-                if entry_msg.event_id == e.id {
+                if entry_msg.event_id == e.uid {
                     if entry_msg.delete {
                         e.remove_entry(entry_msg.entry.entry_no);
                     } else {

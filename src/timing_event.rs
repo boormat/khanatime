@@ -4,10 +4,20 @@ use serde::{Deserialize, Serialize};
 ///
 /// Payload carried as the `khanatime` content key of an `m.room.message`
 /// event in the `#timing` room (see `docs/research/MessagingSpike.md`).
+///
+/// Every observation carries a generated `uid` — the indelible record.  A
+/// correction is a *new* message (`amend`/`void`) that targets an existing
+/// observation's `uid`; the original is never rewritten or removed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimingEvent {
-    pub r#type: String, // start | finish | penalty | result
+    pub r#type: String, // start | finish | amend | void
+    /// Event uid (the wire identity, not the human slug).
     pub event_id: String,
+    /// This observation's id — the indelible thing.
+    pub uid: String,
+    /// amend/void: the corrected observation's uid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     pub test: u8,
     pub car: String,
     pub run: u8,
@@ -43,6 +53,8 @@ impl TimingEvent {
         Self {
             r#type: r#type.to_string(),
             event_id: event_id.to_string(),
+            uid: crate::ids::gen_short_id(),
+            target: None,
             test,
             car: car.to_string(),
             run,
@@ -86,6 +98,30 @@ impl TimingEvent {
         te
     }
 
+    /// Amend an existing observation: a fresh message targeting `target` with
+    /// corrected fields.  The original stays in the log; replay patches it.
+    pub fn amend(
+        event_id: &str,
+        target: &str,
+        test: u8,
+        car: &str,
+        run: u8,
+        time: &crate::event::KTime,
+    ) -> Self {
+        let mut te = Self::new("amend", event_id, test, car, run);
+        te.target = Some(target.to_string());
+        te.apply_time(time);
+        te
+    }
+
+    /// Void an existing observation by `target` uid.  Final — if wrong, enter
+    /// a fresh observation.
+    pub fn void(event_id: &str, target: &str, test: u8, car: &str, run: u8) -> Self {
+        let mut te = Self::new("void", event_id, test, car, run);
+        te.target = Some(target.to_string());
+        te
+    }
+
     /// The `m.text` body this event is carried in (also stored in pending).
     pub fn body(&self) -> String {
         format!(
@@ -124,6 +160,8 @@ mod tests {
         TimingEvent {
             r#type: "finish".into(),
             event_id: "ev".into(),
+            uid: "ABCDEFGHJK".into(),
+            target: None,
             test: 1,
             car: "7".into(),
             run: 2,

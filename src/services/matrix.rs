@@ -409,6 +409,10 @@ pub async fn publish_event(
             event.id
         ));
     }
+    // The wire identity must be present before the space meta / setup manifest
+    // carry it (fresh joins adopt the uid from the space meta).
+    let mut event = event.clone();
+    event.ensure_uid();
     let space_alias = alias(client, &event.id)?;
     let timing_alias = alias(client, &format!("{}-timing", event.id))?;
 
@@ -464,6 +468,7 @@ pub async fn publish_event(
     // Meta + topic on the space: searchable directory entry + room identity
     // (so a later publish can detect "this is ours").
     let meta = serde_json::json!({
+        "uid": event.uid,
         "id": event.id,
         "name": event.name,
         "club": event.sponsoring_club,
@@ -482,7 +487,7 @@ pub async fn publish_event(
         .map_err(|e| e.to_string())?;
 
     // Give the timing room its setup manifest so fresh devices can adopt it.
-    let _ = send_setup(&timing, event).await;
+    let _ = send_setup(&timing, &event).await;
 
     Ok(EventRooms {
         space,
@@ -573,6 +578,11 @@ pub async fn open_published_event(
         .and_then(|v| v.as_str())
         .ok_or_else(|| "That room isn't a khanatime event".to_string())?;
     let mut ev = crate::event::EventInfo {
+        uid: meta
+            .get("uid")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
         id: id.to_string(),
         name: meta
             .get("name")

@@ -1,6 +1,7 @@
 mod app;
 mod batch;
 mod event;
+mod ids;
 mod input;
 mod log;
 mod page;

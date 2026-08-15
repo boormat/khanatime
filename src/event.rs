@@ -24,6 +24,9 @@ pub const RUN_FINISH: &str = "finish";
 /// under `runs:<id>` and exchanged over Matrix as a [TimingEvent].
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct RunRecord {
+    /// Observation id — the indelible thing.  Generated at enqueue time;
+    /// carried on the wire so mirrors across transports collapse to one.
+    pub uid: String,
     pub r#type: String, // RUN_START | RUN_FINISH
     pub test: u8,
     pub car: String,
@@ -37,6 +40,9 @@ pub struct RunRecord {
     pub flags: Option<u8>,
     #[serde(default)]
     pub official_id: Option<String>,
+    /// Derived (replay) state: the observation was `void`ed.  Never on the wire.
+    #[serde(skip)]
+    pub voided: bool,
 }
 
 /// Timing method for a test.  Stopwatch = lowest elapsed time wins.
@@ -118,7 +124,11 @@ pub struct EventInfo {
     pub entries: Vec<Entry>,  // list of know entrants/drivers. Ordered by something
 
     // ---- draft / publish fields (set up front, editable later) ----
-    // Stable primary key. Generated once at draft creation; renames never change it.
+    /// Stable wire identity. Generated once at draft creation; never renames.
+    /// The human slug (`id`) is the storage/alias key; `uid` is what timing
+    /// and entry messages carry.
+    pub uid: String,
+    /// Stable primary key. Generated once at draft creation; renames never change it.
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -439,6 +449,7 @@ impl Default for EventInfo {
             stages,
             classes,
             entries,
+            uid: String::new(),
             id: String::new(),
             sponsoring_club: String::new(),
             year: String::new(),
@@ -464,6 +475,13 @@ impl EventInfo {
     /// True when no event is currently selected (the null event).
     pub fn is_null(&self) -> bool {
         self.id.is_empty()
+    }
+
+    /// Fill the wire identity with a fresh generated id when it's empty.
+    pub fn ensure_uid(&mut self) {
+        if self.uid.is_empty() {
+            self.uid = crate::ids::gen_short_id();
+        }
     }
 
     /// True for the local training event.  Demo events are never published and
@@ -889,7 +907,7 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
             let mut slowest: u32 = 0;
             for run in runs
                 .iter()
-                .filter(|r| r.r#type == RUN_FINISH && r.test == test)
+                .filter(|r| r.r#type == RUN_FINISH && !r.voided && r.test == test)
             {
                 if let KTime::Time(t) = finish_to_ktime(run) {
                     let score = t.time_ds as u32 + 50 * (t.flags as u32 + t.garage as u32);
@@ -926,7 +944,7 @@ fn stage_result(
 ) -> Option<StageScore> {
     let relevant: Vec<&RunRecord> = runs
         .iter()
-        .filter(|r| r.test == test && r.car == car)
+        .filter(|r| !r.voided && r.test == test && r.car == car)
         .collect();
 
     // A 0-of-0 stage (Y = 0): zero required runs, so every entrant has
@@ -1476,6 +1494,7 @@ pub fn demo_event() -> EventInfo {
             entry.shared_car = Some("Erin's MX-5".to_string());
         }
     }
+    ev.ensure_uid();
     ev
 }
 
@@ -1559,18 +1578,20 @@ pub fn list_events() -> HashSet<String> {
 // Run records (start/finish pairing, run numbering, pending starts).
 // ---------------------------------------------------------------------------
 
-/// Two records are the same observation (used to dedupe Matrix mirrors).
-fn same_run(a: &RunRecord, b: &RunRecord) -> bool {
-    a.r#type == b.r#type && a.test == b.test && a.car == b.car && a.run == b.run && a.ts == b.ts
-}
-
-/// Append a run, skipping exact duplicates.  Returns true when added.
+/// Append a run, skipping one whose observation `uid` is already present
+/// (the same observation mirrored by room, relay or QR collapses to one).
+/// Returns true when added.
 pub fn add_run(runs: &mut Vec<RunRecord>, run: RunRecord) -> bool {
-    if runs.iter().any(|r| same_run(r, &run)) {
+    if runs.iter().any(|r| r.uid == run.uid) {
         return false;
     }
     runs.push(run);
     true
+}
+
+/// The run record with observation id `uid`, if present.
+pub fn find_run<'a>(runs: &'a [RunRecord], uid: &str) -> Option<&'a RunRecord> {
+    runs.iter().find(|r| r.uid == uid)
 }
 
 /// The run number the next start for `(test, car)` should use.
@@ -1589,9 +1610,14 @@ pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
         .iter()
         .filter(|r| r.r#type == RUN_START && r.test == test)
         .filter(|r| r.status.as_deref() != Some("dns"))
+        .filter(|r| !r.voided)
         .filter(|r| {
             !runs.iter().any(|f| {
-                f.r#type == RUN_FINISH && f.test == r.test && f.car == r.car && f.run == r.run
+                f.r#type == RUN_FINISH
+                    && !f.voided
+                    && f.test == r.test
+                    && f.car == r.car
+                    && f.run == r.run
             })
         })
         .collect();
@@ -1629,6 +1655,7 @@ pub fn finish_to_ktime(r: &RunRecord) -> KTime {
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
 pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
     RunRecord {
+        uid: te.uid.clone(),
         r#type: te.r#type.clone(),
         test: te.test,
         car: te.car.clone(),
@@ -1638,6 +1665,7 @@ pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
         status: te.status.clone(),
         flags: te.flags,
         official_id: te.official_id.clone(),
+        voided: false,
     }
 }
 
@@ -1797,8 +1825,10 @@ mod tests {
     }
 
     fn run(r#type: &str, test: u8, car: &str, run: u8, ts: i64) -> RunRecord {
+        let t = r#type;
         RunRecord {
-            r#type: r#type.into(),
+            uid: format!("uid-{t}-{ts}-{run}"),
+            r#type: t.into(),
             test,
             car: car.into(),
             run,
@@ -1882,6 +1912,8 @@ mod tests {
         let te = TimingEvent {
             r#type: "finish".into(),
             event_id: "ev".into(),
+            uid: "ABCDEFGHJK".into(),
+            target: None,
             test: 2,
             car: "17".into(),
             run: 3,
@@ -1892,6 +1924,8 @@ mod tests {
             official_id: Some("u".into()),
         };
         let r = record_from_timing(&te);
+        assert_eq!(r.uid, "ABCDEFGHJK");
+        assert!(!r.voided);
         assert_eq!(r.r#type, "finish");
         assert_eq!(r.test, 2);
         assert_eq!(r.car, "17");
