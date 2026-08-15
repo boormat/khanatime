@@ -43,13 +43,13 @@ fn main() {
     });
 }
 
-/// Screen to land on after a reload: the one the user had open (trunk's
-/// livereload forces a full reload when the dev server restarts, and a plain
-/// refresh should keep your place too).  Falls back to the warm-start default
-/// when nothing sensible is stored.
+/// Screen to land on after a reload: the one named by the URL hash (trunk's
+/// livereload force-reloads when the dev server restarts, and a plain refresh
+/// should keep your place too).  Falls back to the warm-start default when the
+/// URL has nothing usable.
 fn initial_screen() -> Screen {
-    let stored = crate::event::session_screen();
-    if let Some(screen) = Screen::from_name(&stored) {
+    #[cfg(target_arch = "wasm32")]
+    if let Some(screen) = app::screen_from_url() {
         let has_event = !crate::event::session_event_name().is_empty();
         if !screen.needs_event() || has_event {
             return screen;

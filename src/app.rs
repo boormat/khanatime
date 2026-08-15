@@ -9,7 +9,7 @@ use crate::page;
 use sycamore::prelude::*;
 
 /// The top-level screens of the app.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Screen {
     #[default]
     Home,
@@ -26,7 +26,7 @@ pub enum Screen {
 }
 
 impl Screen {
-    /// Stable name persisted in sessionStorage so a reload restores the screen.
+    /// Stable name for the URL hash (`#results`) and back/forward mapping.
     pub fn name(self) -> &'static str {
         match self {
             Screen::Home => "home",
@@ -192,7 +192,7 @@ impl Model {
 /// Navigate to a screen, running per-screen setup effects on entry.
 pub fn show(model: Model, screen: Screen) {
     #[cfg(target_arch = "wasm32")]
-    crate::event::session_set_screen(screen.name());
+    push_screen_hash(screen);
     model.screen.set(screen);
     match screen {
         Screen::Event => page::event::update(model, page::event::Msg::LoadDetails),
@@ -250,6 +250,55 @@ pub fn setup_effects(model: Model) {
     });
     #[cfg(target_arch = "wasm32")]
     listen_for_tab_sync(model);
+    #[cfg(target_arch = "wasm32")]
+    listen_for_history(model);
+}
+
+/// Screen named by the current URL hash, if it's one of ours (`#results` …).
+#[cfg(target_arch = "wasm32")]
+pub fn screen_from_url() -> Option<Screen> {
+    let hash = web_sys::window()?.location().hash().ok()?;
+    Screen::from_name(hash.strip_prefix('#')?)
+}
+
+/// Write the screen into the URL as a hash (`#stage`).  Uses pushState so a
+/// history entry is created for back/forward, and no hashchange/popstate fires
+/// (no echo loop with [listen_for_history]).
+#[cfg(target_arch = "wasm32")]
+fn push_screen_hash(screen: Screen) {
+    let hash = format!("#{}", screen.name());
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    if window.location().hash().ok().as_deref() == Some(hash.as_str()) {
+        return;
+    }
+    if let Ok(history) = window.history() {
+        let _ = history.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&hash));
+    }
+}
+
+/// Back/forward and manual hash edits: turn the URL back into a screen change
+/// without pushing another history entry.
+#[cfg(target_arch = "wasm32")]
+fn listen_for_history(model: Model) {
+    use wasm_bindgen::JsCast;
+    let on_nav = move |_: web_sys::Event| {
+        let Some(screen) = screen_from_url() else {
+            return;
+        };
+        // A bare `#results` with no open event is meaningless; fall back.
+        if screen.needs_event() && crate::event::session_event_name().is_empty() {
+            return;
+        }
+        show(model, screen);
+    };
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::Event)>::wrap(Box::new(on_nav));
+    let window = web_sys::window().expect("window exists");
+    for event in ["popstate", "hashchange"] {
+        let _ = window.add_event_listener_with_callback(event, cb.as_ref().unchecked_ref());
+    }
+    cb.forget();
 }
 
 /// Cross-tab sync.  Every write to this event's log/pending outbox lands in
@@ -432,5 +481,31 @@ fn view_navbar(model: Model) -> View {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") { (brand) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_name_round_trips() {
+        let all = [
+            Screen::Home,
+            Screen::Events,
+            Screen::Help,
+            Screen::KhanaRules,
+            Screen::Results,
+            Screen::Stage,
+            Screen::Start,
+            Screen::Finish,
+            Screen::Event,
+            Screen::Entries,
+            Screen::Chat,
+        ];
+        for screen in all {
+            assert_eq!(Screen::from_name(screen.name()), Some(screen));
+        }
+        assert_eq!(Screen::from_name("bogus"), None);
     }
 }

@@ -1389,7 +1389,6 @@ pub fn merge_setup(local: &mut EventInfo, incoming: &EventInfo) -> bool {
 }
 
 const EVENT_SESSION: &str = "event";
-const SCREEN_SESSION: &str = "screen";
 
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
@@ -1637,21 +1636,6 @@ pub fn session_event_name() -> String {
 pub fn session_set_event(key: &str) {
     if let Some(st) = session_storage() {
         let _ = st.set_item(EVENT_SESSION, key);
-    }
-}
-
-/// Last-open screen name, so a page reload (dev-server restart, manual
-/// refresh) can land back where the user was.
-pub fn session_screen() -> String {
-    session_storage()
-        .and_then(|st| st.get_item(SCREEN_SESSION).ok().flatten())
-        .unwrap_or_default()
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm: app::show persists the screen
-pub fn session_set_screen(screen: &str) {
-    if let Some(st) = session_storage() {
-        let _ = st.set_item(SCREEN_SESSION, screen);
     }
 }
 
