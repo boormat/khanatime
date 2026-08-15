@@ -25,6 +25,56 @@ pub enum Screen {
     Chat,
 }
 
+impl Screen {
+    /// Stable name persisted in sessionStorage so a reload restores the screen.
+    pub fn name(self) -> &'static str {
+        match self {
+            Screen::Home => "home",
+            Screen::Events => "events",
+            Screen::Help => "help",
+            Screen::KhanaRules => "rules",
+            Screen::Results => "results",
+            Screen::Stage => "stage",
+            Screen::Start => "start",
+            Screen::Finish => "finish",
+            Screen::Event => "event",
+            Screen::Entries => "entries",
+            Screen::Chat => "chat",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Screen> {
+        Some(match name {
+            "home" => Screen::Home,
+            "events" => Screen::Events,
+            "help" => Screen::Help,
+            "rules" => Screen::KhanaRules,
+            "results" => Screen::Results,
+            "stage" => Screen::Stage,
+            "start" => Screen::Start,
+            "finish" => Screen::Finish,
+            "event" => Screen::Event,
+            "entries" => Screen::Entries,
+            "chat" => Screen::Chat,
+            _ => return None,
+        })
+    }
+
+    /// Screens that show a loaded event; restoring them needs a session event.
+    pub fn needs_event(self) -> bool {
+        matches!(
+            self,
+            Screen::Results
+                | Screen::Stage
+                | Screen::Start
+                | Screen::Finish
+                | Screen::Event
+                | Screen::Entries
+                | Screen::Chat
+        )
+    }
+}
+
 /// Connection state shared across screens (set by the Home page / resume).
 #[derive(Clone, PartialEq)]
 pub enum ConnState {
@@ -141,6 +191,8 @@ impl Model {
 
 /// Navigate to a screen, running per-screen setup effects on entry.
 pub fn show(model: Model, screen: Screen) {
+    #[cfg(target_arch = "wasm32")]
+    crate::event::session_set_screen(screen.name());
     model.screen.set(screen);
     match screen {
         Screen::Event => page::event::update(model, page::event::Msg::LoadDetails),

@@ -36,16 +36,30 @@ fn main() {
     render(move || {
         let model = Model::init();
         app::setup_effects(model);
-        let start = if warm_start() {
-            Screen::Results
-        } else {
-            Screen::Home
-        };
-        app::show(model, start);
+        app::show(model, initial_screen());
         #[cfg(target_arch = "wasm32")]
         sync::resume_on_load(model);
         app::view(model)
     });
+}
+
+/// Screen to land on after a reload: the one the user had open (trunk's
+/// livereload forces a full reload when the dev server restarts, and a plain
+/// refresh should keep your place too).  Falls back to the warm-start default
+/// when nothing sensible is stored.
+fn initial_screen() -> Screen {
+    let stored = crate::event::session_screen();
+    if let Some(screen) = Screen::from_name(&stored) {
+        let has_event = !crate::event::session_event_name().is_empty();
+        if !screen.needs_event() || has_event {
+            return screen;
+        }
+    }
+    if warm_start() {
+        Screen::Results
+    } else {
+        Screen::Home
+    }
 }
 
 /// True when we already have a persisted Matrix session and a session event:
