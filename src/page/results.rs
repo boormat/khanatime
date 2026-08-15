@@ -245,9 +245,8 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
 }
 
 /// The car's runs in this test: all times comma-separated in run order, with
-/// the runs that didn't count (dropped by best-X) struck out and the fastest
-/// counting run highlighted in green.  An incomplete test has no counting
-/// runs yet, so everything renders plainly.
+/// the non-counting runs struck out (dropped by best-X, or on a cancelled
+/// stage) and the fastest counting run highlighted in green.
 fn show_runs(rs: &ResultScore) -> View {
     let any_counted = rs.runs.iter().any(|r| r.counted);
     let fastest = if any_counted {
@@ -261,7 +260,7 @@ fn show_runs(rs: &ResultScore) -> View {
             cells.push(view! { span { ", " } });
         }
         let content = run_time_text(&r.time);
-        let cell = if any_counted && !r.counted {
+        let cell = if !r.counted {
             view! { span(class="kt-struck has-text-grey-light") { (content) } }
         } else if Some(r.score) == fastest {
             view! { span(class="has-text-success has-text-weight-bold") { (content) } }

@@ -861,7 +861,12 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
                     value=repeats,
                     on:input=move |ev: web_sys::Event| {
                         let v = input_value(&ev).trim().parse::<u8>().unwrap_or(1);
-                        em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) { s.repeats = v; });
+                        em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) {
+                            s.repeats = v;
+                            if s.best_x > v {
+                                s.best_x = v;
+                            }
+                        });
                     },
                 )
             }
@@ -869,11 +874,13 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
                 input(
                     class="input",
                     r#type="number",
-                    min="1",
+                    min="0",
                     value=best_x,
                     on:input=move |ev: web_sys::Event| {
-                        let v = input_value(&ev).trim().parse::<u8>().unwrap_or(1).max(1);
-                        em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) { s.best_x = v; });
+                        let v = input_value(&ev).trim().parse::<u8>().unwrap_or(1);
+                        em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) {
+                            s.best_x = v.min(s.repeats);
+                        });
                     },
                 )
             }

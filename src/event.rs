@@ -419,7 +419,8 @@ pub struct RunScore {
 /// Result of the best-X-of-Y aggregation for one car in one test.
 #[derive(Default, Debug)]
 pub struct StageScore {
-    /// Aggregate score, or None until the entrant has completed enough runs.
+    /// Aggregate score, or None until the entrant has completed enough runs
+    /// (a cancelled stage, Y = 0, never has counting runs).
     pub sum: Option<u32>,
     pub runs: Vec<RunScore>,
 }
@@ -909,12 +910,13 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 /// `best_x` counting runs of the (up to) `repeats` it attempted, where only
 /// the first `repeats` runs (by run order) may count — extra runs beyond Y
 /// are excluded no matter their time.  A car that hasn't completed X runs yet
-/// (or is on a cancelled stage with no runs) scores nothing: the real runs are
-/// returned for display but `sum` stays None.  DNF/FTS/WD finishes and a
-/// declared DNS (a `start` marked `dns`, no finish) are completed attempts; a
-/// DNS scores the no-time `base + 100`.  Returns the aggregate score together
-/// with every real run (in run order, counted runs flagged).  None when the
-/// car has no attempts in the test.
+/// scores nothing: the real runs are returned for display but `sum` stays
+/// None.  A cancelled stage (Y = 0) has no counting-eligible runs, so nothing
+/// ever scores.  DNF/FTS/WD finishes and a declared DNS (a `start` marked
+/// `dns`, no finish) are completed attempts; a DNS scores the no-time
+/// `base + 100`.  Returns the aggregate score together with every real run
+/// (in run order, counted runs flagged).  None when the car has no attempts
+/// in the test.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
@@ -930,14 +932,6 @@ fn stage_result(
         return None; // car hasn't appeared in this test at all
     }
 
-    // Cancelled stage (repeats = 0): no runs count, nobody scores, ever.
-    if stage.repeats == 0 {
-        return None;
-    }
-
-    let y = stage.repeats.max(1);
-
-    // Real attempts only: finishes (clean/DNF/FTS/WD) and declared-DNS starts.
     let mut all: Vec<RunScore> = relevant
         .iter()
         .filter(|r| {
@@ -963,6 +957,7 @@ fn stage_result(
     }
 
     // Completeness gate: no score until the entrant has done enough runs.
+    let y = stage.repeats;
     let fill_target = if stage.best_x == 0 {
         y
     } else {
@@ -977,7 +972,8 @@ fn stage_result(
     }
 
     // Counting-eligible slots: the first Y runs (by run order).  Beyond-Y runs
-    // are excluded no matter how fast.
+    // are excluded no matter how fast.  A cancelled stage (Y = 0) has no
+    // eligible slots at all, so nothing is ever counted.
     let eligible: Vec<usize> = (0..all.len()).filter(|&i| all[i].run <= y).collect();
     let keep = if stage.best_x == 0 {
         eligible.len()
@@ -989,12 +985,13 @@ fn stage_result(
     for &i in best.iter().take(keep) {
         all[i].counted = true;
     }
-    let sum: u32 = best.iter().take(keep).map(|&i| all[i].score).sum();
+    let total: u32 = best.iter().take(keep).map(|&i| all[i].score).sum();
 
-    Some(StageScore {
-        sum: Some(sum),
-        runs: all,
-    })
+    // No counting-eligible runs (cancelled stage): nothing scores, the real
+    // runs are still returned for display (struck out).
+    let sum = if best.is_empty() { None } else { Some(total) };
+
+    Some(StageScore { sum, runs: all })
 }
 
 pub fn calc(rv: &mut ResultView) {
@@ -1421,10 +1418,10 @@ pub fn demo_event() -> EventInfo {
     // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
     ev.stages[1].repeats = 3;
     ev.stages[1].best_x = 2;
-    // Stage 3 is a cancelled stage: best 1 of 0 — nobody runs it, so every
+    // Stage 3 is a cancelled stage: best 0 of 0 — nobody runs it, so every
     // entrant's cumulative chain breaks there.
     ev.stages[2].repeats = 0;
-    ev.stages[2].best_x = 1;
+    ev.stages[2].best_x = 0;
     // Stage 4 is a normal single run after the gap: it shows per-test
     // Score/Pos but blank Cum/O-R, demonstrating the cancelled stage.
     ev.stages[3].repeats = 1;
@@ -2366,21 +2363,21 @@ mod tests {
         // Stage 2 stays the multi-run test.
         assert_eq!(ev.stages[1].repeats, 3);
         assert_eq!(ev.stages[1].best_x, 2);
-        // Stage 3 is cancelled: best 1 of 0, so nobody can complete it.
+        // Stage 3 is cancelled: best 0 of 0, so nobody can complete it.
         assert_eq!(ev.stages[2].repeats, 0);
-        assert_eq!(ev.stages[2].best_x, 1);
+        assert_eq!(ev.stages[2].best_x, 0);
         // Stage 4 is a normal single run after the gap.
         assert_eq!(ev.stages[3].repeats, 1);
         assert_eq!(ev.stages[3].best_x, 1);
     }
 
     #[test]
-    fn cancelled_stage_scores_nothing() {
+    fn cancelled_stage_shows_runs_but_scores_nothing() {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 3,
-            repeats: 0, // cancelled: no runs count
-            best_x: 1,
+            repeats: 0, // cancelled: best 0 of 0
+            best_x: 0,
             ..ev.stage(0).clone()
         };
         let finish = RunRecord {
@@ -2392,8 +2389,12 @@ mod tests {
             time_ds: Some(450),
             ..Default::default()
         };
-        // A run recorded on a cancelled stage still scores nothing.
-        assert!(stage_result(&stage, &[finish], 3, "7", 0).is_none());
+        // A run recorded on a cancelled stage is shown for display (struck
+        // out) but never counts toward a score.
+        let ss = stage_result(&stage, &[finish], 3, "7", 0).unwrap();
+        assert!(ss.sum.is_none());
+        assert_eq!(ss.runs.len(), 1);
+        assert!(!ss.runs[0].counted);
     }
 
     #[test]
