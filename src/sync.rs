@@ -10,6 +10,13 @@
 //! The room is the durable store; local state is rebuilt from the message log
 //! (`log.rs`).  Outgoing messages land in the pending outbox first and are
 //! flushed here; once the room acks them they're promoted into the log.
+//!
+//! Offline handoff: a device can export the event's log as a QR parcel
+//! (`services::qr` — see [export_parcel]) and another can [import_parcel] it
+//! without any network.  Exported messages become QR-origin log entries; on
+//! reconnect [relay_to_room] re-broadcasts anything not yet confirmed in the
+//! connected room, so a parcel and a room converge on the same log.  Content-id
+//! dedup keeps every path idempotent.
 
 use crate::Model;
 
@@ -129,8 +136,13 @@ fn flush_pending_wasm(model: Model) {
         return;
     };
     let id = model.app.event.with(|e| e.id.clone());
+    if id.is_empty() {
+        return;
+    }
     let pending = crate::log::load_pending(&id);
-    if id.is_empty() || pending.is_empty() {
+    if pending.is_empty() {
+        // Nothing to flush, but QR-parcel entries may still need relaying.
+        relay_to_room(model);
         return;
     }
     wasm_bindgen_futures::spawn_local(async move {
@@ -146,10 +158,152 @@ fn flush_pending_wasm(model: Model) {
             }
         }
         crate::log::reconcile(&id);
+        relay_to_room(model);
         crate::app::refresh_feed(model);
     });
 }
 
+/// Re-broadcast log entries that aren't confirmed in the connected room yet:
+/// QR-parcel imports (and, later, a second room's messages) get relayed to the
+/// current timing room, oldest first.  Each successful send confirms the entry
+/// in the room (real mid), so a reconnect won't re-send it.  Runs after the
+/// outbox flush — those messages are still pending with `origin == ""` and are
+/// skipped here to avoid double-sending.
+#[cfg(target_arch = "wasm32")]
+pub fn relay_to_room(model: Model) {
+    let Some(room) = crate::services::matrix::room() else {
+        return;
+    };
+    let id = model.app.event.with(|e| e.id.clone());
+    if id.is_empty() {
+        return;
+    }
+    let room_id = room.room_id().to_string();
+    let log = crate::log::load_log(&id);
+    let pending: Vec<usize> = log
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| !m.origin.is_empty() && m.origin != room_id)
+        .map(|(i, _)| i)
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        for idx in pending {
+            let Some(msg) = log.get(idx) else {
+                continue;
+            };
+            match crate::services::matrix::send_log_message(&room, msg).await {
+                Ok(mid) => {
+                    crate::log::confirm_in_room(
+                        &id,
+                        &crate::ids::content_id(&msg.body),
+                        &mid,
+                        &room_id,
+                    );
+                }
+                Err(e) => {
+                    khanatime::log!("relay stopped: {e}");
+                    break;
+                }
+            }
+        }
+        crate::app::refresh_feed(model);
+    });
+}
+
+// ----- QR parcel handoff (works offline) -----
+
+/// Pack the current event's whole durable log into a QR parcel and stage it on
+/// `model.app.parcel_export`.  Exporting first promotes the local outbox
+/// (`publish_outbox`) — handing a message off is publishing it, so unsent
+/// entries leave the outbox and are relayed to the room later instead of being
+/// stuck locally.
+pub fn export_parcel(model: Model) {
+    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    if id.is_empty() {
+        model
+            .app
+            .parcel_status
+            .set("No event loaded to export.".to_string());
+        return;
+    }
+    let moved = crate::log::publish_outbox(&id);
+    let log = crate::log::load_log(&id);
+    let text = crate::services::qr::pack_parcel(&uid, &log);
+    model.app.parcel_export.set(text);
+    let n = log.len();
+    let extra = if moved > 0 {
+        format!(" ({moved} unsent moved into the handoff)")
+    } else {
+        String::new()
+    };
+    model.app.parcel_status.set(format!(
+        "{n} messages ready{extra}. Scan or copy on the other device."
+    ));
+}
+
+/// Import a QR parcel: parse it, gate on the current event's uid, then append
+/// each message to the durable log exactly like a room message (content-id
+/// dedup makes re-import idempotent).  Reload rebuilds event/scores/runs.
+pub fn import_parcel(model: Model) {
+    let id = model.app.event.with(|e| e.id.clone());
+    let uid = model.app.event.with(|e| e.uid.clone());
+    let text = model.app.parcel_import.get_clone();
+    if text.trim().is_empty() {
+        model
+            .app
+            .parcel_status
+            .set("Paste or scan a parcel first.".to_string());
+        return;
+    }
+    let parcel = match crate::services::qr::unpack_parcel(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            model.app.parcel_status.set(format!("Import failed: {e}"));
+            return;
+        }
+    };
+    if !uid.is_empty() && parcel.event_uid != uid {
+        model.app.parcel_status.set(format!(
+            "This parcel is for a different event — open {} first.",
+            parcel.event_uid
+        ));
+        return;
+    }
+    if id.is_empty() {
+        model
+            .app
+            .parcel_status
+            .set("Open the event to import into first.".to_string());
+        return;
+    }
+    let mut added = 0;
+    for pm in &parcel.msgs {
+        let msg = crate::log::LogMsg::from_parcel(pm.body.clone(), pm.ts, pm.sender.clone());
+        if crate::log::append_log(&id, msg) {
+            added += 1;
+        }
+    }
+    crate::log::reconcile(&id);
+    if added > 0 {
+        // Rebuild event/scores/runs from the now-merged log, like SetEvent.
+        let (event, scores, runs) =
+            crate::replay::replay(&crate::log::load_log(&id), &crate::log::load_pending(&id));
+        model.app.event.set(event);
+        model.app.scores.set(scores);
+        model.app.runs.set(runs);
+        crate::app::refresh_feed(model);
+    }
+    model.app.parcel_import.set(String::new());
+    model.app.parcel_status.set(if added == 0 {
+        "Nothing new — this parcel was already imported.".to_string()
+    } else {
+        format!("Imported {added} messages.")
+    });
+    crate::update(model, crate::Msg::Reload);
+}
 #[cfg(target_arch = "wasm32")]
 fn update_wasm(model: Model, msg: Msg) {
     match msg {
@@ -458,15 +612,22 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         return;
     }
 
-    // Durable record: append to the log, then drop any outbox echo.
+    // Durable record: append to the log, then drop any outbox echo.  A message
+    // that matches a QR-parcel entry by content id is the relay echo (or a
+    // copy handed in from another parcel) — confirm the existing entry in the
+    // room instead of duplicating it.
+    let room_id = room.room_id().as_str();
     let log_msg = crate::log::LogMsg::from_room(
         msg.mid.clone(),
         msg.ts,
         msg.sender.clone(),
         msg.body.clone(),
         msg.raw.clone(),
+        room_id,
     );
-    if crate::log::append_log(&id, log_msg) {
+    if crate::log::confirm_in_room(&id, &crate::ids::content_id(&msg.body), &msg.mid, room_id) {
+        // Relay ack was lost; this echo confirms the parcel entry in the room.
+    } else if crate::log::append_log(&id, log_msg) {
         crate::log::reconcile(&id);
     }
     crate::app::refresh_feed(model);

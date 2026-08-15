@@ -167,6 +167,14 @@ into ~1.2KB frames → sequenced animated QR: each frame carries
 plain camera app. A full day's log (~10–50KB raw → ~5–15KB compressed) is a
 handful of frames.
 
+*Implemented (text mode):* `services/qr.rs` packs the full log (export-all, no
+cursor yet) as plain JSON with no compression; the Handoff UI on Results/Events
+shows the `khanatime_parcel:` string to copy/scan. Export promotes the outbox
+(`log::publish_outbox`); imports land via `append_log` (content-id idempotent);
+`sync::relay_to_room` re-broadcasts parcel-origin entries to the connected room
+and `log::confirm_in_room` ack-promotes them (echo-safe). Animated QR + `flate2`
++ camera scanning are the remaining Pillar-2 work.
+
 **Directions:**
 - official → head timekeeper (results at stage end);
 - head TK → officials (amendments/corrections);
@@ -226,16 +234,19 @@ joins the room set matching the server it can reach.
 
 ## Task list
 
-- [ ] `src/ids.rs`: `gen_short_id` + `content_id` + unit tests.
-- [ ] Wire v2: `TimingEvent.uid`/`target` + `amend`/`void`; `EventInfo.uid`;
+- [x] `src/ids.rs`: `gen_short_id` + `content_id` + unit tests.
+- [x] Wire v2: `TimingEvent.uid`/`target` + `amend`/`void`; `EventInfo.uid`;
       `EntryMsg.event_id` on uid; `RunRecord.uid`.
-- [ ] `replay.rs`: dedup by uid; apply amend/void; `corrections` map for
+- [x] `replay.rs`: dedup by uid; apply amend/void; `corrections` map for
       amend-before-target; adoption by uid.
-- [ ] `log.rs`: `content_id` dedup across transports.
-- [ ] `page.rs` + Start/Finish/Stage: uid at enqueue; `enqueue_amend` /
+- [x] `log.rs`: `content_id` dedup across transports.
+- [x] `page.rs` + Start/Finish/Stage: uid at enqueue; `enqueue_amend` /
       `enqueue_void`; correct-vs-new-run UI; void affordances.
-- [ ] QR: parcel export/import; `flate2` compression; chunked animated
-      sequence; Handoff UI on Results/Events.
+- [x] QR: parcel export/import (`services/qr.rs`, `sync::export_parcel` /
+      `import_parcel`, Handoff UI on Results/Events, promote-on-export +
+      `sync::relay_to_room`, `log::publish_outbox`/`confirm_in_room`).
+- [ ] QR rendering (animated/chunked sequence) + camera scanning; `flate2`
+      compression (export is plain JSON for now).
 - [ ] Multi-connection: app state (`AuxConn`), Home "add server", fan-out
       flush, merge from all transports.
 - [ ] Room registry + publish-to-multiple + per-server room join.

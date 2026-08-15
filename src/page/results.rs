@@ -149,6 +149,7 @@ fn publish(model: crate::Model) {
 pub fn view(model: crate::Model) -> View {
     view! {
         (view_publish(model))
+        (crate::page::view_handoff(model))
         (move || {
             let results = model.screens.results.results.with(|r| r.clone());
             view_results(model, &results)

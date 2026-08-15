@@ -210,7 +210,9 @@ the garage.
   with content-id merge + auto-relay, QR parcel handoff for no-network days,
   and generated event/observation ids with `amend`/`void`. **Phase 1
   (identity + amendments) is implemented (backend)** — wire v2 live; the
-  Correct/Void UI on the timing screens is still to come.
+  Correct/Void UI on the timing screens is still to come. **QR parcel handoff
+  is live**: export/import on Results/Events with promote-on-export and
+  relay-on-reconnect (`sync::relay_to_room`); QR rendering + scanning pending.
 
 ### Payload
 
@@ -393,6 +395,21 @@ Milestone order; check items off as done.
 - [ ] Panic/reporting polish; release build + deploy flow
 - [ ] Record/message versioning (localStorage `Envelope<T>` + `TimingEvent.version`)
   — just in time for the first official release (`docs/plan/record-versioning.md`)
+
+### Chat window (diagnostics viewer, `src/page/chat.rs`)
+- [x] Pending messages show no details when selected: `LogMsg::new_pending`
+  stores an empty `raw` (no server JSON yet), and the expand view pretty-printed
+  only `raw`. Expanded pending lines now pretty-print the wire `body`
+  (`pretty_body` — strips `KT `/`khanatime_setup:`/`khanatime_result:`
+  /`khanatime_entry:` prefix, pretty-prints the JSON payload).
+- [x] Pending lines all share `mid == ""`, so every pending line expanded
+  together (and `++` folded them to one id). `FeedEntry` now carries
+  `local_id`; expansion keys on `local_id` for pending messages, `mid` for
+  room messages, so each line toggles independently.
+- [ ] Unit tests for `pretty_body` / `line_key` (chat.rs has none today).
+- [ ] Uncommitted — working tree `src/page/chat.rs` pending; gate green
+  (fmt + clippy + tests + wasm build). Note: a second agent edits code/docs
+  concurrently (see `docs/plan/layout-navigation.md` gotchas).
 
 ---
 

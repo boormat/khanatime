@@ -172,6 +172,7 @@ pub fn view(model: crate::Model) -> View {
             (view_demo(model))
             (view_published(model))
             (view_plan(model))
+            (crate::page::view_handoff(model))
             (view_saved(model))
             (view_feedback(model))
         }

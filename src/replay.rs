@@ -210,6 +210,7 @@ mod tests {
             "alice".into(),
             body,
             String::new(),
+            "!room",
         )
     }
 

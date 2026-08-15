@@ -62,7 +62,8 @@ src/
 │                       #   (re-exports Model/Msg/Screen/update from app.rs)
 ├── lib.rs              # log! macro + web_log (console.log)
 ├── app.rs              # Screen enum, Model, Msg, AppState, update(), navbar, view
-├── sync.rs             # Matrix connect/logout/resume/join + merge sink (wasm)
+├── sync.rs             # Matrix connect/logout/resume/join + merge sink, QR parcel
+│                       #   export/import + relay-to-room (wasm)
 ├── view.rs             # small view helpers
 ├── event.rs            # EventInfo, Entry, EntryMsg, RunRecord, KTime, KTimeTime,
 │                       #   car-number/shared-car helpers, Invite, results calc
@@ -70,12 +71,16 @@ src/
 ├── ids.rs               # generated short ids (Crocker base32) + content_id(body)
 │                       #   dedup key: KT bodies -> embedded observation uid
 ├── input.rs             # keyboard/input helpers
-├── log.rs              # per-event message log + pending outbox (localStorage)
+├── log.rs              # per-event message log + pending outbox (localStorage);
+│                       #   LogMsg.origin tracks the publishing transport (room id /
+│                       #   "parcel" / outbox), publish_outbox + confirm_in_room
 ├── replay.rs           # pure rebuild of event/scores/runs from the log
 ├── timing_event.rs     # TimingEvent wire format (KT {json}, khanatime_* prefixes)
 ├── page.rs             # page modules + shared enqueue_run/enqueue_ktime/enqueue_entry
+│                       #   + view_handoff (offline handoff box)
 ├── services/
 │   ├── mod.rs
+│   ├── qr.rs           # QR parcel codec: khanatime_parcel:{json} pack/unpack (pure)
 │   └── matrix.rs       # matrix-sdk transport wrapper (wasm)
 └── page/
     ├── home.rs         # sign-in + current-event dashboard
@@ -131,6 +136,13 @@ src/
   wiped or re-created. Don't build versioning, migration, or merge/ordering
   protection around existing data surviving; plain replay-in-order +
   last-writer-wins is fine.
+- **QR parcel handoff is live** (offline mode): the Handoff box on Results/Events
+  exports the event's full log as a `khanatime_parcel:{json}` string and imports
+  one from another device — no network needed. Export promotes the local outbox
+  into the log as `origin="parcel"` (handing a message off is publishing it); on
+  reconnect `sync::relay_to_room` re-broadcasts anything not yet confirmed in
+  the room, and content-id dedup keeps re-import idempotent. QR rendering +
+  camera scanning are still to come (they reuse `services/qr.rs`).
 - The single-room baseline is being extended to **multi-transport** (dual
   homeservers with content-id merge + auto-relay, QR parcel handoff, and
   generated event/observation ids with `amend`/`void`) — plan and wire-format

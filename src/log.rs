@@ -1,16 +1,22 @@
 //! Per-event message log storage.
 //!
-//! The only durable per-event state is a message log: everything received from
-//! the event's timing room (`log:<id>`) plus locally created messages that
-//! haven't been acknowledged by the room yet (`pending:<id>`, the outbox).
-//! Convenient in-memory state (event, scores, runs) is reconstructed by
-//! replaying these two lists (see `replay.rs`).
+//! The only durable per-event state is a message log: everything published
+//! (`log:<id>`) plus locally created messages that haven't been handed to any
+//! transport yet (`pending:<id>`, the outbox).  Convenient in-memory state
+//! (event, scores, runs) is reconstructed by replaying these two lists (see
+//! `replay.rs`).
 //!
 //! `pending` entries carry a client-generated `local_id`; when a send succeeds
 //! the entry is promoted into the log with its real Matrix event id.  The
 //! sender's own message also comes back through sync — the log dedupes by
 //! `mid`, and `reconcile` drops pending copies whose body already landed in the
 //! log (lost-ack / echo safety).
+//!
+//! `origin` records which transport a message was published through: a room id
+//! (confirmed in that room), `parcel` (handed off via QR — see `qr.rs`), or
+//! empty (still in the outbox).  Relaying re-broadcasts anything not yet
+//! confirmed in a connected room; content-id dedup makes the whole mesh
+//! idempotent.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,6 +25,9 @@ use serde::{Deserialize, Serialize};
 
 const LOG_PREFIX: &str = "log:";
 const PENDING_PREFIX: &str = "pending:";
+
+/// `LogMsg.origin` value for messages handed off via a QR parcel (see `qr.rs`).
+pub const PARCEL_ORIGIN: &str = "parcel";
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -60,6 +69,9 @@ pub struct LogMsg {
     pub raw: String,
     /// True while this entry is unsent (in the outbox).
     pub pending: bool,
+    /// Transport the message was published through: the confirming room id,
+    /// [`PARCEL_ORIGIN`] for QR handoffs, or empty while still in the outbox.
+    pub origin: String,
 }
 
 impl LogMsg {
@@ -73,11 +85,19 @@ impl LogMsg {
             body,
             raw: String::new(),
             pending: true,
+            origin: String::new(),
         }
     }
 
-    /// A message received from the room.
-    pub fn from_room(mid: String, ts: i64, sender: String, body: String, raw: String) -> Self {
+    /// A message received from the room `room_id`.
+    pub fn from_room(
+        mid: String,
+        ts: i64,
+        sender: String,
+        body: String,
+        raw: String,
+        room_id: &str,
+    ) -> Self {
         Self {
             mid,
             local_id: String::new(),
@@ -86,6 +106,22 @@ impl LogMsg {
             body,
             raw,
             pending: false,
+            origin: room_id.to_string(),
+        }
+    }
+
+    /// A message handed off via a QR parcel: durable and published, but not yet
+    /// confirmed in any room (no Matrix event id until relayed).
+    pub fn from_parcel(body: String, ts: i64, sender: String) -> Self {
+        Self {
+            mid: String::new(),
+            local_id: String::new(),
+            ts,
+            sender,
+            body,
+            raw: String::new(),
+            pending: false,
+            origin: PARCEL_ORIGIN.to_string(),
         }
     }
 }
@@ -159,7 +195,7 @@ pub fn enqueue_pending(id: &str, msg: LogMsg) {
 /// Returns true when the message was new.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink
 pub fn append_log(id: &str, msg: LogMsg) -> bool {
-    if id.is_empty() || msg.mid.is_empty() {
+    if id.is_empty() || msg.origin.is_empty() {
         return false;
     }
     let mut log = load_log(id);
@@ -201,6 +237,75 @@ pub fn promote(id: &str, local_id: &str, mid: &str) -> bool {
         save_log(id, &log);
     }
     save_pending(id, &pending);
+    true
+}
+
+/// Move every outbox entry into the durable log as QR-origin.  Handing a
+/// message off in a parcel is publishing it — it leaves the outbox (so
+/// `flush_pending` won't re-send it) and becomes relayable to a room later.
+/// Returns the number of entries moved (entries already in the log by content
+/// id are dropped from the outbox instead).
+pub fn publish_outbox(id: &str) -> usize {
+    if id.is_empty() {
+        return 0;
+    }
+    let mut pending = load_pending(id);
+    let mut log = load_log(id);
+    let moved = apply_publish_outbox(&mut log, &mut pending);
+    if moved > 0 {
+        save_log(id, &log);
+        save_pending(id, &pending);
+    }
+    moved
+}
+
+/// Pure form of [`publish_outbox`], testable without storage.
+fn apply_publish_outbox(log: &mut Vec<LogMsg>, pending: &mut Vec<LogMsg>) -> usize {
+    let mut moved = 0;
+    pending.retain(|m| {
+        let cid = crate::ids::content_id(&m.body);
+        if log.iter().any(|l| crate::ids::content_id(&l.body) == cid) {
+            return false;
+        }
+        let mut published = m.clone();
+        published.mid = String::new();
+        published.local_id = String::new();
+        published.origin = PARCEL_ORIGIN.to_string();
+        published.pending = false;
+        log.push(published);
+        moved += 1;
+        false
+    });
+    moved
+}
+
+/// Confirm a QR-origin log entry in a room: once its body has been sent there
+/// (real mid from the send ack, or from the echo when the ack was lost) the
+/// entry becomes room-origin so relay won't re-send it.  No-op unless the entry
+/// still has `origin == parcel`.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink
+pub fn confirm_in_room(id: &str, cid: &str, mid: &str, room: &str) -> bool {
+    if id.is_empty() || mid.is_empty() || room.is_empty() {
+        return false;
+    }
+    let mut log = load_log(id);
+    let done = apply_confirm_in_room(&mut log, cid, mid, room);
+    if done {
+        save_log(id, &log);
+    }
+    done
+}
+
+/// Pure form of [`confirm_in_room`], testable without storage.
+fn apply_confirm_in_room(log: &mut [LogMsg], cid: &str, mid: &str, room: &str) -> bool {
+    let Some(idx) = log
+        .iter()
+        .position(|m| m.origin == PARCEL_ORIGIN && crate::ids::content_id(&m.body) == cid)
+    else {
+        return false;
+    };
+    log[idx].mid = mid.to_string();
+    log[idx].origin = room.to_string();
     true
 }
 
@@ -324,5 +429,63 @@ mod tests {
         let a = next_local_id();
         let b = next_local_id();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn publish_outbox_moves_entries_into_log() {
+        let mut log = vec![];
+        let mut pending = vec![
+            LogMsg::from_parcel("KT {\"uid\":\"A\"}".into(), 1, "me".into()),
+            msg("KT {\"uid\":\"B\"}", 2),
+        ];
+        let moved = apply_publish_outbox(&mut log, &mut pending);
+        assert_eq!(moved, 2);
+        assert!(pending.is_empty());
+        assert_eq!(log.len(), 2);
+        assert!(log.iter().all(|m| m.origin == PARCEL_ORIGIN && !m.pending));
+        assert!(log
+            .iter()
+            .all(|m| m.mid.is_empty() && m.local_id.is_empty()));
+    }
+
+    #[test]
+    fn publish_outbox_skips_already_logged() {
+        let mut log = vec![msg("KT {\"uid\":\"A\"}", 1).with_mid("!a")];
+        let mut pending = vec![
+            msg("KT {\"uid\":\"A\"}", 1), // already published by content id
+            msg("KT {\"uid\":\"C\"}", 3),
+        ];
+        let moved = apply_publish_outbox(&mut log, &mut pending);
+        assert_eq!(moved, 1);
+        assert!(pending.is_empty());
+        assert_eq!(log.len(), 2);
+        // The pre-existing entry is untouched (still a room message).
+        assert_eq!(log[0].origin, "");
+        assert_eq!(log[0].mid, "!a");
+        assert_eq!(log[1].origin, PARCEL_ORIGIN);
+    }
+
+    #[test]
+    fn confirm_in_room_promotes_parcel_entry_once() {
+        let mut log = vec![LogMsg::from_parcel(
+            "KT {\"uid\":\"A\"}".into(),
+            1,
+            "me".into(),
+        )];
+        let cid = crate::ids::content_id(&log[0].body);
+        assert!(apply_confirm_in_room(&mut log, &cid, "!real", "!room"));
+        assert_eq!(log[0].mid, "!real");
+        assert_eq!(log[0].origin, "!room");
+        // Already room-origin now: a second confirm (echo) is a no-op.
+        assert!(!apply_confirm_in_room(&mut log, &cid, "!real2", "!room"));
+        assert_eq!(log[0].mid, "!real");
+    }
+
+    #[test]
+    fn confirm_in_room_ignores_room_origin_entries() {
+        let mut log = vec![msg("KT {\"uid\":\"A\"}", 1).with_mid("!a")];
+        let cid = crate::ids::content_id(&log[0].body);
+        assert!(!apply_confirm_in_room(&mut log, &cid, "!b", "!room"));
+        assert_eq!(log[0].mid, "!a");
     }
 }

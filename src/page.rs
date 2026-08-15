@@ -12,6 +12,8 @@ pub mod results;
 pub mod stage;
 pub mod start;
 
+use sycamore::prelude::*;
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -156,4 +158,96 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str, 
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
     crate::update(model, crate::Msg::Reload);
+}
+
+/// Offline handoff box: export the current event's log as a QR parcel (shown
+/// as text to copy/scan until QR rendering lands) or import a parcel pasted
+/// from another device.  See `sync::export_parcel` / `sync::import_parcel`.
+pub fn view_handoff(model: crate::Model) -> View {
+    let exported = model.app.parcel_export.get_clone();
+    let status = model.app.parcel_status.get_clone();
+    let exported_view = if exported.is_empty() {
+        view! {}
+    } else {
+        let text_view = exported.clone();
+        let copy = exported.clone();
+        view! {
+            div(class="field") {
+                label(class="label is-small") { "Copy this parcel" }
+                div(class="control") {
+                    textarea(
+                        class="textarea is-small",
+                        readonly=true,
+                        rows="6",
+                    ) { (text_view) }
+                }
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        on:click=move |_| copy_text(&copy),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-copy") }
+                        span { "Copy" }
+                    }
+                }
+            }
+        }
+    };
+    let status_view = if status.is_empty() {
+        view! {}
+    } else {
+        let s = status.clone();
+        view! { p(class="help has-text-info") { (s) } }
+    };
+    view! {
+        div(class="box is-hidden-print") {
+            h2(class="title is-5") {
+                "Offline handoff"
+                span(class="tag is-light is-pulled-right") { "QR parcel" }
+            }
+            p(class="help") {
+                "Carry the event's messages device-to-device with no network: export on one phone, paste or scan the parcel on another."
+            }
+            div(class="field") {
+                div(class="control") {
+                    button(
+                        class="button is-small is-primary",
+                        on:click=move |_| crate::update(model, crate::Msg::ExportParcel),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-qrcode") }
+                        span { "Export parcel" }
+                    }
+                }
+            }
+            (exported_view)
+            div(class="field") {
+                label(class="label is-small") { "Import a parcel" }
+                div(class="control") {
+                    textarea(
+                        class="textarea is-small",
+                        rows="4",
+                        bind:value=model.app.parcel_import,
+                        placeholder="Paste a khanatime_parcel:… string",
+                    ) {}
+                }
+                div(class="control") {
+                    button(
+                        class="button is-small is-link",
+                        on:click=move |_| crate::update(model, crate::Msg::ImportParcel),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-download") }
+                        span { "Import parcel" }
+                    }
+                }
+            }
+            (status_view)
+        }
+    }
+}
+
+/// Copy `text` to the clipboard (best effort).
+fn copy_text(text: &str) {
+    if let Some(nav) = web_sys::window().map(|w| w.navigator()) {
+        let _ = nav.clipboard().write_text(text);
+    }
 }

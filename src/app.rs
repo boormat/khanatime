@@ -99,6 +99,10 @@ pub struct AppState {
     pub conn: Signal<ConnState>,
     /// Joined room id (the current event's timing room).
     pub room: Signal<Option<String>>,
+    /// QR-parcel handoff UI state (see `sync::export_parcel` / `import_parcel`).
+    pub parcel_export: Signal<String>,
+    pub parcel_import: Signal<String>,
+    pub parcel_status: Signal<String>,
 }
 
 /// Per-screen UI state. Kept alive across navigation so leaving and returning
@@ -135,6 +139,10 @@ pub enum Msg {
     EventsMsg(page::events::Msg),
     ResultMsg(page::results::Msg),
     EntriesMsg(page::entries::Msg),
+    /// Export the current event's log as a QR parcel.
+    ExportParcel,
+    /// Import a pasted/scanned QR parcel into the current event.
+    ImportParcel,
 }
 
 impl Model {
@@ -173,6 +181,9 @@ impl Model {
                 identity: create_signal(String::new()),
                 conn: create_signal(ConnState::Idle),
                 room: create_signal(None),
+                parcel_export: create_signal(String::new()),
+                parcel_import: create_signal(String::new()),
+                parcel_status: create_signal(String::new()),
             },
             screens: Screens {
                 home: page::home::init(),
@@ -240,6 +251,8 @@ pub fn update(model: Model, msg: Msg) {
         Msg::ResultMsg(msg) => page::results::update(model, msg),
         Msg::EntriesMsg(msg) => page::entries::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
+        Msg::ExportParcel => crate::sync::export_parcel(model),
+        Msg::ImportParcel => crate::sync::import_parcel(model),
     }
 }
 
