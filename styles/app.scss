@@ -49,6 +49,13 @@
   white-space: nowrap;
 }
 
+// Results: sortable column headers (car, driver, per-test pos and O/R).
+.kt-sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
 // Results: the position-change delta in the O/R cell, shown as a small box.
 .kt-or-delta {
   display: inline-block;

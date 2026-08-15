@@ -1,4 +1,5 @@
 use crate::event::*;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use sycamore::prelude::*;
 
@@ -14,6 +15,26 @@ pub enum Msg {
     ToggleCollapse(u8),
     CollapseAll,
     ExpandAll,
+    Sort(SortKey),
+}
+
+/// What a results-table column sorts by.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SortKey {
+    /// Car number (#): leading digits compared numerically, remainder as text.
+    Car,
+    /// Driver name.
+    Driver,
+    /// A test's stage position.
+    TestPos(u8),
+    /// A test's cumulative position (O/R).
+    TestOr(u8),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SortDir {
+    Asc,
+    Desc,
 }
 
 #[derive(Clone, Copy)]
@@ -21,6 +42,8 @@ pub struct Model {
     pub results: Signal<ResultView>,
     /// Test numbers whose run details are currently collapsed.
     pub collapsed: Signal<BTreeSet<u8>>,
+    /// Current column sort; defaults to car number ascending.
+    pub sort: Signal<(SortKey, SortDir)>,
 }
 
 pub fn init(event: &EventInfo, runs: &[RunRecord]) -> Model {
@@ -28,6 +51,7 @@ pub fn init(event: &EventInfo, runs: &[RunRecord]) -> Model {
     Model {
         results,
         collapsed: create_signal(BTreeSet::new()),
+        sort: create_signal((SortKey::Car, SortDir::Asc)),
     }
 }
 
@@ -88,6 +112,20 @@ pub fn update(model: crate::Model, msg: Msg) {
         }
         Msg::ExpandAll => {
             model.screens.results.collapsed.set(BTreeSet::new());
+        }
+        Msg::Sort(key) => {
+            model.screens.results.sort.update(|(k, d)| {
+                if *k == key {
+                    *d = if *d == SortDir::Asc {
+                        SortDir::Desc
+                    } else {
+                        SortDir::Asc
+                    };
+                } else {
+                    *k = key;
+                    *d = SortDir::Asc;
+                }
+            });
         }
     }
 }
@@ -180,9 +218,11 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
     let class_btns = clasess(model, results);
     let header = table_header(model, results);
     let footer = table_footer(model, results);
-    let rows = results
-        .rows
-        .values()
+    let (key, dir) = model.screens.results.sort.with(|s| *s);
+    let mut sorted: Vec<&ResultRow> = results.rows.values().collect();
+    sorted.sort_by(|a, b| cmp_rows(a, b, key, dir));
+    let rows = sorted
+        .into_iter()
         .map(|rr| view_row(model, rr))
         .collect::<Vec<View>>();
     let name = results.event.name.clone();
@@ -210,6 +250,77 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
             }
         }
     }
+}
+
+/// Compare two rows for the current sort.  Unranked entries (no score in the
+/// column) always sort last, whatever the direction.  Ties break by car, then
+/// by running order.
+fn cmp_rows(a: &ResultRow, b: &ResultRow, key: SortKey, dir: SortDir) -> Ordering {
+    let c = match key {
+        SortKey::Car => cmp_car(a, b),
+        SortKey::Driver => a.entry.name.cmp(&b.entry.name),
+        SortKey::TestPos(test) => cmp_pos(opt_pos(a, test), opt_pos(b, test), dir),
+        SortKey::TestOr(test) => cmp_pos(opt_cum(a, test), opt_cum(b, test), dir),
+    };
+    let c = match key {
+        SortKey::Car | SortKey::Driver => {
+            if dir == SortDir::Desc {
+                c.reverse()
+            } else {
+                c
+            }
+        }
+        _ => c,
+    };
+    c.then_with(|| cmp_car(a, b))
+        .then_with(|| entry_sort_key(&a.entry).cmp(&entry_sort_key(&b.entry)))
+}
+
+/// Car numbers compare by their leading digit run (so 2 < 10), then the rest.
+fn cmp_car(a: &ResultRow, b: &ResultRow) -> Ordering {
+    num_car_key(&a.entry.car).cmp(&num_car_key(&b.entry.car))
+}
+
+fn num_car_key(car: &str) -> (u32, &str) {
+    let digits = car.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        (0, car)
+    } else {
+        (car[..digits].parse::<u32>().unwrap_or(0), &car[digits..])
+    }
+}
+
+/// Ranked values compare in the given direction; unranked (None) sorts last.
+fn cmp_pos(a: Option<u8>, b: Option<u8>, dir: SortDir) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(x), Some(y)) => {
+            let c = x.cmp(&y);
+            if dir == SortDir::Desc {
+                c.reverse()
+            } else {
+                c
+            }
+        }
+    }
+}
+
+fn opt_pos(row: &ResultRow, test: u8) -> Option<u8> {
+    row.columns
+        .get(test as usize - 1)
+        .and_then(|rs| rs.as_ref())
+        .and_then(|rs| rs.stage_pos.as_ref())
+        .map(|p| p.pos)
+}
+
+fn opt_cum(row: &ResultRow, test: u8) -> Option<u8> {
+    row.columns
+        .get(test as usize - 1)
+        .and_then(|rs| rs.as_ref())
+        .and_then(|rs| rs.cum_pos.as_ref())
+        .map(|p| p.pos)
 }
 
 /// Footer under each test: the stage base time and the derived no-time scores
@@ -456,23 +567,53 @@ fn table_header(model: crate::Model, results: &ResultView) -> View {
     // per test: collapsed -> Time Pos; expanded -> Time Score Pos Cum O/R
     head.push(view! {
         tr {
-            th { "#" }
-            th { "Driver" }
+            th(
+                class="kt-sortable",
+                on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Sort(SortKey::Car))),
+            ) {
+                "#"
+                (sort_icon(model, SortKey::Car))
+            }
+            th(
+                class="kt-sortable",
+                on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Sort(SortKey::Driver))),
+            ) {
+                "Driver"
+                (sort_icon(model, SortKey::Driver))
+            }
             ((0..stages_count)
                 .map(|i| {
                     let test = i as u8 + 1;
                     if model.screens.results.collapsed.with(|c| c.contains(&test)) {
                         view! {
                             th { "Time" }
-                            th { "Pos" }
+                            th(
+                                class="kt-sortable",
+                                on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Sort(SortKey::TestPos(test)))),
+                            ) {
+                                "Pos"
+                                (sort_icon(model, SortKey::TestPos(test)))
+                            }
                         }
                     } else {
                         view! {
                             th { "Time" }
                             th { "Score" }
-                            th { "Pos" }
+                            th(
+                                class="kt-sortable",
+                                on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Sort(SortKey::TestPos(test)))),
+                            ) {
+                                "Pos"
+                                (sort_icon(model, SortKey::TestPos(test)))
+                            }
                             th { "Cum" }
-                            th { "O/R" }
+                            th(
+                                class="kt-sortable",
+                                on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Sort(SortKey::TestOr(test)))),
+                            ) {
+                                "O/R"
+                                (sort_icon(model, SortKey::TestOr(test)))
+                            }
                         }
                     }
                 })
@@ -480,4 +621,91 @@ fn table_header(model: crate::Model, results: &ResultView) -> View {
         }
     });
     view! { (head) }
+}
+
+/// Up/down arrow on the column the table is currently sorted by.
+fn sort_icon(model: crate::Model, key: SortKey) -> View {
+    let (k, d) = model.screens.results.sort.with(|s| *s);
+    if k == key {
+        let icon = if d == SortDir::Asc {
+            "fa-sort-up"
+        } else {
+            "fa-sort-down"
+        };
+        view! { span(class="icon is-small") { i(class=format!("fa {icon}")) } }
+    } else {
+        view! {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(car: &str, name: &str) -> ResultRow {
+        let mut e = Entry::new(car, name);
+        e.entry_no = 0;
+        ResultRow {
+            entry: e,
+            columns: vec![],
+        }
+    }
+
+    fn pos(p: u8) -> Option<ResultScore> {
+        Some(ResultScore {
+            stage_pos: Some(Pos {
+                pos: p,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+    }
+
+    fn with_pos(mut r: ResultRow, p: u8) -> ResultRow {
+        r.columns = vec![pos(p)];
+        r
+    }
+
+    fn cars(rows: &[ResultRow], key: SortKey, dir: SortDir) -> Vec<String> {
+        let mut v: Vec<&ResultRow> = rows.iter().collect();
+        v.sort_by(|a, b| cmp_rows(a, b, key, dir));
+        v.iter().map(|r| r.entry.car.clone()).collect()
+    }
+
+    #[test]
+    fn car_sort_is_numeric() {
+        let rows = vec![row("10", "a"), row("2", "b"), row("1", "c")];
+        assert_eq!(cars(&rows, SortKey::Car, SortDir::Asc), ["1", "2", "10"]);
+        assert_eq!(cars(&rows, SortKey::Car, SortDir::Desc), ["10", "2", "1"]);
+    }
+
+    #[test]
+    fn driver_sort_is_by_name() {
+        let rows = vec![row("1", "zed"), row("2", "adam")];
+        assert_eq!(cars(&rows, SortKey::Driver, SortDir::Asc), ["2", "1"]);
+        assert_eq!(cars(&rows, SortKey::Driver, SortDir::Desc), ["1", "2"]);
+    }
+
+    #[test]
+    fn unranked_sort_last_both_directions() {
+        let rows = vec![
+            row("5", "no-score"),
+            with_pos(row("1", "first"), 1),
+            with_pos(row("3", "second"), 2),
+        ];
+        assert_eq!(
+            cars(&rows, SortKey::TestPos(1), SortDir::Asc),
+            ["1", "3", "5"]
+        );
+        assert_eq!(
+            cars(&rows, SortKey::TestPos(1), SortDir::Desc),
+            ["3", "1", "5"]
+        );
+    }
+
+    #[test]
+    fn pos_tie_broken_by_car() {
+        let rows = vec![with_pos(row("5", "a"), 1), with_pos(row("3", "b"), 1)];
+        assert_eq!(cars(&rows, SortKey::TestPos(1), SortDir::Asc), ["3", "5"]);
+    }
 }
