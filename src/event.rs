@@ -914,11 +914,13 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 /// Best-X-of-Y aggregate for one car in one test: the sum of the car's best
 /// `best_x` counting runs of the (up to) `repeats` it attempted, where only
 /// the first `repeats` runs (by run order) may count — extra runs beyond Y
-/// are excluded no matter their time.  Returns the aggregate score together
-/// with every run (in run order, counted runs flagged) so the results view can
-/// show which runs counted.  Falls back to the best status run
-/// (DNF/FTS/WD/NOSHO) when the car has no clean time; a DNS start with no
-/// finish scores NOSHO.  None when the car has no runs.
+/// are excluded no matter their time.  A car that hasn't completed X runs
+/// gets a DNS (no-time, `base + 100`) for each missing counting slot, so a
+/// cut-short attempt still scores a full best-X; DNF/FTS/WD finishes are
+/// completed attempts and score their penalty.  Returns the aggregate score
+/// together with every run (in run order, counted runs flagged) so the
+/// results view can show which runs counted.  None when the car has no runs
+/// (or only a still-pending start) in the test.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
@@ -926,10 +928,20 @@ fn stage_result(
     car: &str,
     base_time: u16,
 ) -> Option<StageScore> {
-    // All finish runs for (test, car), kept in run order for display.
-    let mut all: Vec<RunScore> = runs
+    let relevant: Vec<&RunRecord> = runs
         .iter()
-        .filter(|r| r.r#type == RUN_FINISH && r.test == test && r.car == car)
+        .filter(|r| r.test == test && r.car == car)
+        .collect();
+    if relevant.is_empty() {
+        return None; // car hasn't appeared in this test at all
+    }
+
+    let y = stage.repeats.max(1);
+
+    // Completed attempts (any run number), kept for display.
+    let mut all: Vec<RunScore> = relevant
+        .iter()
+        .filter(|r| r.r#type == RUN_FINISH)
         .map(|r| RunScore {
             run: r.run,
             time: finish_to_ktime(r),
@@ -937,53 +949,57 @@ fn stage_result(
             counted: false,
         })
         .collect();
+
+    // Missing counting slots score DNS: if the car completed fewer than X
+    // runs, the shortfall is made up from the runs it didn't do (skipping
+    // slots that are in progress — a started-but-unfinished run).
+    let done = all.iter().filter(|r| r.run <= y).count();
+    let fill_target = if stage.best_x == 0 {
+        y
+    } else {
+        stage.best_x.max(1)
+    };
+    let mut dns_needed = fill_target.saturating_sub(done as u8) as usize;
+    let mut slot = 1;
+    while dns_needed > 0 && slot <= y {
+        if !all.iter().any(|r| r.run == slot) {
+            let in_progress = relevant.iter().any(|r| {
+                r.r#type == RUN_START && r.run == slot && r.status.as_deref() != Some("dns")
+            });
+            if !in_progress {
+                let dns_score = base_time as u32 + 100;
+                all.push(RunScore {
+                    run: slot,
+                    time: KTime::NOSHO,
+                    score: dns_score,
+                    counted: false,
+                });
+                dns_needed -= 1;
+            }
+        }
+        slot += 1;
+    }
     all.sort_by_key(|r| r.run);
 
-    // Indices of clean (counting-eligible) runs, best first; ties resolved by
-    // run order so the earlier run wins.  Only the first `repeats` runs (the Y
-    // in best-X-of-Y) may count: if the car did more than Y runs, the later
-    // ones are excluded no matter how fast.
-    let mut clean: Vec<usize> = (0..all.len())
-        .filter(|&i| all[i].run <= stage.repeats && matches!(all[i].time, KTime::Time(_)))
-        .collect();
-    clean.sort_by_key(|&i| (all[i].score, all[i].run));
-
-    let mut sum;
-    if !clean.is_empty() {
-        let consider = stage.repeats.max(1).min(clean.len() as u8) as usize;
-        let keep = if stage.best_x == 0 {
-            consider
-        } else {
-            (stage.best_x.min(consider as u8) as usize).max(1)
-        };
-        sum = 0;
-        for &i in clean.iter().take(keep) {
-            sum += all[i].score;
-            all[i].counted = true;
-        }
-    } else if let Some(i) = (0..all.len())
-        .filter(|&i| all[i].run <= stage.repeats)
-        .min_by_key(|&i| all[i].score)
-    {
-        // No clean time: keep the best status run (still within the first Y).
-        all[i].counted = true;
-        sum = all[i].score;
-    } else {
-        // No finish at all: a DNS start scores NOSHO.
-        let dns = runs.iter().find(|r| {
-            r.r#type == RUN_START
-                && r.test == test
-                && r.car == car
-                && r.status.as_deref() == Some("dns")
-        })?;
-        sum = base_time as u32 + 100;
-        all.push(RunScore {
-            run: dns.run,
-            time: KTime::NOSHO,
-            score: sum,
-            counted: true,
-        });
+    // Counting-eligible slots: the first Y runs (by run order).  Beyond-Y runs
+    // are excluded no matter how fast.
+    let eligible: Vec<usize> = (0..all.len()).filter(|&i| all[i].run <= y).collect();
+    if eligible.is_empty() {
+        return None; // only a pending start, no finish or DNS yet
     }
+
+    let keep = if stage.best_x == 0 {
+        eligible.len()
+    } else {
+        (stage.best_x as usize).min(eligible.len()).max(1)
+    };
+    let mut best = eligible.clone();
+    best.sort_by_key(|&i| (all[i].score, all[i].run));
+    for &i in best.iter().take(keep) {
+        all[i].counted = true;
+    }
+    let sum: u32 = best.iter().take(keep).map(|&i| all[i].score).sum();
+
     Some(StageScore { sum, runs: all })
 }
 
@@ -2079,6 +2095,50 @@ mod tests {
     }
 
     #[test]
+    fn stage_result_dns_fills_missing_counting_slots() {
+        let ev = EventInfo::default();
+        let stage = Stage {
+            num: 1,
+            repeats: 3, // Y = 3
+            best_x: 2,
+            ..ev.stage(0).clone()
+        };
+        let finish = |ith: u8, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test: 1,
+            car: "7".into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(ds),
+            ..Default::default()
+        };
+
+        // One run of best-2-of-3: the missing counting slot scores DNS.
+        let ss = stage_result(&stage, &[finish(1, 450)], 1, "7", 0).unwrap();
+        assert_eq!(ss.sum, 550); // 450 + DNS(100)
+        let shown: Vec<(u8, u32, bool)> = ss
+            .runs
+            .iter()
+            .map(|r| (r.run, r.score, r.counted))
+            .collect();
+        assert_eq!(shown, vec![(1, 450, true), (2, 100, true)]);
+
+        // Two runs of best-2-of-3: no DNS, both count.
+        let ss = stage_result(&stage, &[finish(1, 450), finish(2, 470)], 1, "7", 0).unwrap();
+        assert_eq!(ss.sum, 920);
+        assert!(ss.runs.iter().all(|r| r.counted));
+
+        // A DNF is still a completed attempt: no DNS shortfall.
+        let mut dnf = finish(2, 0);
+        dnf.status = Some("dnf".into());
+        let ss = stage_result(&stage, &[finish(1, 450), dnf], 1, "7", 0).unwrap();
+        assert_eq!(ss.sum, 500); // 450 + DNF(50)
+
+        // No runs at all stays blank (None), not a pile of DNS.
+        assert!(stage_result(&stage, &[], 1, "7", 0).is_none());
+    }
+
+    #[test]
     fn stage_result_status_and_dns() {
         let ev = EventInfo::default();
         let stage = ev.stage(0); // repeats=1, best_x=1
@@ -2251,7 +2311,7 @@ mod tests {
 
     #[test]
     fn demo_best_x_of_y_sums_runs_on_stage() {
-        let mut ev = demo_event();
+        let ev = demo_event();
         // Stage 2 ships as best-2-of-3; exercise that configuration.
         assert_eq!(ev.stages[1].repeats, 3);
         assert_eq!(ev.stages[1].best_x, 2);
