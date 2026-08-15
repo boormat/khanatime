@@ -42,7 +42,11 @@ jobs:
         with:
           version: "v0.21.14"
       - name: Build
-        run: trunk build --release --public-url khanatime
+        # Absolute path — the site root on Pages is /khanatime/ (repo is
+        # boormat.github.io/khanatime). A bare "khanatime" (no leading slash)
+        # makes trunk emit a relative <base href> + bare module specifiers,
+        # doubling the path to /khanatime/khanatime/... and breaking load.
+        run: trunk build --release --public-url /khanatime/
         working-directory: ./
       - name: Setup Pages
         uses: actions/configure-pages@v5
