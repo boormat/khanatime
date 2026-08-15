@@ -1,4 +1,5 @@
 use crate::event::*;
+use std::collections::BTreeSet;
 use sycamore::prelude::*;
 
 // Results view.
@@ -10,16 +11,24 @@ pub enum Msg {
     Reload,
     ShowClass(String),
     Publish,
+    ToggleCollapse(u8),
+    CollapseAll,
+    ExpandAll,
 }
 
 #[derive(Clone, Copy)]
 pub struct Model {
     pub results: Signal<ResultView>,
+    /// Test numbers whose run details are currently collapsed.
+    pub collapsed: Signal<BTreeSet<u8>>,
 }
 
 pub fn init(event: &EventInfo, runs: &[RunRecord]) -> Model {
     let results = create_signal(build_view(event, runs, &class_tabs(event)[0]));
-    Model { results }
+    Model {
+        results,
+        collapsed: create_signal(BTreeSet::new()),
+    }
 }
 
 /// Compute results for a tab: Outright = all active entries, others filtered.
@@ -61,6 +70,24 @@ pub fn update(model: crate::Model, msg: Msg) {
             publish(model);
             #[cfg(not(target_arch = "wasm32"))]
             let _ = model;
+        }
+        Msg::ToggleCollapse(test) => {
+            model.screens.results.collapsed.update(|s| {
+                if !s.insert(test) {
+                    s.remove(&test);
+                }
+            });
+        }
+        Msg::CollapseAll => {
+            let n = model
+                .screens
+                .results
+                .results
+                .with(|r| r.event.stage_count());
+            model.screens.results.collapsed.set((1..=n as u8).collect());
+        }
+        Msg::ExpandAll => {
+            model.screens.results.collapsed.set(BTreeSet::new());
         }
     }
 }
@@ -104,6 +131,24 @@ fn view_publish(model: crate::Model) -> View {
                 div(class="level-right") {
                     div(class="level-item") {
                         button(
+                            class="button is-small",
+                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ExpandAll)),
+                        ) {
+                            span(class="icon") { i(class="fa fa-angle-double-down") }
+                            span { "Expand all" }
+                        }
+                    }
+                    div(class="level-item") {
+                        button(
+                            class="button is-small",
+                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::CollapseAll)),
+                        ) {
+                            span(class="icon") { i(class="fa fa-angle-double-up") }
+                            span { "Collapse all" }
+                        }
+                    }
+                    div(class="level-item") {
+                        button(
                             class="button",
                             on:click=move |_| {
                                 if let Some(w) = web_sys::window() {
@@ -134,9 +179,13 @@ fn view_publish(model: crate::Model) -> View {
 
 fn view_results(model: crate::Model, results: &ResultView) -> View {
     let class_btns = clasess(model, results);
-    let header = table_header(results);
+    let header = table_header(model, results);
     let footer = table_footer(results);
-    let rows = results.rows.values().map(view_row).collect::<Vec<View>>();
+    let rows = results
+        .rows
+        .values()
+        .map(|rr| view_row(model, rr))
+        .collect::<Vec<View>>();
     let name = results.event.name.clone();
     let class = results.class.clone();
     let date = results.event.event_date.clone();
@@ -191,10 +240,15 @@ fn table_footer(results: &ResultView) -> View {
 
 const COLS_PER_TEST: usize = 5;
 
-fn view_row(rr: &ResultRow) -> View {
+fn view_row(model: crate::Model, rr: &ResultRow) -> View {
     let car = rr.entry.car.clone();
     let name = rr.entry.name.clone();
-    let columns = rr.columns.iter().map(show_rs).collect::<Vec<View>>();
+    let columns = rr
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, rso)| show_rs(model, i as u8 + 1, rso))
+        .collect::<Vec<View>>();
     view! {
         tr(class="is-together-print") {
             td { (car) }
@@ -204,13 +258,18 @@ fn view_row(rr: &ResultRow) -> View {
     }
 }
 
-fn show_rs(rso: &Option<ResultScore>) -> View {
+fn show_rs(model: crate::Model, test: u8, rso: &Option<ResultScore>) -> View {
     match rso {
         Some(rs) => {
-            let runs = show_runs(rs);
+            let collapsed = model.screens.results.collapsed.with(|c| c.contains(&test));
+            let runs = if collapsed {
+                show_runs_collapsed(rs)
+            } else {
+                show_runs(rs)
+            };
             let (score, pos) = match &rs.stage_pos {
                 Some(p) => {
-                    let s = format!("{}", p.score_ds as f32 / 10.0);
+                    let s = format!("{:.1}", p.score_ds as f32 / 10.0);
                     let pos = format!("{}", p.pos);
                     (view! { td { (s) } }, view! { td { (pos) } })
                 }
@@ -221,7 +280,7 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
             };
             let cum = match &rs.cum_pos {
                 Some(p) => {
-                    let s = format!("{}", p.score_ds as f32 / 10.0);
+                    let s = format!("{:.1}", p.score_ds as f32 / 10.0);
                     view! { td { (s) } }
                 }
                 None => view! { td(class="has-text-grey-light") { "\u{2014}" } },
@@ -241,6 +300,17 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
                 .collect::<Vec<View>>();
             view! { (tds) }
         }
+    }
+}
+
+/// Collapsed Time cell: just the test total, no per-run detail.
+fn show_runs_collapsed(rs: &ResultScore) -> View {
+    match &rs.stage_pos {
+        Some(p) => {
+            let s = format!("{:.1}", p.score_ds as f32 / 10.0);
+            view! { span(class="has-text-weight-semibold") { (s) } }
+        }
+        None => view! { span(class="has-text-grey-light") { "\u{2014}" } },
     }
 }
 
@@ -299,16 +369,15 @@ fn cum_or(cum: &Option<Pos>) -> View {
         None => view! { div(class="has-text-grey-light") { "\u{2014}" } },
         Some(p) => {
             let pos = p.pos.to_string();
-            let change = p.change;
-            let delta = if change == 0 {
+            let delta = if p.change == 0 {
                 view! {}
             } else {
-                let class = if change > 0 {
-                    "has-text-success"
+                let class = if p.change > 0 {
+                    "kt-or-delta has-text-success"
                 } else {
-                    "has-text-danger"
+                    "kt-or-delta has-text-danger"
                 };
-                let s = format!("{:+}", change);
+                let s = format!("{:+}", p.change);
                 view! { span(class=class) { (s) } }
             };
             view! { div { (pos) (delta) } }
@@ -341,7 +410,7 @@ fn clasess(model: crate::Model, results: &ResultView) -> View {
     view! { (btns) }
 }
 
-fn table_header(results: &ResultView) -> View {
+fn table_header(model: crate::Model, results: &ResultView) -> View {
     let stages_count = results.event.stage_count();
     // Precompute the per-test labels (stage names, falling back to "Test N").
     let labels: Vec<String> = (0..stages_count)
@@ -355,8 +424,24 @@ fn table_header(results: &ResultView) -> View {
         })
         .collect();
     let mut first_row: Vec<View> = vec![view! { th(colspan="2") { "Entry" } }];
-    for label in labels {
-        first_row.push(view! { th(colspan="5") { (label) } });
+    for (i, label) in labels.into_iter().enumerate() {
+        let test = i as u8 + 1;
+        let collapsed = model.screens.results.collapsed.with(|c| c.contains(&test));
+        let chevron = if collapsed {
+            "fa-chevron-right"
+        } else {
+            "fa-chevron-down"
+        };
+        first_row.push(view! {
+            th(
+                colspan="5",
+                class="kt-test-header",
+                on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ToggleCollapse(test))),
+            ) {
+                (label)
+                span(class="icon is-small") { i(class=format!("fa {chevron}")) }
+            }
+        });
     }
     let mut head: Vec<View> = vec![];
     head.push(view! {

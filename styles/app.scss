@@ -41,3 +41,22 @@
 .kt-struck {
   text-decoration: line-through;
 }
+
+// Results: test-name header cells toggle the run details on click.
+.kt-test-header {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+// Results: the position-change delta in the O/R cell, shown as a small box.
+.kt-or-delta {
+  display: inline-block;
+  margin-left: 0.4em;
+  padding: 0 0.35em;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 0.75em;
+  font-weight: 600;
+  line-height: 1.2;
+}
