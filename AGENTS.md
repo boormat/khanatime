@@ -82,7 +82,8 @@ src/
 ├── services/
 │   ├── mod.rs
 │   ├── qr.rs           # QR parcel codec: khanatime_parcel:{json} pack/unpack +
-│   │                   #   khanatime_qr: frame codec + SVG rendering (pure)
+│   │                   #   khanatime_qr: frame codec (DEFLATE+base64) + SVG
+│   │                   #   rendering + filter_timing (pure)
 │   └── matrix.rs       # matrix-sdk transport wrapper (wasm)
 └── page/
     ├── home.rs         # sign-in + current-event dashboard
@@ -145,7 +146,9 @@ src/
   reconnect `sync::relay_to_room` re-broadcasts anything not yet confirmed in
   the room, and content-id dedup keeps re-import idempotent. QR rendering
   (animated `khanatime_qr:` frames rendered as SVG) and camera scanning
-  (`qr_scan.rs`, browser BarcodeDetector; paste fallback) are live.
+  (`qr_scan.rs`, browser BarcodeDetector; paste fallback) are live. Frames
+  carry the parcel DEFLATE-compressed + base64; export is **Full event** or
+  **Timing only** (`qr::filter_timing`), picked on the Handoff box.
 - The single-room baseline is being extended to **multi-transport** (dual
   homeservers with content-id merge + auto-relay, QR parcel handoff, and
   generated event/observation ids with `amend`/`void`) — plan and wire-format

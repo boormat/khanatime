@@ -254,7 +254,9 @@ fn handle_scan_string(model: Model, text: &str) {
             };
             if sess.seen.insert((frame.id.clone(), frame.index)) {
                 sess.frames.push(frame.clone());
-                crate::services::qr::assemble_frames(&sess.frames).is_ok()
+                // Complete only when every frame is present AND it inflates to a
+                // real parcel (compressed payload).
+                crate::services::qr::frames_to_parcel(&sess.frames).is_ok()
             } else {
                 false
             }
@@ -263,7 +265,7 @@ fn handle_scan_string(model: Model, text: &str) {
             let parcel = SCAN.with(|sc| {
                 sc.borrow()
                     .as_ref()
-                    .and_then(|s| crate::services::qr::assemble_frames(&s.frames).ok())
+                    .and_then(|s| crate::services::qr::frames_to_parcel(&s.frames).ok())
             });
             if let Some(parcel) = parcel {
                 finish_scan(model, &parcel);

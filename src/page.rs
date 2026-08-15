@@ -218,6 +218,21 @@ pub fn view_handoff(model: crate::Model) -> View {
                 }
             }
             div(class="field") {
+                label(class="label is-small") { "Export contains" }
+                div(class="control") {
+                    div(class="buttons has-addons") {
+                        button(
+                            class=move || mode_class(model, crate::app::ParcelMode::Full),
+                            on:click=move |_| crate::update(model, crate::Msg::SetParcelMode(crate::app::ParcelMode::Full)),
+                        ) { "Full event" }
+                        button(
+                            class=move || mode_class(model, crate::app::ParcelMode::TimingOnly),
+                            on:click=move |_| crate::update(model, crate::Msg::SetParcelMode(crate::app::ParcelMode::TimingOnly)),
+                        ) { "Timing only" }
+                    }
+                }
+            }
+            div(class="field") {
                 label(class="label is-small") { "Import a parcel" }
                 div(class="control") {
                     textarea(
@@ -240,6 +255,15 @@ pub fn view_handoff(model: crate::Model) -> View {
             }
             (status_view)
         }
+    }
+}
+
+/// Button class for the parcel-mode toggle: active mode is solid.
+fn mode_class(model: crate::Model, mode: crate::app::ParcelMode) -> String {
+    if model.app.parcel_mode.get() == mode {
+        "button is-small is-primary".to_string()
+    } else {
+        "button is-small".to_string()
     }
 }
 

@@ -233,11 +233,18 @@ pub fn export_parcel(model: Model) {
     }
     let moved = crate::log::publish_outbox(&id);
     let log = crate::log::load_log(&id);
-    let text = crate::services::qr::pack_parcel(&uid, &log);
+    // Full = whole log (bootstrap); Timing only = just the KT timing records,
+    // for a receiver that already has the event.
+    let msgs = if model.app.parcel_mode.get() == crate::app::ParcelMode::TimingOnly {
+        crate::services::qr::filter_timing(&log)
+    } else {
+        log
+    };
+    let text = crate::services::qr::pack_parcel(&uid, &msgs);
     model.app.parcel_export.set(text.clone());
-    // QR display: split into frames, render all to one uniform canvas
-    // (min module px keeps dense frames scannable), animate when many.
-    let frames = crate::services::qr::pack_frames(&text);
+    // QR frames carry the compressed payload: base64(deflate(json)).
+    let payload = crate::services::qr::parcel_payload(&text);
+    let frames = crate::services::qr::pack_frames(&payload);
     let svgs = crate::services::qr::qr_svgs(&frames, crate::services::qr::MIN_MODULE_PX);
     model.app.parcel_qr_svgs.set(svgs.clone());
     model.app.parcel_qr_total.set(svgs.len());
@@ -245,14 +252,19 @@ pub fn export_parcel(model: Model) {
     model.app.parcel_qr_paused.set(false);
     #[cfg(target_arch = "wasm32")]
     start_qr_animation(model, svgs.len());
-    let n = log.len();
-    let extra = if moved > 0 {
+    let n = msgs.len();
+    let kind = match model.app.parcel_mode.get() {
+        crate::app::ParcelMode::Full => "full event",
+        crate::app::ParcelMode::TimingOnly => "timing",
+    };
+    let moved_note = if moved > 0 {
         format!(" ({moved} unsent moved into the handoff)")
     } else {
         String::new()
     };
     model.app.parcel_status.set(format!(
-        "{n} messages ready{extra} — scan or copy on the other device."
+        "{n} {kind} messages{moved_note}, {frame_count} QR — scan or copy.",
+        frame_count = svgs.len()
     ));
 }
 

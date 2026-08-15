@@ -86,6 +86,16 @@ pub enum ConnState {
     Error(String),
 }
 
+/// What a parcel export includes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ParcelMode {
+    /// Full log: event setup + entries + timing (bootstrap / fresh device).
+    #[default]
+    Full,
+    /// Timing messages only, for a receiver that already has the event.
+    TimingOnly,
+}
+
 /// Global, cross-screen state. Screens read these but never own them.
 #[derive(Clone, Copy)]
 pub struct AppState {
@@ -115,6 +125,8 @@ pub struct AppState {
     pub scan_active: Signal<bool>,
     /// Status/feedback line for the scan panel.
     pub scan_status: Signal<String>,
+    /// Which export variant to produce (full event vs timing-only).
+    pub parcel_mode: Signal<ParcelMode>,
     /// The animated QR sequence is paused on its current frame.
     pub parcel_qr_paused: Signal<bool>,
 }
@@ -167,6 +179,8 @@ pub enum Msg {
     QrPauseToggle,
     /// Clear the QR export display.
     QrClear,
+    /// Choose the parcel export variant (full event vs timing-only).
+    SetParcelMode(ParcelMode),
 }
 
 impl Model {
@@ -212,6 +226,7 @@ impl Model {
                 parcel_qr_svgs: create_signal(Vec::new()),
                 parcel_qr_index: create_signal(0),
                 parcel_qr_total: create_signal(0),
+                parcel_mode: create_signal(ParcelMode::default()),
                 scan_active: create_signal(false),
                 scan_status: create_signal(String::new()),
                 parcel_qr_paused: create_signal(false),
@@ -300,6 +315,7 @@ pub fn update(model: Model, msg: Msg) {
         }
         Msg::QrPauseToggle => crate::sync::toggle_qr_pause(model),
         Msg::QrClear => crate::sync::clear_qr(model),
+        Msg::SetParcelMode(mode) => model.app.parcel_mode.set(mode),
     }
 }
 

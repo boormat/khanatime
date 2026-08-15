@@ -1548,6 +1548,7 @@ dependencies = [
 name = "khanatime"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -1555,6 +1556,7 @@ dependencies = [
  "js-sys",
  "lazy-regex",
  "matrix-sdk",
+ "miniz_oxide",
  "pulldown-cmark",
  "qrcode",
  "ruma",

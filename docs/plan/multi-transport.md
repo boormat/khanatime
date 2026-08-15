@@ -167,13 +167,15 @@ into ~1.2KB frames → sequenced animated QR: each frame carries
 plain camera app. A full day's log (~10–50KB raw → ~5–15KB compressed) is a
 handful of frames.
 
-*Implemented (text mode):* `services/qr.rs` packs the full log (export-all, no
-cursor yet) as plain JSON with no compression; the Handoff UI on Results/Events
-shows the `khanatime_parcel:` string to copy/scan. Export promotes the outbox
-(`log::publish_outbox`); imports land via `append_log` (content-id idempotent);
-`sync::relay_to_room` re-broadcasts parcel-origin entries to the connected room
-and `log::confirm_in_room` ack-promotes them (echo-safe). Animated QR + `flate2`
-+ camera scanning are the remaining Pillar-2 work.
+*Implemented:* `services/qr.rs` packs the log as readable JSON
+(`khanatime_parcel:` — copy/paste) and compresses it (`base64(deflate)`) into
+chunked `khanatime_qr:` frames for QR. Two export variants: **Full event** (all
+messages — bootstrap) and **Timing only** (`filter_timing`, just the `KT`
+records — for a receiver that already has the event). Export promotes the
+outbox (`log::publish_outbox`); imports land via `append_log` (content-id
+idempotent); `sync::relay_to_room` re-broadcasts parcel-origin entries and
+`log::confirm_in_room` ack-promotes them (echo-safe). Animated QR + camera
+scanning are live; RaptorQ robustness and `flate2` are not needed (miniz).
 
 **Directions:**
 - official → head timekeeper (results at stage end);
@@ -247,8 +249,10 @@ joins the room set matching the server it can reach.
       `sync::relay_to_room`, `log::publish_outbox`/`confirm_in_room`).
 - [x] QR rendering (animated/chunked `khanatime_qr:` frames, SVG display) +
       camera scanning (BarcodeDetector, `qr_scan.rs`; paste fallback).
-- [ ] `flate2` compression of the parcel payload (plain JSON for now); jsQR
-      fallback for browsers without BarcodeDetector (Firefox).
+- [x] Compression (miniz DEFLATE + base64 in `services/qr.rs`) and two export
+      variants: **Full event** vs **Timing only** (`filter_timing`).
+- [ ] RaptorQ fountain-code robustness (optional, future); jsQR fallback for
+      browsers without BarcodeDetector (Firefox).
 - [ ] Multi-connection: app state (`AuxConn`), Home "add server", fan-out
       flush, merge from all transports.
 - [ ] Room registry + publish-to-multiple + per-server room join.

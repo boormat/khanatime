@@ -9,12 +9,17 @@
 //!
 //! Pure Rust (no wasm gating) so `cargo test` covers the codec natively.
 //!
-//! A parcel bigger than one QR can hold is split into **frames** (`QR_PREFIX`):
-//! each frame is a small self-describing `khanatime_qr:{json}` string carrying
-//! `index/total` + a shared `id`, rendered as its own QR and shown in sequence.
-//! The receiving camera decodes one frame at a time; `assemble_frames` groups
-//! by `id`, orders by `index`, checks completeness and re-joins the parcel.
-//! `qr_svg` renders any of these strings as an SVG QR code.
+//! Two envelopes:
+//! - `khanatime_parcel:{json}` — the **readable** parcel (copy/paste / chat).
+//! - `khanatime_qr:{...}` **frames** — the same parcel compressed
+//!   (`base64(deflate(json))`) and chunked into small self-describing frames
+//!   carrying `index/total` + a shared `id`, rendered as QR codes and shown in
+//!   sequence.  `frames_to_parcel` re-joins, base64-decodes and inflates back to
+//!   the parcel JSON.  A parcel can also be filtered to timing-only messages
+//!   ([`filter_timing`]) so a receiver that already has the event gets just the
+//!   changing timing records.
+//!
+//! `qr_svg` renders any frame/parcel string as an SVG QR code.
 
 use serde::{Deserialize, Serialize};
 
@@ -90,10 +95,11 @@ pub fn unpack_parcel(text: &str) -> Result<Parcel, String> {
     Ok(parcel)
 }
 
-/// Split `parcel` into frames, each `khanatime_qr:{json}`.  A single frame for
-/// a small parcel; chunked (by character, to keep UTF-8 intact) for big ones.
-pub fn pack_frames(parcel: &str) -> Vec<String> {
-    let chunks = chunk_data(parcel, MAX_FRAME_DATA);
+/// Split the compressed QR payload (`base64(deflate(json))`) into frames, each
+/// `khanatime_qr:{json}`.  A single frame for a small parcel; chunked (by
+/// character — base64 is pure ASCII, so boundaries are clean) for big ones.
+pub fn pack_frames(payload: &str) -> Vec<String> {
+    let chunks = chunk_data(payload, MAX_FRAME_DATA);
     let total = chunks.len() as u32;
     let id = crate::ids::gen_short_id();
     chunks
@@ -101,7 +107,7 @@ pub fn pack_frames(parcel: &str) -> Vec<String> {
         .enumerate()
         .map(|(i, data)| {
             let frame = Frame {
-                v: 1,
+                v: 2,
                 id: id.clone(),
                 total,
                 index: i as u32,
@@ -112,6 +118,24 @@ pub fn pack_frames(parcel: &str) -> Vec<String> {
         .collect()
 }
 
+/// Re-join `khanatime_qr:` frames back into the readable parcel JSON:
+/// assemble the chunked base64, base64-decode and inflate.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm scan sink + tests
+pub fn frames_to_parcel(frames: &[Frame]) -> Result<String, String> {
+    let payload = assemble_frames(frames)?;
+    payload_to_json(&payload).ok_or_else(|| "bad compressed payload in frames".to_string())
+}
+
+/// Keep only the timing (`KT`) messages of a log — the changing part.  The
+/// event setup/entry/result manifests are dropped: the receiver is assumed to
+/// already have the event.
+pub fn filter_timing(msgs: &[crate::log::LogMsg]) -> Vec<crate::log::LogMsg> {
+    msgs.iter()
+        .filter(|m| m.body.starts_with("KT "))
+        .cloned()
+        .collect()
+}
+
 /// Parse a single frame string.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm scan sink + tests
 pub fn unpack_frame(text: &str) -> Result<Frame, String> {
@@ -119,7 +143,7 @@ pub fn unpack_frame(text: &str) -> Result<Frame, String> {
         .strip_prefix(QR_PREFIX)
         .ok_or_else(|| format!("not a QR frame — missing '{QR_PREFIX}' prefix"))?;
     let frame: Frame = serde_json::from_str(json).map_err(|e| format!("bad frame json: {e}"))?;
-    if frame.v != 1 {
+    if frame.v != 1 && frame.v != 2 {
         return Err(format!("unsupported frame version {}", frame.v));
     }
     if frame.total == 0 || frame.index >= frame.total {
@@ -158,6 +182,44 @@ pub fn assemble_frames(frames: &[Frame]) -> Result<String, String> {
         out.push_str(&slot.data);
     }
     Ok(out)
+}
+
+// ----- compression / base64 -----
+
+/// DEFLATE-compress `data` (miniz_oxide, pure Rust, wasm-fine).
+pub fn compress(data: &[u8]) -> Vec<u8> {
+    use miniz_oxide::deflate::compress_to_vec;
+    compress_to_vec(data, 6)
+}
+
+/// Inflate `data`; `None` if it isn't valid DEFLATE.
+pub fn decompress(data: &[u8]) -> Option<Vec<u8>> {
+    use miniz_oxide::inflate::decompress_to_vec;
+    decompress_to_vec(data).ok()
+}
+
+/// Base64-encode bytes (standard alphabet).
+pub fn b64(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Base64-decode a string; `None` on malformed input.
+pub fn unb64(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(text).ok()
+}
+
+/// Compress and base64-encode a parcel's readable JSON — the QR-frame payload.
+pub fn parcel_payload(json: &str) -> String {
+    b64(&compress(json.as_bytes()))
+}
+
+/// Base64-decode and inflate a QR-frame payload back to the parcel's JSON.
+pub fn payload_to_json(payload: &str) -> Option<String> {
+    let bytes = unb64(payload)?;
+    let json = decompress(&bytes)?;
+    String::from_utf8(json).ok()
 }
 
 /// Render `data` as an SVG QR code on a `view_px`² canvas (white quiet border,
@@ -280,9 +342,15 @@ mod tests {
     }
 
     fn make_parcel(n: usize) -> String {
-        // Build a parcel comfortably bigger than MAX_FRAME_DATA.
+        // Build a parcel comfortably bigger than MAX_FRAME_DATA even after
+        // compression: varied, largely incompressible timing records.
         let bodies: Vec<String> = (0..n)
-            .map(|i| format!("KT {{\"uid\":\"{i}\",\"body\":\"{}\"}}", "x".repeat(80)))
+            .map(|i| {
+                format!(
+                    "KT {{\"r#type\":\"finish\",\"uid\":\"OBS{i}\",\"ts\":1,\"car\":\"{}\",\"test\":2,\"run\":{i},\"time_ds\":{i},\"status\":\"clean\",\"flags\":0}}",
+                    i % 9 + 1
+                )
+            })
             .collect();
         let msgs: Vec<crate::log::LogMsg> = bodies.iter().map(|b| msg(b, 1)).collect();
         pack_parcel("e", &msgs)
@@ -291,7 +359,8 @@ mod tests {
     #[test]
     fn frames_single_for_small_parcel() {
         let text = pack_parcel("e", &[msg("hi", 1)]);
-        let frames = pack_frames(&text);
+        let payload = parcel_payload(&text);
+        let frames = pack_frames(&payload);
         assert_eq!(frames.len(), 1);
         assert!(frames[0].starts_with(QR_PREFIX));
         let out = assemble_frames(
@@ -301,13 +370,18 @@ mod tests {
                 .collect::<Vec<_>>(),
         )
         .unwrap();
-        assert_eq!(out, text);
+        assert_eq!(out, payload);
+        assert_eq!(
+            frames_to_parcel(&[unpack_frame(&frames[0]).unwrap()]).unwrap(),
+            text
+        );
     }
 
     #[test]
     fn frames_split_and_round_trip_out_of_order() {
-        let text = make_parcel(60);
-        let frames = pack_frames(&text);
+        let text = make_parcel(200);
+        let payload = parcel_payload(&text);
+        let frames = pack_frames(&payload);
         assert!(frames.len() > 1, "expected chunking, got {}", frames.len());
         let parsed: Vec<Frame> = frames.iter().map(|s| unpack_frame(s).unwrap()).collect();
         // All frames share one id, unique indices, consistent total.
@@ -325,13 +399,14 @@ mod tests {
         let mut shuffled = parsed.clone();
         shuffled.reverse();
         let out = assemble_frames(&shuffled).unwrap();
-        assert_eq!(out, text);
+        assert_eq!(out, payload);
+        assert_eq!(frames_to_parcel(&shuffled).unwrap(), text);
     }
 
     #[test]
     fn frames_incomplete_rejected() {
-        let text = make_parcel(60);
-        let parsed: Vec<Frame> = pack_frames(&text)
+        let text = make_parcel(200);
+        let parsed: Vec<Frame> = pack_frames(&parcel_payload(&text))
             .iter()
             .map(|s| unpack_frame(s).unwrap())
             .collect();
@@ -430,5 +505,53 @@ mod tests {
     fn svg_none_for_oversized_data() {
         let huge = "x".repeat(100_000);
         assert!(qr_svg(&huge, 320).is_none());
+    }
+
+    #[test]
+    fn compress_round_trip() {
+        let data = b"some repetitious payload payload payload payload payload";
+        let compressed = compress(data);
+        assert!(compressed.len() < data.len());
+        assert_eq!(decompress(&compressed).unwrap(), data);
+        assert!(decompress(b"not deflate").is_none());
+    }
+
+    #[test]
+    fn parcel_payload_round_trip() {
+        let text = make_parcel(200);
+        let payload = parcel_payload(&text);
+        assert_eq!(payload_to_json(&payload).unwrap(), text);
+    }
+
+    #[test]
+    fn timing_filter_keeps_only_kt() {
+        let setup = msg("khanatime_setup:{\"name\":\"X\"}", 1);
+        let entry = msg("khanatime_entry:{\"n\":1}", 2);
+        let timing = msg("KT {\"uid\":\"A\"}", 3);
+        let result = msg("khanatime_result:{...}", 4);
+        let filtered = filter_timing(&[setup, entry, timing, result]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].body, "KT {\"uid\":\"A\"}");
+    }
+
+    #[test]
+    fn compression_reduces_frames() {
+        // A full-day-style log of many timing records compresses so well that
+        // the compressed payload needs fewer frames than the raw JSON would.
+        let bodies: Vec<String> = (0..400)
+            .map(|i| {
+                format!(
+                    "KT {{\"r#type\":\"finish\",\"uid\":\"OBS{i}\",\"ts\":1,\"car\":\"7\",\"test\":2,\"run\":{i},\"time_ds\":{i},\"status\":\"clean\",\"flags\":0}}"
+                )
+            })
+            .collect();
+        let msgs: Vec<crate::log::LogMsg> = bodies.iter().map(|b| msg(b, 1)).collect();
+        let text = pack_parcel("e", &msgs);
+        let raw_frames = chunk_data(&text, MAX_FRAME_DATA).len();
+        let compressed_frames = pack_frames(&parcel_payload(&text)).len();
+        assert!(
+            compressed_frames < raw_frames,
+            "compressed {compressed_frames} should be < raw {raw_frames}"
+        );
     }
 }
