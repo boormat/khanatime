@@ -84,15 +84,14 @@ async fn run_scan(model: Model) {
             .set("No camera available.".to_string());
         return;
     };
-    let constraints = js_sys::Object::new();
+    // Prefer the rear camera via a nested `{ facingMode: "environment" }`
+    // constraint (ideal, so a front-only device still works).
     let video_constraint = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &video_constraint,
-        &"facingMode".into(),
-        &"environment".into(),
-    );
-    let _ = js_sys::Reflect::set(&constraints, &"video".into(), &video_constraint);
-    let constraints: web_sys::MediaStreamConstraints = constraints.unchecked_into();
+    let facing = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&facing, &"ideal".into(), &"environment".into());
+    let _ = js_sys::Reflect::set(&video_constraint, &"facingMode".into(), &facing);
+    let constraints = web_sys::MediaStreamConstraints::new();
+    constraints.set_video(&video_constraint.into());
     let stream = match media.get_user_media_with_constraints(&constraints) {
         Ok(p) => match wasm_bindgen_futures::JsFuture::from(p).await {
             Ok(s) => s.unchecked_into::<web_sys::MediaStream>(),
@@ -127,10 +126,29 @@ async fn run_scan(model: Model) {
             .set("Scanner view missing — reload the page.".to_string());
         return;
     };
+    // Set these via JS (not just view attributes) so autoplay can't be blocked.
+    video.set_muted(true);
+    video.set_autoplay(true);
     video.set_src_object(Some(&stream));
-    let _ = video.play();
+    let n = video_track_count(&stream);
+    if let Err(e) = video.play() {
+        model
+            .app
+            .scan_status
+            .set(format!("Camera start failed: {e:?} — check permission."));
+    } else if n == 0 {
+        model
+            .app
+            .scan_status
+            .set("Camera has no video track — try the other camera.".to_string());
+    } else {
+        model.app.scan_status.set(format!(
+            "Camera on ({n} track{s}) — point at the QR.",
+            s = if n == 1 { "" } else { "s" }
+        ));
+    }
 
-    let interval = spawn_detect_loop(model, detector, detect_fn, video);
+    let interval = spawn_detect_loop(model, detector, detect_fn, stream.clone());
     SCAN.with(|s| {
         *s.borrow_mut() = Some(ScanSession {
             stream,
@@ -143,22 +161,58 @@ async fn run_scan(model: Model) {
     model
         .app
         .scan_status
-        .set("Point the other phone's camera at the QR.".to_string());
+        .set("Camera on — point at the QR.".to_string());
+}
+
+fn video_track_count(stream: &web_sys::MediaStream) -> usize {
+    stream.get_video_tracks().length() as usize
 }
 
 /// Every tick, run `detect` on the current video frame and feed each decoded
 /// string to the accumulator.  Returns the interval handle.
+///
+/// The video element is re-queried each tick and the stream re-bound if it was
+/// recreated: Sycamore rebuilds the view when its signals change (e.g. the
+/// status line), so a video element we bound once can be replaced by a fresh,
+/// stream-less one — re-binding keeps the on-screen element live.
 fn spawn_detect_loop(
     model: Model,
     detector: JsValue,
     detect_fn: js_sys::Function,
-    video: web_sys::HtmlVideoElement,
+    stream: web_sys::MediaStream,
 ) -> i32 {
     let window = web_sys::window().expect("window");
+    let tick = std::cell::Cell::new(0u32);
+    let window_for_closure = window.clone();
     let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::wrap(Box::new(move || {
         let detector = detector.clone();
         let detect_fn = detect_fn.clone();
-        let video = video.clone();
+        let stream = stream.clone();
+        let window = window_for_closure.clone();
+        tick.set(tick.get() + 1);
+        // Query the current element synchronously (it may have been recreated
+        // by a re-render) and re-bind the stream if it lost it.
+        let Some(video) = window
+            .document()
+            .and_then(|d| d.get_element_by_id(VIDEO_ID))
+            .map(|el| el.unchecked_into::<web_sys::HtmlVideoElement>())
+        else {
+            return;
+        };
+        // Throttled heartbeat, surfaced on the scan status line (phones have
+        // no console) so the camera state is visible while scanning.
+        if tick.get() % 30 == 0 {
+            model.app.scan_status.set(format!(
+                "Camera: ready={} paused={} bound={} — point at the QR.",
+                video.ready_state(),
+                video.paused(),
+                video.src_object().is_some()
+            ));
+        }
+        if video.src_object().is_none() {
+            video.set_src_object(Some(&stream));
+            let _ = video.play();
+        }
         wasm_bindgen_futures::spawn_local(async move {
             let args = js_sys::Array::of1(&video);
             let Ok(promise) = detect_fn.apply(&detector, &args) else {
