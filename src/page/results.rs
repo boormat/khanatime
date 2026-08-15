@@ -1,5 +1,4 @@
 use crate::event::*;
-use crate::view as show;
 use sycamore::prelude::*;
 
 // Results view.
@@ -194,13 +193,13 @@ fn view_row(rr: &ResultRow) -> View {
 fn show_rs(rso: &Option<ResultScore>) -> View {
     match rso {
         Some(rs) => {
-            let time = show::ktime(&rs.time);
+            let runs = show_runs(rs);
             let stage_score = format!("{}", rs.stage_pos.score_ds as f32 / 10.0);
             let stage_pos = format!("{}", rs.stage_pos.pos);
             let cum_score = format!("{}", or_score(&rs.cum_pos) as f32 / 10.0);
             let cum = cum_or(&rs.cum_pos);
             view! {
-                td { (time) }
+                td { (runs) }
                 td { (stage_score) }
                 td { (stage_pos) }
                 td { (cum_score) }
@@ -213,6 +212,51 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
                 .collect::<Vec<View>>();
             view! { (tds) }
         }
+    }
+}
+
+/// The car's runs in this test: all times comma-separated in run order, with
+/// the runs that didn't count (dropped by best-X) struck out and the fastest
+/// counting run highlighted in green.
+fn show_runs(rs: &ResultScore) -> View {
+    let fastest = rs.runs.iter().filter(|r| r.counted).map(|r| r.score).min();
+    let mut cells: Vec<View> = Vec::new();
+    for (i, r) in rs.runs.iter().enumerate() {
+        if i > 0 {
+            cells.push(view! { span { ", " } });
+        }
+        let content = run_time_text(&r.time);
+        let cell = if !r.counted {
+            view! { span(class="kt-struck has-text-grey-light") { (content) } }
+        } else if Some(r.score) == fastest {
+            view! { span(class="has-text-success has-text-weight-bold") { (content) } }
+        } else {
+            view! { span { (content) } }
+        };
+        cells.push(cell);
+    }
+    view! { div { (cells) } }
+}
+
+/// Compact per-run time text: `12.3` with small flag/garage glyphs, or the
+/// status code (DNS / DNF / FTS / WD) for aborted runs.
+fn run_time_text(time: &crate::event::KTime) -> View {
+    match time {
+        crate::event::KTime::Time(t) => {
+            let ts = format!("{:.1}", t.time_ds as f32 / 10.0);
+            let mut icons: Vec<View> = vec![];
+            if t.garage {
+                icons.push(view! { i(class="fa fa-warehouse") });
+            }
+            for _ in 0..t.flags {
+                icons.push(view! { i(class="fa fa-flag") });
+            }
+            view! { span { (ts) (icons) } }
+        }
+        crate::event::KTime::NOSHO => view! { span { "DNS" } },
+        crate::event::KTime::WD => view! { span { "WD" } },
+        crate::event::KTime::FTS => view! { span { "FTS" } },
+        crate::event::KTime::DNF => view! { span { "DNF" } },
     }
 }
 

@@ -36,3 +36,8 @@
   border-left: 3px solid $grey-light;
   overflow-x: auto;
 }
+
+// Results: runs dropped by best-X-of-Y are shown struck out in the Time cell.
+.kt-struck {
+  text-decoration: line-through;
+}

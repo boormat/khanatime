@@ -400,9 +400,31 @@ impl Pos {
 #[derive(Default, Clone, Debug)]
 pub struct ResultScore {
     // raw result fields
-    pub time: KTime, // as entered.. maybe an enum? of codes and time? pritable, so time plus penalties etc.
-    pub stage_pos: Pos, // result within stage
+    /// The car's runs for this test, in run order, with counting flags set
+    /// (the non-counting ones are struck out in the results view).
+    pub runs: Vec<RunScore>,
+    pub stage_pos: Pos,       // result within stage
     pub cum_pos: Option<Pos>, // pos in event.
+}
+
+/// One run of a car in a test, as shown in the results Time cell.
+#[derive(Default, Clone, Debug)]
+pub struct RunScore {
+    pub run: u8,
+    /// As-entered result (a clean time with flags/garage, or DNF/FTS/WD/DNS).
+    pub time: KTime,
+    /// Net score (elapsed + penalties, or the aborted/DNS base-penalty).
+    pub score: u32,
+    /// True when this run is one of the counting best-X (or the kept fallback
+    /// when the car has no clean time).
+    pub counted: bool,
+}
+
+/// Result of the best-X-of-Y aggregation for one car in one test.
+#[derive(Default, Debug)]
+pub struct StageScore {
+    pub sum: u32,
+    pub runs: Vec<RunScore>,
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -813,13 +835,13 @@ impl ResultRow {
         let columns = (0..event.stage_count())
             .map(|i| {
                 let stage = event.stage(i);
-                stage_result(&stage, runs, i as u8 + 1, &entry.car, base_times[i]).map(
-                    |(score, time)| ResultScore {
-                        time,
-                        stage_pos: Pos::init(score as u16),
+                stage_result(&stage, runs, i as u8 + 1, &entry.car, base_times[i]).map(|ss| {
+                    ResultScore {
+                        stage_pos: Pos::init(ss.sum as u16),
                         cum_pos: None,
-                    },
-                )
+                        runs: ss.runs,
+                    }
+                })
             })
             .collect();
 
@@ -891,56 +913,71 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 
 /// Best-X-of-Y aggregate for one car in one test: the sum of the car's best
 /// `best_x` counting runs of the (up to) `repeats` it attempted.  Returns the
-/// aggregate score and the best run's time (for display).  Falls back to the
-/// best status run (DNF/FTS/WD/NOSHO) when the car has no clean time; a DNS
-/// start with no finish scores NOSHO.  None when the car has no runs at all.
+/// aggregate score together with every run (in run order, counted runs
+/// flagged) so the results view can show which runs counted.  Falls back to
+/// the best status run (DNF/FTS/WD/NOSHO) when the car has no clean time; a
+/// DNS start with no finish scores NOSHO.  None when the car has no runs.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
     test: u8,
     car: &str,
     base_time: u16,
-) -> Option<(u32, KTime)> {
-    let mut counting: Vec<(u32, KTime)> = vec![];
-    let mut aborted: Vec<(u32, KTime)> = vec![];
-    for run in runs
+) -> Option<StageScore> {
+    // All finish runs for (test, car), kept in run order for display.
+    let mut all: Vec<RunScore> = runs
         .iter()
         .filter(|r| r.r#type == RUN_FINISH && r.test == test && r.car == car)
-    {
-        let kt = finish_to_ktime(run);
-        let score = run_net_score(run, base_time);
-        match kt {
-            KTime::Time(_) => counting.push((score, kt)),
-            _ => aborted.push((score, kt)),
-        }
-    }
+        .map(|r| RunScore {
+            run: r.run,
+            time: finish_to_ktime(r),
+            score: run_net_score(r, base_time),
+            counted: false,
+        })
+        .collect();
+    all.sort_by_key(|r| r.run);
 
-    if counting.is_empty() {
-        // No clean time: keep the best status run, else a DNS start = NOSHO.
-        if let Some((best, time)) = aborted.iter().min_by_key(|(s, _)| *s) {
-            return Some((*best, time.clone()));
+    // Indices of clean (counting-eligible) runs, best first; ties resolved by
+    // run order so the earlier run wins.
+    let mut clean: Vec<usize> = (0..all.len())
+        .filter(|&i| matches!(all[i].time, KTime::Time(_)))
+        .collect();
+    clean.sort_by_key(|&i| (all[i].score, all[i].run));
+
+    let mut sum;
+    if !clean.is_empty() {
+        let consider = stage.repeats.max(1).min(clean.len() as u8) as usize;
+        let keep = if stage.best_x == 0 {
+            consider
+        } else {
+            (stage.best_x.min(consider as u8) as usize).max(1)
+        };
+        sum = 0;
+        for &i in clean.iter().take(keep) {
+            sum += all[i].score;
+            all[i].counted = true;
         }
-        if runs.iter().any(|r| {
+    } else if let Some(i) = (0..all.len()).min_by_key(|&i| all[i].score) {
+        // No clean time: keep the best status run.
+        all[i].counted = true;
+        sum = all[i].score;
+    } else {
+        // No finish at all: a DNS start scores NOSHO.
+        let dns = runs.iter().find(|r| {
             r.r#type == RUN_START
                 && r.test == test
                 && r.car == car
                 && r.status.as_deref() == Some("dns")
-        }) {
-            return Some((base_time as u32 + 100, KTime::NOSHO));
-        }
-        return None;
+        })?;
+        sum = base_time as u32 + 100;
+        all.push(RunScore {
+            run: dns.run,
+            time: KTime::NOSHO,
+            score: sum,
+            counted: true,
+        });
     }
-
-    counting.sort_by_key(|(s, _)| *s);
-    let consider = stage.repeats.max(1).min(counting.len() as u8) as usize;
-    let keep = if stage.best_x == 0 {
-        consider
-    } else {
-        (stage.best_x.min(consider as u8) as usize).max(1)
-    };
-    let sum: u32 = counting.iter().take(keep).map(|(s, _)| s).sum();
-    let time = counting[0].1.clone();
-    Some((sum, time))
+    Some(StageScore { sum, runs: all })
 }
 
 /// Per-car overall total: the plain sum of the per-stage scores — each stage
@@ -1983,19 +2020,19 @@ mod tests {
         let runs = vec![finish(1, 200), finish(2, 100), finish(3, 300)];
         // Best 2 of 3 count: 100 + 200 = 300.
         assert_eq!(
-            stage_result(&stage, &runs, 1, "7", 0).map(|(s, _)| s),
+            stage_result(&stage, &runs, 1, "7", 0).map(|ss| ss.sum),
             Some(300)
         );
         let mut best1 = stage.clone();
         best1.best_x = 1;
         assert_eq!(
-            stage_result(&best1, &runs, 1, "7", 0).map(|(s, _)| s),
+            stage_result(&best1, &runs, 1, "7", 0).map(|ss| ss.sum),
             Some(100)
         );
         let mut best0 = stage.clone();
         best0.best_x = 0; // count all runs up to repeats
         assert_eq!(
-            stage_result(&best0, &runs, 1, "7", 0).map(|(s, _)| s),
+            stage_result(&best0, &runs, 1, "7", 0).map(|ss| ss.sum),
             Some(600)
         );
     }
@@ -2016,7 +2053,7 @@ mod tests {
         };
         // A clean finish wins even when a slower one has lawn-dart flag penalties.
         assert_eq!(
-            stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).map(|(s, _)| s),
+            stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).map(|ss| ss.sum),
             Some(450)
         );
         // No finish at all: DNS start counts as a 1100 (no-time) score.
@@ -2030,7 +2067,7 @@ mod tests {
             ..Default::default()
         }];
         assert_eq!(
-            stage_result(&stage, &dnss, 1, "9", 1000).map(|(s, _)| s),
+            stage_result(&stage, &dnss, 1, "9", 1000).map(|ss| ss.sum),
             Some(1100)
         );
     }
@@ -2169,6 +2206,35 @@ mod tests {
                 .score_ds,
             920
         );
+    }
+
+    #[test]
+    fn demo_best_x_of_y_sums_runs_on_stage() {
+        let mut ev = demo_event();
+        ev.stages[0].repeats = 3;
+        ev.stages[0].best_x = 2;
+        let finish = |ith: u8, ds: u16| RunRecord {
+            r#type: "finish".into(),
+            test: 1,
+            car: "1".into(),
+            run: ith,
+            ts: ith as i64,
+            time_ds: Some(ds),
+            ..Default::default()
+        };
+        let runs = vec![finish(1, 450), finish(2, 470), finish(3, 100)];
+        let rv = create_result_view(&ev, &runs, "Outright");
+        let alice_entry_no = ev.entries[0].entry_no;
+        let stage1 = &rv.rows[&alice_entry_no].columns[0].as_ref().unwrap();
+        // Best 2 of 3 = 450 + 100 = 550.
+        assert_eq!(stage1.stage_pos.score_ds, 550);
+        // Display order is run order, with the non-counting run struck out.
+        let shown: Vec<(u8, u32, bool)> = stage1
+            .runs
+            .iter()
+            .map(|r| (r.run, r.score, r.counted))
+            .collect();
+        assert_eq!(shown, vec![(1, 450, true), (2, 470, false), (3, 100, true)]);
     }
 
     #[test]
