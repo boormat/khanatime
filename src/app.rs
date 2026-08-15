@@ -105,6 +105,16 @@ pub struct AppState {
     pub parcel_status: Signal<String>,
     /// Parcel for a different event: `(event id, name)` to offer open-and-import.
     pub parcel_open_event: Signal<Option<(String, String)>>,
+    /// QR frames (SVG) of the exported parcel, one per displayed code.
+    pub parcel_qr_svgs: Signal<Vec<String>>,
+    /// Current frame shown when the exported parcel is animated across QRs.
+    pub parcel_qr_index: Signal<usize>,
+    /// Total QR frames of the exported parcel.
+    pub parcel_qr_total: Signal<usize>,
+    /// Camera scan session is live.
+    pub scan_active: Signal<bool>,
+    /// Status/feedback line for the scan panel.
+    pub scan_status: Signal<String>,
 }
 
 /// Per-screen UI state. Kept alive across navigation so leaving and returning
@@ -147,6 +157,10 @@ pub enum Msg {
     ImportParcel,
     /// Open the event a mismatched parcel belongs to and import it there.
     OpenParcelEvent,
+    /// Start the camera QR scanner.
+    ScanStart,
+    /// Stop the camera QR scanner.
+    ScanStop,
 }
 
 impl Model {
@@ -189,6 +203,11 @@ impl Model {
                 parcel_import: create_signal(String::new()),
                 parcel_status: create_signal(String::new()),
                 parcel_open_event: create_signal(None),
+                parcel_qr_svgs: create_signal(Vec::new()),
+                parcel_qr_index: create_signal(0),
+                parcel_qr_total: create_signal(0),
+                scan_active: create_signal(false),
+                scan_status: create_signal(String::new()),
             },
             screens: Screens {
                 home: page::home::init(),
@@ -261,6 +280,17 @@ pub fn update(model: Model, msg: Msg) {
         Msg::ExportParcel => crate::sync::export_parcel(model),
         Msg::ImportParcel => crate::sync::import_parcel(model),
         Msg::OpenParcelEvent => crate::sync::open_parcel_event(model),
+        Msg::ScanStart => {
+            #[cfg(target_arch = "wasm32")]
+            crate::qr_scan::start_scan(model);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = model;
+        }
+        Msg::ScanStop => {
+            model.app.scan_active.set(false);
+            #[cfg(target_arch = "wasm32")]
+            crate::qr_scan::stop_scan();
+        }
     }
 }
 

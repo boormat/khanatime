@@ -71,6 +71,7 @@ src/
 ├── ids.rs               # generated short ids (Crocker base32) + content_id(body)
 │                       #   dedup key: KT bodies -> embedded observation uid
 ├── input.rs             # keyboard/input helpers
+├── qr_scan.rs           # camera QR scanning for parcel import (wasm; BarcodeDetector)
 ├── log.rs              # per-event message log + pending outbox (localStorage);
 │                       #   LogMsg.origin tracks the publishing transport (room id /
 │                       #   "parcel" / outbox), publish_outbox + confirm_in_room
@@ -80,7 +81,8 @@ src/
 │                       #   + view_handoff (offline handoff box)
 ├── services/
 │   ├── mod.rs
-│   ├── qr.rs           # QR parcel codec: khanatime_parcel:{json} pack/unpack (pure)
+│   ├── qr.rs           # QR parcel codec: khanatime_parcel:{json} pack/unpack +
+│   │                   #   khanatime_qr: frame codec + SVG rendering (pure)
 │   └── matrix.rs       # matrix-sdk transport wrapper (wasm)
 └── page/
     ├── home.rs         # sign-in + current-event dashboard
@@ -141,8 +143,9 @@ src/
   one from another device — no network needed. Export promotes the local outbox
   into the log as `origin="parcel"` (handing a message off is publishing it); on
   reconnect `sync::relay_to_room` re-broadcasts anything not yet confirmed in
-  the room, and content-id dedup keeps re-import idempotent. QR rendering +
-  camera scanning are still to come (they reuse `services/qr.rs`).
+  the room, and content-id dedup keeps re-import idempotent. QR rendering
+  (animated `khanatime_qr:` frames rendered as SVG) and camera scanning
+  (`qr_scan.rs`, browser BarcodeDetector; paste fallback) are live.
 - The single-room baseline is being extended to **multi-transport** (dual
   homeservers with content-id merge + auto-relay, QR parcel handoff, and
   generated event/observation ids with `amend`/`void`) — plan and wire-format

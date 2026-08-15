@@ -68,6 +68,27 @@
   line-height: 1.2;
 }
 
+// Offline handoff: the exported QR code sits in a white rounded card.
+.kt-qr-box {
+  display: inline-block;
+  padding: 0.5rem;
+  background: #fff;
+  border: 1px solid $grey-light;
+  border-radius: 6px;
+
+  svg {
+    display: block;
+  }
+}
+
+// Offline handoff: the live camera feed while scanning a parcel.
+.kt-scan-video video {
+  width: 100%;
+  max-width: 320px;
+  border-radius: 6px;
+  background: #000;
+}
+
 // Print: the results table must print without the scroll container, shrunk so
 // the whole board fits the page (orientation is chosen in the print dialog).
 @media print {

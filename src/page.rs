@@ -236,7 +236,29 @@ pub fn view_handoff(model: crate::Model) -> View {
                     }
                 }
             }
+            (move || view_qr(model))
             (exported_view)
+            div(class="field is-grouped") {
+                div(class="control") {
+                    button(
+                        class="button is-small is-warning",
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-camera") }
+                        span { "Scan" }
+                    }
+                }
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStop),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-stop") }
+                        span { "Stop" }
+                    }
+                }
+            }
+            (move || view_scan(model))
             div(class="field") {
                 label(class="label is-small") { "Import a parcel" }
                 div(class="control") {
@@ -258,6 +280,65 @@ pub fn view_handoff(model: crate::Model) -> View {
                 }
                 (open_view)
             }
+            (status_view)
+        }
+    }
+}
+
+/// The exported parcel's QR display: the current frame as an SVG, animated
+/// across frames when the parcel spans more than one code.
+fn view_qr(model: crate::Model) -> View {
+    let svgs = model.app.parcel_qr_svgs.get_clone();
+    if svgs.is_empty() {
+        return view! {};
+    }
+    let i = model.app.parcel_qr_index.get();
+    let total = model.app.parcel_qr_total.get();
+    let svg = svgs.get(i).cloned().unwrap_or_default();
+    let hint = if total > 1 {
+        format!(
+            "Frame {}/{} — animated; hold the other phone's camera steady.",
+            i + 1,
+            total
+        )
+    } else {
+        "Show the other phone's camera at this code.".to_string()
+    };
+    view! {
+        div(class="field") {
+            div(class="kt-qr-box") {
+                div(dangerously_set_inner_html=svg) {}
+            }
+            p(class="help") { (hint) }
+        }
+    }
+}
+
+/// The camera scan panel.  The video element is always in the DOM (so the
+/// scanner can bind it) but only shown while a scan is active.
+fn view_scan(model: crate::Model) -> View {
+    let active = model.app.scan_active.get();
+    let status = model.app.scan_status.get_clone();
+    let video_class = if active {
+        "kt-scan-video"
+    } else {
+        "kt-scan-video is-hidden"
+    };
+    let status_view = if status.is_empty() {
+        view! {}
+    } else {
+        let s = status.clone();
+        view! { p(class="help has-text-info") { (s) } }
+    };
+    view! {
+        div {
+            video(
+                id="kt-scan-video",
+                class=video_class,
+                autoplay=true,
+                playsinline=true,
+                muted=true,
+            ) {}
             (status_view)
         }
     }

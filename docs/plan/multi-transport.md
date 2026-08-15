@@ -245,8 +245,10 @@ joins the room set matching the server it can reach.
 - [x] QR: parcel export/import (`services/qr.rs`, `sync::export_parcel` /
       `import_parcel`, Handoff UI on Results/Events, promote-on-export +
       `sync::relay_to_room`, `log::publish_outbox`/`confirm_in_room`).
-- [ ] QR rendering (animated/chunked sequence) + camera scanning; `flate2`
-      compression (export is plain JSON for now).
+- [x] QR rendering (animated/chunked `khanatime_qr:` frames, SVG display) +
+      camera scanning (BarcodeDetector, `qr_scan.rs`; paste fallback).
+- [ ] `flate2` compression of the parcel payload (plain JSON for now); jsQR
+      fallback for browsers without BarcodeDetector (Firefox).
 - [ ] Multi-connection: app state (`AuxConn`), Home "add server", fan-out
       flush, merge from all transports.
 - [ ] Room registry + publish-to-multiple + per-server room join.

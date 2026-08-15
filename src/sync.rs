@@ -26,6 +26,8 @@ use crate::app::ConnState;
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 /// Connection actions driven from the Home page.
 #[derive(Clone)]
@@ -232,7 +234,17 @@ pub fn export_parcel(model: Model) {
     let moved = crate::log::publish_outbox(&id);
     let log = crate::log::load_log(&id);
     let text = crate::services::qr::pack_parcel(&uid, &log);
-    model.app.parcel_export.set(text);
+    model.app.parcel_export.set(text.clone());
+    // QR display: split into frames, render each as an SVG, animate when many.
+    let svgs: Vec<String> = crate::services::qr::pack_frames(&text)
+        .into_iter()
+        .filter_map(|f| crate::services::qr::qr_svg(&f))
+        .collect();
+    model.app.parcel_qr_svgs.set(svgs.clone());
+    model.app.parcel_qr_total.set(svgs.len());
+    model.app.parcel_qr_index.set(0);
+    #[cfg(target_arch = "wasm32")]
+    start_qr_animation(model, svgs.len());
     let n = log.len();
     let extra = if moved > 0 {
         format!(" ({moved} unsent moved into the handoff)")
@@ -240,8 +252,45 @@ pub fn export_parcel(model: Model) {
         String::new()
     };
     model.app.parcel_status.set(format!(
-        "{n} messages ready{extra}. Scan or copy on the other device."
+        "{n} messages ready{extra} — scan or copy on the other device."
     ));
+}
+
+/// Cycle the exported QR display through its frames on a timer.
+#[cfg(target_arch = "wasm32")]
+fn start_qr_animation(model: Model, n: usize) {
+    if n <= 1 {
+        return;
+    }
+    clear_qr_timer();
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::wrap(Box::new(move || {
+        model.app.parcel_qr_index.update(|i| *i = (*i + 1) % n);
+    }));
+    let id = window
+        .set_interval_with_callback_and_timeout_and_arguments_0(
+            closure.as_ref().unchecked_ref(),
+            1300,
+        )
+        .unwrap_or_default();
+    closure.forget();
+    QR_TIMER.with(|t| *t.borrow_mut() = Some(id));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn clear_qr_timer() {
+    if let Some(id) = QR_TIMER.with(|t| t.borrow_mut().take()) {
+        if let Some(window) = web_sys::window() {
+            window.clear_interval_with_handle(id);
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static QR_TIMER: std::cell::RefCell<Option<i32>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Import a QR parcel: parse it, gate on the current event's uid, then append
@@ -283,6 +332,14 @@ pub fn import_parcel(model: Model) {
         return;
     }
     apply_parcel(model, &id, &parcel);
+}
+
+/// Import a parcel string decoded directly (e.g. by the camera scanner),
+/// reusing the paste path so gating + replay behave identically.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm scan sink
+pub fn import_parcel_text(model: Model, text: &str) {
+    model.app.parcel_import.set(text.to_string());
+    import_parcel(model);
 }
 
 /// Open the event a mismatched parcel belongs to and import it there.  Used by

@@ -5,6 +5,8 @@ mod ids;
 mod input;
 mod log;
 mod page;
+#[cfg(target_arch = "wasm32")]
+mod qr_scan;
 mod replay;
 mod services;
 mod sync;
