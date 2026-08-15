@@ -930,6 +930,11 @@ fn stage_result(
         return None; // car hasn't appeared in this test at all
     }
 
+    // Cancelled stage (repeats = 0): no runs count, nobody scores, ever.
+    if stage.repeats == 0 {
+        return None;
+    }
+
     let y = stage.repeats.max(1);
 
     // Real attempts only: finishes (clean/DNF/FTS/WD) and declared-DNS starts.
@@ -2367,6 +2372,28 @@ mod tests {
         // Stage 4 is a normal single run after the gap.
         assert_eq!(ev.stages[3].repeats, 1);
         assert_eq!(ev.stages[3].best_x, 1);
+    }
+
+    #[test]
+    fn cancelled_stage_scores_nothing() {
+        let ev = EventInfo::default();
+        let stage = Stage {
+            num: 3,
+            repeats: 0, // cancelled: no runs count
+            best_x: 1,
+            ..ev.stage(0).clone()
+        };
+        let finish = RunRecord {
+            r#type: "finish".into(),
+            test: 3,
+            car: "7".into(),
+            run: 1,
+            ts: 1,
+            time_ds: Some(450),
+            ..Default::default()
+        };
+        // A run recorded on a cancelled stage still scores nothing.
+        assert!(stage_result(&stage, &[finish], 3, "7", 0).is_none());
     }
 
     #[test]
