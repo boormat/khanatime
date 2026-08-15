@@ -12,6 +12,9 @@
 - `docs/plan/timing-unknown.md` — UNKNOWN entry flow + resolver (timing screens)
 - `docs/plan/car-numbers.md` — car numbers, entry identity, shared cars
 - `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format (deferred: just in time for the first official release)
+- `docs/plan/qr-join.md` — QR join links: scan-to-join bootstrap (URL → connect + adopt published event)
+- `docs/plan/multi-transport.md` — multi-transport timing: QR parcel handoff + dual homeserver relay, and event/observation ids with amendments
+- `docs/plan/identity-amendments.md` — Phase 1: event/observation ids + `amend`/`void` wire format v2 (implementation detail)
 - `AGENTS.md` — build/test commands and code layout
 
 ---
@@ -201,6 +204,9 @@ the garage.
   verification). See `docs/research/Cryptography.md` for background.
 - `docs/research/Matrix.md` described a multi-room split (general/timing/
   results/safety/location) — **superseded**; one room per event.
+- Extended by `docs/plan/multi-transport.md`: dual homeservers (LAN + public)
+  with content-id merge + auto-relay, QR parcel handoff for no-network days,
+  and generated event/observation ids with `amend`/`void`.
 
 ### Payload
 
