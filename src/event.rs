@@ -1416,6 +1416,9 @@ pub fn demo_event() -> EventInfo {
             .collect(),
         ..Default::default()
     };
+    // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
+    ev.stages[1].repeats = 3;
+    ev.stages[1].best_x = 2;
     for (car, name, classes) in [
         ("1", "Alice", &["Outright", "Female"][..]),
         ("2", "Bob", &["Outright"][..]),
@@ -2249,11 +2252,12 @@ mod tests {
     #[test]
     fn demo_best_x_of_y_sums_runs_on_stage() {
         let mut ev = demo_event();
-        ev.stages[0].repeats = 3;
-        ev.stages[0].best_x = 2;
+        // Stage 2 ships as best-2-of-3; exercise that configuration.
+        assert_eq!(ev.stages[1].repeats, 3);
+        assert_eq!(ev.stages[1].best_x, 2);
         let finish = |ith: u8, ds: u16| RunRecord {
             r#type: "finish".into(),
-            test: 1,
+            test: 2,
             car: "1".into(),
             run: ith,
             ts: ith as i64,
@@ -2263,11 +2267,11 @@ mod tests {
         let runs = vec![finish(1, 450), finish(2, 470), finish(3, 100)];
         let rv = create_result_view(&ev, &runs, "Outright");
         let alice_entry_no = ev.entries[0].entry_no;
-        let stage1 = &rv.rows[&alice_entry_no].columns[0].as_ref().unwrap();
+        let stage2 = &rv.rows[&alice_entry_no].columns[1].as_ref().unwrap();
         // Best 2 of 3 = 450 + 100 = 550.
-        assert_eq!(stage1.stage_pos.score_ds, 550);
+        assert_eq!(stage2.stage_pos.score_ds, 550);
         // Display order is run order, with the non-counting run struck out.
-        let shown: Vec<(u8, u32, bool)> = stage1
+        let shown: Vec<(u8, u32, bool)> = stage2
             .runs
             .iter()
             .map(|r| (r.run, r.score, r.counted))
