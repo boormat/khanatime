@@ -21,8 +21,13 @@ use serde::{Deserialize, Serialize};
 pub const PARCEL_PREFIX: &str = "khanatime_parcel:";
 pub const QR_PREFIX: &str = "khanatime_qr:";
 
-/// Max characters of parcel payload per frame — a comfortable single-QR size.
-pub const MAX_FRAME_DATA: usize = 1200;
+/// Max characters of parcel payload per frame.  Kept small so each frame QR
+/// stays low-density (fewer modules) and is easily scannable at phone size.
+pub const MAX_FRAME_DATA: usize = 500;
+/// Minimum on-screen pixels per QR module, so dense frames stay legible.
+pub const MIN_MODULE_PX: u32 = 8;
+/// Smallest QR canvas a parcel renders to (single-frame / tiny parcels).
+pub const QR_MIN_PX: u32 = 280;
 
 /// One frame of a chunked parcel: a slice of the parcel text plus framing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,21 +160,26 @@ pub fn assemble_frames(frames: &[Frame]) -> Result<String, String> {
     Ok(out)
 }
 
-/// Render `data` as an SVG QR code (white quiet border, black modules).
-pub fn qr_svg(data: &str) -> Option<String> {
-    let code = qrcode::QrCode::new(data).ok()?;
+/// Render `data` as an SVG QR code on a `view_px`² canvas (white quiet border,
+/// black modules).  The QR is scaled to fit — at least one pixel per module —
+/// and centered, so every code in a sequence rendered with the same `view_px`
+/// looks the same size.
+pub fn qr_svg(data: &str, view_px: u32) -> Option<String> {
+    let code = qrcode::QrCode::new(data.as_bytes()).ok()?;
     let n = code.width() as u32;
-    let scale = 4u32;
     let quiet = 4u32;
-    let size = (n + 2 * quiet) * scale;
-    let origin = quiet * scale;
+    let total = n + 2 * quiet;
+    let scale = (view_px / total).max(1);
+    let qr_px = total * scale;
+    let offset = (view_px - qr_px) / 2;
+    let size = view_px;
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{size}\" height=\"{size}\" viewBox=\"0 0 {size} {size}\"><rect width=\"{size}\" height=\"{size}\" fill=\"#fff\"/>"
     );
     for (i, color) in code.to_colors().iter().enumerate() {
         if *color == qrcode::Color::Dark {
-            let x = origin + (i as u32 % n) * scale;
-            let y = origin + (i as u32 / n) * scale;
+            let x = offset + (i as u32 % n + quiet) * scale;
+            let y = offset + (i as u32 / n + quiet) * scale;
             svg.push_str(&format!(
                 "<rect x=\"{x}\" y=\"{y}\" width=\"{scale}\" height=\"{scale}\" fill=\"#000\"/>"
             ));
@@ -177,6 +187,21 @@ pub fn qr_svg(data: &str) -> Option<String> {
     }
     svg.push_str("</svg>");
     Some(svg)
+}
+
+/// Render a whole frame sequence to one uniform canvas: every QR shares the
+/// largest frame's size so animated frames never change the layout, and each
+/// module is at least `min_module_px` on screen (dense frames stay legible).
+pub fn qr_svgs(frames: &[String], min_module_px: u32) -> Vec<String> {
+    let quiet = 4u32;
+    let mut max_total = 0u32;
+    for f in frames {
+        if let Ok(code) = qrcode::QrCode::new(f.as_bytes()) {
+            max_total = max_total.max(code.width() as u32 + 2 * quiet);
+        }
+    }
+    let view_px = (max_total * min_module_px).max(QR_MIN_PX);
+    frames.iter().filter_map(|f| qr_svg(f, view_px)).collect()
 }
 
 /// Split a UTF-8 string into chunks no larger than `max` bytes, keeping
@@ -340,17 +365,70 @@ mod tests {
 
     #[test]
     fn svg_renders_valid_svg() {
-        let svg =
-            qr_svg("khanatime_parcel:{\"v\":1,\"event_uid\":\"e\",\"created\":0,\"msgs\":[]}")
-                .expect("svg renders");
+        let svg = qr_svg(
+            "khanatime_parcel:{\"v\":1,\"event_uid\":\"e\",\"created\":0,\"msgs\":[]}",
+            320,
+        )
+        .expect("svg renders");
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
         assert!(svg.contains("<rect"));
+        assert!(svg.contains("viewBox=\"0 0 320 320\""));
+    }
+
+    #[test]
+    fn svg_same_size_regardless_of_data_length() {
+        let short = qr_svg(
+            "khanatime_parcel:{\"v\":1,\"event_uid\":\"e\",\"created\":0,\"msgs\":[]}",
+            400,
+        )
+        .expect("short renders");
+        let long = qr_svg(
+            &format!("khanatime_parcel:{}{}", "{}", "y".repeat(1200)),
+            400,
+        )
+        .expect("long renders");
+        let vb = |s: &str| {
+            s.split("viewBox=\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(vb(&short), vb(&long));
+        assert_eq!(vb(&short), "0 0 400 400");
+    }
+
+    #[test]
+    fn qr_svgs_uniform_and_legible() {
+        // Frames of different lengths (hence different module counts).
+        let frames = vec![
+            "small".to_string(),
+            "a somewhat longer payload, still small".to_string(),
+            "x".repeat(500),
+        ];
+        let svgs = qr_svgs(&frames, MIN_MODULE_PX);
+        assert_eq!(svgs.len(), 3);
+        let vb = |s: &str| {
+            s.split("viewBox=\"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap()
+                .to_string()
+        };
+        let vbs: Vec<String> = svgs.iter().map(|s| vb(s)).collect();
+        // All frames share one canvas, so the layout never shifts.
+        assert!(vbs.windows(2).all(|w| w[0] == w[1]));
+        // The canvas is at least the largest frame's modules * min pixel size.
+        let largest = qrcode::QrCode::new(frames[2].as_bytes()).unwrap().width() as u32;
+        let expected = ((largest + 8) * MIN_MODULE_PX).max(QR_MIN_PX);
+        assert_eq!(vbs[0], format!("0 0 {expected} {expected}"));
+        assert!(expected >= QR_MIN_PX);
     }
 
     #[test]
     fn svg_none_for_oversized_data() {
         let huge = "x".repeat(100_000);
-        assert!(qr_svg(&huge).is_none());
+        assert!(qr_svg(&huge, 320).is_none());
     }
 }

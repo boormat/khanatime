@@ -235,14 +235,14 @@ pub fn export_parcel(model: Model) {
     let log = crate::log::load_log(&id);
     let text = crate::services::qr::pack_parcel(&uid, &log);
     model.app.parcel_export.set(text.clone());
-    // QR display: split into frames, render each as an SVG, animate when many.
-    let svgs: Vec<String> = crate::services::qr::pack_frames(&text)
-        .into_iter()
-        .filter_map(|f| crate::services::qr::qr_svg(&f))
-        .collect();
+    // QR display: split into frames, render all to one uniform canvas
+    // (min module px keeps dense frames scannable), animate when many.
+    let frames = crate::services::qr::pack_frames(&text);
+    let svgs = crate::services::qr::qr_svgs(&frames, crate::services::qr::MIN_MODULE_PX);
     model.app.parcel_qr_svgs.set(svgs.clone());
     model.app.parcel_qr_total.set(svgs.len());
     model.app.parcel_qr_index.set(0);
+    model.app.parcel_qr_paused.set(false);
     #[cfg(target_arch = "wasm32")]
     start_qr_animation(model, svgs.len());
     let n = log.len();
@@ -267,7 +267,9 @@ fn start_qr_animation(model: Model, n: usize) {
         return;
     };
     let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::wrap(Box::new(move || {
-        model.app.parcel_qr_index.update(|i| *i = (*i + 1) % n);
+        if !model.app.parcel_qr_paused.get() {
+            model.app.parcel_qr_index.update(|i| *i = (*i + 1) % n);
+        }
     }));
     let id = window
         .set_interval_with_callback_and_timeout_and_arguments_0(
@@ -291,6 +293,21 @@ fn clear_qr_timer() {
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static QR_TIMER: std::cell::RefCell<Option<i32>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Pause or resume the animated QR export display at its current frame.
+pub fn toggle_qr_pause(model: Model) {
+    model.app.parcel_qr_paused.update(|p| *p = !*p);
+}
+
+/// Clear the QR export display (stops the animation and hides the codes).
+pub fn clear_qr(model: Model) {
+    #[cfg(target_arch = "wasm32")]
+    clear_qr_timer();
+    model.app.parcel_qr_svgs.set(Vec::new());
+    model.app.parcel_qr_total.set(0);
+    model.app.parcel_qr_index.set(0);
+    model.app.parcel_qr_paused.set(false);
 }
 
 /// Import a QR parcel: parse it, gate on the current event's uid, then append

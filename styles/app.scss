@@ -68,17 +68,30 @@
   line-height: 1.2;
 }
 
-// Offline handoff: the exported QR code sits in a white rounded card.
+// Offline handoff: the exported QR sits in a fixed-size white card so animated
+// frames (all rendered to the same QR_VIEW_PX canvas) never shift the layout.
 .kt-qr-box {
-  display: inline-block;
-  padding: 0.5rem;
+  width: min(320px, 100%);
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: #fff;
   border: 1px solid $grey-light;
   border-radius: 6px;
 
   svg {
+    width: 100%;
+    height: 100%;
     display: block;
   }
+}
+
+// Reserve a single line for the QR hint so its text never moves the layout.
+.kt-qr-hint {
+  min-height: 1.5em;
+  line-height: 1.5;
+  margin-top: 0.25rem;
 }
 
 // Offline handoff: the live camera feed while scanning a parcel.

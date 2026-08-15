@@ -294,22 +294,51 @@ fn view_qr(model: crate::Model) -> View {
     }
     let i = model.app.parcel_qr_index.get();
     let total = model.app.parcel_qr_total.get();
+    let paused = model.app.parcel_qr_paused.get();
     let svg = svgs.get(i).cloned().unwrap_or_default();
     let hint = if total > 1 {
-        format!(
-            "Frame {}/{} — animated; hold the other phone's camera steady.",
-            i + 1,
-            total
-        )
+        let anim = if paused {
+            "paused — resume to cycle frames."
+        } else {
+            "animated; hold the other phone's camera steady."
+        };
+        format!("Frame {}/{} — {anim}", i + 1, total)
     } else {
         "Show the other phone's camera at this code.".to_string()
     };
+    let pause_label = if paused { "Resume" } else { "Pause" };
     view! {
         div(class="field") {
             div(class="kt-qr-box") {
                 div(dangerously_set_inner_html=svg) {}
             }
-            p(class="help") { (hint) }
+            div(class="field is-grouped is-grouped-centered") {
+                (if total > 1 {
+                    view! {
+                        div(class="control") {
+                            button(
+                                class="button is-small is-light",
+                                on:click=move |_| crate::update(model, crate::Msg::QrPauseToggle),
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-pause") }
+                                span { (pause_label) }
+                            }
+                        }
+                    }
+                } else {
+                    view! {}
+                })
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        on:click=move |_| crate::update(model, crate::Msg::QrClear),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-times") }
+                        span { "Clear" }
+                    }
+                }
+            }
+            p(class="help kt-qr-hint") { (hint) }
         }
     }
 }

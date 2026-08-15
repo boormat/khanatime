@@ -115,6 +115,8 @@ pub struct AppState {
     pub scan_active: Signal<bool>,
     /// Status/feedback line for the scan panel.
     pub scan_status: Signal<String>,
+    /// The animated QR sequence is paused on its current frame.
+    pub parcel_qr_paused: Signal<bool>,
 }
 
 /// Per-screen UI state. Kept alive across navigation so leaving and returning
@@ -161,6 +163,10 @@ pub enum Msg {
     ScanStart,
     /// Stop the camera QR scanner.
     ScanStop,
+    /// Pause/resume the animated QR export display.
+    QrPauseToggle,
+    /// Clear the QR export display.
+    QrClear,
 }
 
 impl Model {
@@ -208,6 +214,7 @@ impl Model {
                 parcel_qr_total: create_signal(0),
                 scan_active: create_signal(false),
                 scan_status: create_signal(String::new()),
+                parcel_qr_paused: create_signal(false),
             },
             screens: Screens {
                 home: page::home::init(),
@@ -291,6 +298,8 @@ pub fn update(model: Model, msg: Msg) {
             #[cfg(target_arch = "wasm32")]
             crate::qr_scan::stop_scan();
         }
+        Msg::QrPauseToggle => crate::sync::toggle_qr_pause(model),
+        Msg::QrClear => crate::sync::clear_qr(model),
     }
 }
 
