@@ -232,7 +232,7 @@ fn show_rs(rso: &Option<ResultScore>) -> View {
                 (score)
                 (pos)
                 (cum)
-                (cum_or_cell)
+                td { (cum_or_cell) }
             }
         }
         None => {
