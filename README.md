@@ -10,6 +10,15 @@ Rust WASM client-side app:
 - Serverless — offline-first via localStorage, with Matrix sync planned
   (see `PLAN.md`)
 
+# License
+
+Licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0) — see
+`LICENSE`. Commercial use is permitted, provided your modifications are
+contributed back under the same terms. Because this is a web app, AGPL's
+network clause applies: anyone who runs or interacts with the app over a
+network can require the full corresponding source of their deployment. We
+publish our changes publicly and expect derivative works to do the same.
+
 # Tech decisions
 
 Rust + Sycamore
