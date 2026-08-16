@@ -14,6 +14,8 @@ use crate::event::{
 pub struct Model {
     /// Homeserver for the SSO target or the "add custom homeserver" popup.
     pub homeserver: Signal<String>,
+    /// Username for the "add custom homeserver" registration.
+    pub username: Signal<String>,
     pub busy: Signal<bool>,
     /// The "add a custom homeserver" URL popup is open.
     pub show_add_hs: Signal<bool>,
@@ -34,6 +36,7 @@ pub struct Model {
 pub fn init() -> Model {
     Model {
         homeserver: create_signal("http://localhost:8008".to_string()),
+        username: create_signal(String::new()),
         busy: create_signal(false),
         show_add_hs: create_signal(false),
         join_url: create_signal(String::new()),
@@ -291,7 +294,7 @@ fn view_account_summary(model: crate::Model) -> View {
 }
 
 /// Homeserver as `host[:port]` for a badge (strips scheme and trailing slash).
-fn hs_host_port(hs: &str) -> String {
+pub(crate) fn hs_host_port(hs: &str) -> String {
     let s = hs
         .strip_prefix("https://")
         .or_else(|| hs.strip_prefix("http://"))
@@ -742,7 +745,7 @@ fn view_forget_modal(model: crate::Model) -> View {
     }
 }
 
-/// URL-only popup for adding a custom homeserver: no username or password.
+/// Username + URL popup for adding a custom homeserver.
 #[cfg(target_arch = "wasm32")]
 fn view_add_hs_modal(model: crate::Model) -> View {
     let sm = model.screens.home;
@@ -755,6 +758,19 @@ fn view_add_hs_modal(model: crate::Model) -> View {
                     button(class="delete", on:click=move |_| sm.show_add_hs.set(false))
                 }
                 section(class="modal-card-body") {
+                    div(class="field") {
+                        label(class="label") { "Username" }
+                        div(class="control") {
+                            input(
+                                class="input",
+                                placeholder="e.g. alice",
+                                bind:value=sm.username,
+                            )
+                        }
+                        p(class="help") {
+                            "Pick a username for this homeserver. If it's already taken, you'll be told."
+                        }
+                    }
                     div(class="field") {
                         label(class="label") { "Homeserver URL" }
                         div(class="control") {
@@ -772,11 +788,12 @@ fn view_add_hs_modal(model: crate::Model) -> View {
                 footer(class="modal-card-foot") {
                     button(
                         class="button is-link",
-                        disabled=sm.busy.get(),
+                        disabled=sm.busy.get() || sm.username.get_clone().trim().is_empty(),
                         on:click=move |_| {
                             let hs = sm.homeserver.get_clone();
+                            let username = sm.username.get_clone();
                             sm.show_add_hs.set(false);
-                            crate::update(model, crate::Msg::Conn(crate::sync::Msg::AddHomeserver(hs)));
+                            crate::update(model, crate::Msg::Conn(crate::sync::Msg::AddHomeserver { hs, username }));
                         },
                     ) {
                         "Add"

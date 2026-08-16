@@ -73,7 +73,10 @@ pub fn update(model: crate::Model, msg: Msg) {
             );
         }
         Msg::PlanNew => {
-            model.screens.setup.show_create.set(true);
+            crate::update(
+                model,
+                crate::Msg::EventMsg(crate::page::event::Msg::CreateDraft),
+            );
             crate::update(model, crate::Msg::Show(crate::Screen::Event));
         }
     }

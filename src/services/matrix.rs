@@ -127,6 +127,10 @@ pub enum StoredAuth {
         device_id: String,
         access_token: String,
         refresh_token: Option<String>,
+        /// Stored password for re-login when the session expires (custom
+        /// homeservers only — SSO uses tokens).
+        #[serde(default)]
+        password: String,
     },
     OAuth {
         client_id: String,
@@ -139,17 +143,41 @@ fn storage() -> Option<web_sys::Storage> {
 }
 
 /// Store (or update) a session for `homeserver`, marking it active.  An
-/// existing entry's reg mode is preserved; a new one defaults to `sso`.
+/// existing entry's reg mode and password are preserved; a new one defaults to
+/// `sso` with an empty password.
 pub fn save_session(client: &Client, homeserver: &str) {
+    save_session_inner(client, homeserver, None);
+}
+
+/// Like [`save_session`], but also stores the `password` for future re-login
+/// when the access token expires (custom homeservers with open registration).
+pub fn save_session_with_password(client: &Client, homeserver: &str, password: &str) {
+    save_session_inner(client, homeserver, Some(password));
+}
+
+fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>) {
     let Some(session) = client.session() else {
         return;
     };
     let user_id = session.meta().user_id.to_string();
+    // Preserve the existing password when updating (unless a new one is given).
+    let existing_password = read_sessions()
+        .iter()
+        .find(|s| s.homeserver == homeserver)
+        .and_then(|s| match &s.kind {
+            StoredAuth::Matrix { password, .. } if !password.is_empty() => Some(password.clone()),
+            _ => None,
+        });
+    let pw = password
+        .map(|p| p.to_string())
+        .or(existing_password)
+        .unwrap_or_default();
     let kind = match session {
         AuthSession::Matrix(ms) => StoredAuth::Matrix {
             device_id: ms.meta.device_id.to_string(),
             access_token: ms.tokens.access_token,
             refresh_token: ms.tokens.refresh_token,
+            password: pw,
         },
         AuthSession::OAuth(oauth) => StoredAuth::OAuth {
             client_id: oauth.client_id.to_string(),
@@ -192,13 +220,10 @@ pub fn load_session_for(homeserver: &str) -> Option<StoredSession> {
 }
 
 /// True when `homeserver` belongs to matrix.org.  Its session is stored as the
-/// resolved endpoint (matrix-client.matrix.org), so match by host.
+/// resolved endpoint (matrix-client.matrix.org), so match by host.  Delegates
+/// to the shared pure helper (single source of truth, see `event.rs`).
 pub fn is_matrix_org(homeserver: &str) -> bool {
-    let host = url::Url::parse(homeserver)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_owned()))
-        .unwrap_or_default();
-    host == "matrix.org" || host.ends_with(".matrix.org")
+    crate::event::is_matrix_org_homeserver(homeserver)
 }
 
 /// True when a stored session belongs to matrix.org.
@@ -545,6 +570,7 @@ pub async fn restore_session(client: &Client, stored: &StoredSession) -> Result<
             device_id,
             access_token,
             refresh_token,
+            password: _,
         } => {
             let session = AuthSession::Matrix(MatrixSession {
                 meta: SessionMeta {
@@ -582,15 +608,6 @@ pub async fn logout(client: &Client) -> Result<(), String> {
 }
 
 // ----- per-event spaces (publish) -----
-
-/// The space + timing room of a published event.
-#[derive(Debug, Clone)]
-pub struct EventRooms {
-    pub space: Room,
-    pub timing: Room,
-    pub space_alias: OwnedRoomAliasId,
-    pub timing_alias: OwnedRoomAliasId,
-}
 
 /// Server name of the homeserver, used for `via` and room aliases.
 fn server_name(client: &Client) -> OwnedServerName {
@@ -661,45 +678,52 @@ async fn read_event_meta(client: &Client, room: &Room) -> Option<String> {
 /// them), so that fallback is best-effort and surfaces a clear error otherwise.
 pub async fn publish_event(
     client: &Client,
-    event: &crate::event::EventInfo,
-) -> Result<EventRooms, String> {
-    if !crate::event::valid_event_id(&event.id) {
-        return Err(format!(
-            "Event id '{}' is not usable — it needs a year, e.g. kt-2026-...",
-            event.id
-        ));
+    event: &mut crate::event::EventInfo,
+) -> Result<(), String> {
+    // The room alias is the human slug (name/club/year), not the random event
+    // id — those fields are what makes the event findable in the directory.
+    let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
+    if !crate::event::valid_event_id(&slug) {
+        return Err(
+            "Event needs a name and a 4-digit year to form its room alias before publishing."
+                .to_string(),
+        );
     }
     // The wire identity must be present before the space meta / setup manifest
     // carry it (fresh joins adopt the uid from the space meta).
-    let mut event = event.clone();
     event.ensure_uid();
-    let space_alias = alias(client, &event.id)?;
-    let timing_alias = alias(client, &format!("{}-timing", event.id))?;
+    let space_alias = alias(client, &slug)?;
+    let timing_alias = alias(client, &format!("{slug}-timing"))?;
 
-    // Same-device re-publish: join our rooms by id — avoids the directory GET
-    // that is CORS-blocked on some homeservers.
-    let (space, timing) = if let (Some(sid), Some(tid)) = (&event.space_id, &event.timing_id) {
-        let space_rid: ruma::OwnedRoomId =
-            sid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
-        let timing_rid: ruma::OwnedRoomId =
-            tid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
-        (
-            client
-                .join_room_by_id(&space_rid)
-                .await
-                .map_err(|e| e.to_string())?,
-            client
-                .join_room_by_id(&timing_rid)
-                .await
-                .map_err(|e| e.to_string())?,
-        )
+    // Join each room by id when it's already known (re-publish / partial
+    // recovery), else create-or-join by alias.  Each room's id is recorded on
+    // the event the moment it's obtained, so a failure part-way still leaves
+    // the created rooms re-joinable by id instead of stuck on alias resolution.
+    let space = if let Some(sid) = &event.space_id {
+        let rid: ruma::OwnedRoomId = sid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
+        client
+            .join_room_by_id(&rid)
+            .await
+            .map_err(|e| e.to_string())?
     } else {
-        let space = create_or_join_space(client, &space_alias, &event).await?;
-        let timing = create_or_join_timing(client, &timing_alias).await?;
-        (space, timing)
+        create_or_join_space(client, &space_alias, event).await?
     };
+    event.space_id = Some(space.room_id().to_string());
+    event.space_alias = Some(space_alias.to_string());
 
-    finalize_rooms(client, &event, &space, &timing, &space_alias, &timing_alias).await
+    let timing = if let Some(tid) = &event.timing_id {
+        let rid: ruma::OwnedRoomId = tid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
+        client
+            .join_room_by_id(&rid)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        create_or_join_timing(client, &timing_alias).await?
+    };
+    event.timing_id = Some(timing.room_id().to_string());
+    event.timing_alias = Some(timing_alias.to_string());
+
+    finalize_rooms(client, event, &space, &timing).await
 }
 
 /// Create the space with its alias, or join the existing one if the alias is
@@ -770,9 +794,7 @@ async fn finalize_rooms(
     event: &crate::event::EventInfo,
     space: &Room,
     timing: &Room,
-    space_alias: &OwnedRoomAliasId,
-    timing_alias: &OwnedRoomAliasId,
-) -> Result<EventRooms, String> {
+) -> Result<(), String> {
     // Link space <-> timing room.
     let via = vec![server_name(client)];
     space
@@ -784,15 +806,10 @@ async fn finalize_rooms(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Meta + topic on the space: searchable directory entry + room identity
-    // (so a later publish can detect "this is ours").
-    let meta = serde_json::json!({
-        "uid": event.uid,
-        "id": event.id,
-        "name": event.name,
-        "club": event.sponsoring_club,
-        "year": event.year,
-    });
+    // Meta on the space: the full event so a fresh join gets every config field
+    // (homeserver/reg/parent room/entries/Element link) from the space alone,
+    // not just the timing-room backfill.  Also the directory/identity entry.
+    let meta = serde_json::to_value(event).map_err(|e| e.to_string())?;
     space
         .send_state_event_raw("io.kt.event", "", meta)
         .await
@@ -805,15 +822,11 @@ async fn finalize_rooms(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Give the timing room its setup manifest so fresh devices can adopt it.
-    let _ = send_setup(timing, event).await;
-
-    Ok(EventRooms {
-        space: space.clone(),
-        timing: timing.clone(),
-        space_alias: space_alias.clone(),
-        timing_alias: timing_alias.clone(),
-    })
+    // The setup manifest itself is not sent here: `publish_wasm` enqueues it
+    // (replacing any superseded draft setup) and it flushes once the timing
+    // room is joined — so the room gets exactly one setup, never draft history
+    // and never a duplicate.
+    Ok(())
 }
 
 /// Publish the current event using the logged-in identity (the single account
@@ -821,7 +834,7 @@ async fn finalize_rooms(
 /// Publish the event to its configured homeserver — and only that homeserver.
 /// Uses the active client if it's for that homeserver, else a stored session
 /// for it, else an error (no implicit session/user creation).
-pub async fn publish_current_event(event: &crate::event::EventInfo) -> Result<EventRooms, String> {
+pub async fn publish_current_event(event: &mut crate::event::EventInfo) -> Result<(), String> {
     if event.homeserver.trim().is_empty() {
         return Err("Pick a homeserver to publish to first.".to_string());
     }
@@ -830,17 +843,64 @@ pub async fn publish_current_event(event: &crate::event::EventInfo) -> Result<Ev
 }
 
 /// Return a client connected to `homeserver`: the active one if it matches, or
-/// a restored stored session for it.  Errors when there's no saved login.
+/// a restored stored session for it.  With no saved login, auto-registers a
+/// fresh account on an open-registration homeserver (publish shouldn't force a
+/// manual Home login) — SSO-only servers error with a clear message.
 pub async fn ensure_client_for(homeserver: &str) -> Result<Client, String> {
     if let Some(c) = client() {
         if c.homeserver().as_str() == homeserver {
             return Ok(c);
         }
     }
-    let stored = load_session_for(homeserver)
-        .ok_or_else(|| format!("No saved login for {homeserver} — log in first."))?;
     let c = new_client(homeserver).await?;
-    restore_session(&c, &stored).await?;
+    match load_session_for(homeserver) {
+        Some(stored) => {
+            if restore_session(&c, &stored).await.is_err() {
+                // Session expired — try re-login with stored password if
+                // available (custom homeservers with open registration).
+                if let StoredAuth::Matrix { password, .. } = &stored.kind {
+                    if !password.is_empty() {
+                        let username = stored
+                            .user_id
+                            .trim_start_matches('@')
+                            .split(':')
+                            .next()
+                            .unwrap_or(&stored.user_id);
+                        if register_or_login(&c, username, password).await.is_ok() {
+                            save_session_with_password(&c, homeserver, password);
+                            set_client(Some(c.clone()));
+                            return Ok(c);
+                        }
+                    }
+                }
+                return Err(format!(
+                    "Session expired for {homeserver} — sign in on the Home page."
+                ));
+            }
+        }
+        None => {
+            let username = crate::sync::gen_join_username();
+            let password = crate::ids::gen_short_id();
+            let mut ok = register_or_login(&c, &username, &password).await.is_ok();
+            if !ok {
+                // Retry once on the rare username collision.
+                ok = register_or_login(
+                    &c,
+                    &crate::sync::gen_join_username(),
+                    &crate::ids::gen_short_id(),
+                )
+                .await
+                .is_ok();
+            }
+            if !ok {
+                return Err(format!(
+                    "No login for {homeserver} and it won't auto-register — sign in on the Home page first."
+                ));
+            }
+            set_session_reg(homeserver, crate::event::RegistrationMode::Open);
+            save_session_with_password(&c, homeserver, &password);
+        }
+    }
     set_client(Some(c.clone()));
     Ok(c)
 }
@@ -895,11 +955,11 @@ pub async fn search_events(client: &Client, term: &str) -> Result<Vec<EventSearc
     Ok(out)
 }
 
-/// Join a published event space and build the local [crate::event::EventInfo]
-/// from its `io.kt.event` state.  Entries/stages arrive later via the timing
-/// room's setup-manifest backfill.
-/// Join an event space by **room id** (no alias) and build the partial
-/// [`crate::event::EventInfo`] from its `io.kt.event` state.
+/// Join an event space by **room id** (no alias) and build the
+/// [`crate::event::EventInfo`] from its `io.kt.event` state (the full event
+/// snapshot, so every config field — homeserver/reg/parent room/entries/Element
+/// link — is present immediately).  Entries/stages that changed after publish
+/// arrive via the timing room's setup-manifest backfill (last-writer-wins).
 pub async fn open_published_event(
     client: &Client,
     space_id: &str,
@@ -914,36 +974,25 @@ pub async fn open_published_event(
     let meta = read_event_meta_content(client, &room)
         .await
         .ok_or_else(|| "That room isn't a khanatime event".to_string())?;
-    let id = meta
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "That room isn't a khanatime event".to_string())?;
-    let mut ev = crate::event::EventInfo {
-        uid: meta
-            .get("uid")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        id: id.to_string(),
-        name: meta
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        sponsoring_club: meta
-            .get("club")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        year: meta
-            .get("year")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        status: crate::event::EventStatus::Published,
-        ..Default::default()
-    };
+    let mut ev: crate::event::EventInfo = serde_json::from_value(meta)
+        .map_err(|_| "That room isn't a khanatime event".to_string())?;
+    if ev.id.is_empty() {
+        return Err("That room isn't a khanatime event".to_string());
+    }
+    ev.status = crate::event::EventStatus::Published;
     ev.space_id = Some(space_id.to_string());
+    // For old events whose space meta lacks timing_id, discover it by
+    // joining the timing room by its deterministic alias.
+    if ev.timing_id.is_none() && !ev.homeserver.is_empty() {
+        let slug = crate::event::build_event_id(&ev.year, &ev.sponsoring_club, &ev.name);
+        let server = crate::event::server_name_from_homeserver(&ev.homeserver);
+        if !slug.is_empty() && !server.is_empty() {
+            let alias = format!("#{}-timing:{}", slug, server);
+            if let Ok(timing) = join_room_by_alias(client, &alias).await {
+                ev.timing_id = Some(timing.room_id().to_string());
+            }
+        }
+    }
     Ok(ev)
 }
 
@@ -995,14 +1044,6 @@ pub async fn send_timing(room: &Room, event: &TimingEvent) -> Result<String, Str
         .await
         .map(|res| res.response.event_id.to_string())
         .map_err(|e| e.to_string())
-}
-
-/// Broadcast the full event setup so fresh devices joining the timing room can
-/// adopt it (`khanatime_setup:` body prefix).  Merge is last-writer-wins.
-pub async fn send_setup(room: &Room, event: &crate::event::EventInfo) -> Result<String, String> {
-    let json = serde_json::to_string(event).map_err(|e| e.to_string())?;
-    let body = format!("{}{}", TimingEvent::SETUP_PREFIX, json);
-    send_chat(room, &body).await
 }
 
 /// Send a stored outbox message to the room, returning the Matrix event id.

@@ -19,7 +19,6 @@ use sycamore::prelude::*;
 #[derive(Serialize, Deserialize, Clone)]
 pub enum StageMsg {
     CmdInput(InputMsg),
-    Publish,
 }
 
 #[derive(Clone, Copy)]
@@ -27,7 +26,6 @@ pub struct StageModel {
     pub cmd: InputModel,
     pub preview: Signal<Result<CmdParse, CmdError>>,
     pub stage: Signal<u8>,
-    pub publish_status: Signal<Option<String>>,
 }
 
 // adds score from user entry in model
@@ -53,7 +51,6 @@ pub fn init() -> StageModel {
         cmd: crate::input::init(),
         stage: create_signal(1),
         preview: create_signal(Err(CmdError::Nothing)),
-        publish_status: create_signal(None),
     }
 }
 
@@ -93,56 +90,7 @@ pub fn update(model: Model, msg: StageMsg) {
                 Err(_) => khanatime::log!("parse nope"),
             };
         }
-
-        StageMsg::Publish => publish(model),
     }
-}
-
-/// Publish the current event to a Matrix space + timing room.
-fn publish(model: Model) {
-    #[cfg(target_arch = "wasm32")]
-    publish_wasm(model);
-    #[cfg(not(target_arch = "wasm32"))]
-    model.screens.stage.publish_status.set(Some(
-        "Matrix publishing is only available in the web build".to_string(),
-    ));
-}
-
-#[cfg(target_arch = "wasm32")]
-fn publish_wasm(model: Model) {
-    use crate::event::EventStatus;
-
-    let sm = model.screens.stage;
-    if crate::services::matrix::client().is_none() {
-        sm.publish_status
-            .set(Some("Log in on the Home page first".to_string()));
-        return;
-    }
-    let event = model.app.event.get_clone();
-    if event.id.is_empty() {
-        sm.publish_status
-            .set(Some("Save the event first (needs a name)".to_string()));
-        return;
-    }
-    sm.publish_status.set(Some("Publishing...".to_string()));
-    wasm_bindgen_futures::spawn_local(async move {
-        let res = crate::services::matrix::publish_current_event(&event).await;
-        match res {
-            Ok(rooms) => {
-                let mut event = event;
-                event.space_id = Some(rooms.space.room_id().to_string());
-                event.space_alias = Some(rooms.space_alias.to_string());
-                event.timing_id = Some(rooms.timing.room_id().to_string());
-                event.timing_alias = Some(rooms.timing_alias.to_string());
-                event.status = EventStatus::Published;
-                model.app.event.set(event);
-                crate::app::enqueue_setup(model);
-                crate::sync::flush_pending(model);
-                sm.publish_status.set(Some("Published".to_string()));
-            }
-            Err(e) => sm.publish_status.set(Some(format!("Publish failed: {e}"))),
-        }
-    });
 }
 
 fn clear_cmd(model: Model) {
@@ -165,35 +113,6 @@ pub fn view(model: Model) -> View {
             (move || view_list(model))
             (move || view_preview(model))
             (input_box_wrap(model))
-            (view_publish(model))
-        }
-    }
-}
-
-fn view_publish(model: Model) -> View {
-    let sm = model.screens.stage;
-    view! {
-        div(class="box") {
-            h2(class="title is-5") { "Publish" }
-            div {
-                (move || {
-                    let status = model.app.event.with(|e| e.status.to_string());
-                    let space = model.app.event.with(|e| e.space_alias.clone());
-                    match space {
-                        Some(alias) => view! { p(class="help is-success") { ("Published at ") (alias) } },
-                        None => view! { p(class="help") { ("Status: ") (status) } },
-                    }
-                })
-            }
-            div {
-                (move || match sm.publish_status.get_clone() {
-                    Some(s) => view! { p(class="help") { (s) } },
-                    None => view! { p(class="help") { "Not published yet." } },
-                })
-            }
-            button(class="button is-primary", on:click=move |_| update(model, StageMsg::Publish)) {
-                "Publish to Matrix"
-            }
         }
     }
 }

@@ -11,12 +11,13 @@ use sycamore::prelude::*;
 
 #[derive(Clone)]
 pub enum Msg {
-    // classes
-    EditClass(String), // borkish
+    // classes (add / delete only — no rename)
     DeleteClass(String),
     ClassInput(InputMsg),
     // draft event creation
     CreateDraft,
+    /// Copy the current event to a fresh draft (new id/name, entrants + tests).
+    CopyAsNew,
     // event details editing
     LoadDetails,
     /// Compact + diff the staged edits and open the confirm modal.
@@ -33,82 +34,90 @@ pub enum Msg {
     StageDelete(usize),
     // publish + sync to Matrix
     Publish,
-    /// Copy a published event to a fresh draft (new id, no timing data).
-    PublishAsNew,
-    /// Re-broadcast the event setup manifest to the already-existing timing
-    /// room (after an amendment).
-    SyncToRoom,
     /// Set the event's publish homeserver.
     SetHomeserver(String),
     /// Set the event's registration mode.
     SetReg(crate::event::RegistrationMode),
-    /// Open the join-QR modal.
-    ShowJoinQr,
-    /// Close the join-QR modal.
-    CloseJoinQr,
 }
 
 #[derive(Clone, Copy)]
 pub struct Model {
     pub class: InputModel,
-    pub new_name: Signal<String>,
-    pub new_club: Signal<String>,
-    pub new_year: Signal<String>,
     pub feedback: Signal<String>,
-    pub show_create: Signal<bool>,
+    /// Success confirmation (e.g. "Saved."), shown as an info line.
+    pub saved: Signal<String>,
     pub editing: Signal<bool>,
-    pub edit_stages: Signal<Vec<Stage>>,
-    /// Bumped when the stage list structure changes (add/remove) so the list
-    /// re-renders, while per-keystroke field edits are untracked and don't.
-    pub edit_rev: Signal<u8>,
+    // ---- staged edit fields (applied on Save) ----
+    pub edit_name: Signal<String>,
     pub edit_club: Signal<String>,
     pub edit_year: Signal<String>,
     pub edit_event_date: Signal<String>,
     pub edit_entry_open: Signal<String>,
     pub edit_entry_close: Signal<String>,
     pub edit_stripe: Signal<String>,
+    pub edit_parent_room: Signal<String>,
+    pub edit_entries_enabled: Signal<bool>,
+    pub edit_homeserver: Signal<String>,
+    pub edit_reg: Signal<crate::event::RegistrationMode>,
+    pub edit_element_link: Signal<String>,
+    pub edit_stages: Signal<Vec<Stage>>,
+    /// Bumped when the stage list structure changes (add/remove) so the list
+    /// re-renders, while per-keystroke field edits are untracked and don't.
+    pub edit_rev: Signal<u8>,
     /// Staged class list (like `edit_stages`), applied on batch send.
     pub edit_classes: Signal<Vec<String>>,
+    // ---- flow state ----
     pub publish_status: Signal<Option<String>>,
     /// Set when a published event is amended locally and the timing room
     /// hasn't been re-synced yet.
     pub needs_sync: Signal<bool>,
     /// Batch-confirm modal content (the event diff) while open.
     pub confirm: Signal<Option<Vec<String>>>,
-    /// Homeserver text field (mirrors/edits the event's publish homeserver).
-    pub hs_input: Signal<String>,
-    /// Join-QR modal visibility + rendered content.
-    pub join_qr_visible: Signal<bool>,
-    pub join_qr_svg: Signal<String>,
-    pub join_url: Signal<String>,
+    /// Extra text shown in the confirm modal (e.g. remote updates arrived).
+    pub confirm_warning: Signal<String>,
+    /// Id of the event that was current before a fresh create/copy.  Discard
+    /// restores it (dropping the unsaved draft).  `None` for normal edits.
+    pub pre_create: Signal<Option<String>>,
+    /// Snapshot of the committed event when an edit of a *published* event
+    /// started — remote updates made meanwhile are warned about at save time.
+    pub edit_base: Signal<Option<crate::event::EventInfo>>,
+    /// Collapsible sections within the single event box.
+    pub show_tests: Signal<bool>,
+    pub show_classes: Signal<bool>,
+    pub show_entrants: Signal<bool>,
 }
 
 pub fn init() -> Model {
     let year = js_sys::Date::new_0().get_full_year().to_string();
     Model {
         class: crate::input::init(),
-        new_name: create_signal(String::new()),
-        new_club: create_signal(String::new()),
-        new_year: create_signal(year.clone()),
         feedback: create_signal(String::new()),
-        show_create: create_signal(false),
+        saved: create_signal(String::new()),
         editing: create_signal(false),
-        edit_stages: create_signal(crate::event::EventInfo::default().stages),
-        edit_rev: create_signal(0),
+        edit_name: create_signal(String::new()),
         edit_club: create_signal(String::new()),
         edit_year: create_signal(year),
         edit_event_date: create_signal(String::new()),
         edit_entry_open: create_signal(String::new()),
         edit_entry_close: create_signal(String::new()),
         edit_stripe: create_signal(String::new()),
+        edit_parent_room: create_signal(String::new()),
+        edit_entries_enabled: create_signal(false),
+        edit_homeserver: create_signal(String::new()),
+        edit_reg: create_signal(crate::event::RegistrationMode::default()),
+        edit_element_link: create_signal(String::new()),
+        edit_stages: create_signal(crate::event::EventInfo::default().stages),
+        edit_rev: create_signal(0),
         edit_classes: create_signal(crate::event::EventInfo::default().classes),
         publish_status: create_signal(None),
         needs_sync: create_signal(false),
         confirm: create_signal(None),
-        hs_input: create_signal(String::new()),
-        join_qr_visible: create_signal(false),
-        join_qr_svg: create_signal(String::new()),
-        join_url: create_signal(String::new()),
+        confirm_warning: create_signal(String::new()),
+        pre_create: create_signal(None),
+        edit_base: create_signal(None),
+        show_tests: create_signal(true),
+        show_classes: create_signal(true),
+        show_entrants: create_signal(false),
     }
 }
 
@@ -125,27 +134,14 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::ClassInput(InputMsg::CancelEdit) => {
             input_clear(model.screens.setup.class);
         }
-        Msg::EditClass(class) => {
-            model.screens.setup.class.input.set(class.clone());
-            model
-                .screens
-                .setup
-                .class
-                .feedback
-                .set(format!("Editing class {class}"));
-        }
 
         Msg::ClassInput(InputMsg::DoThing) => {
-            // new or rename... if key not null?  Stages into the edit form.
-            let key = model.screens.setup.class.key.get_clone();
+            // Add a new class to the staged list (rename isn't supported).
             let input = model.screens.setup.class.input.get_clone();
             model.screens.setup.edit_classes.update(|v| {
-                if key.is_empty() {
-                    if !v.contains(&input) {
-                        v.push(input.clone());
-                    }
-                } else if let Some(c) = v.iter_mut().find(|c| **c == key) {
-                    *c = input.clone();
+                let trimmed = input.trim().to_string();
+                if !trimmed.is_empty() && !v.contains(&trimmed) {
+                    v.push(trimmed);
                 }
             });
             input_clear(model.screens.setup.class);
@@ -159,42 +155,49 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .update(|v| v.retain(|c| c != &class));
         }
         Msg::CreateDraft => create_draft(model),
+        Msg::CopyAsNew => copy_as_new(model),
         Msg::LoadDetails => load_details(model),
         Msg::SaveBatch => save_batch(model),
         Msg::SendBatch => send_batch(model),
-        Msg::CancelBatch => model.screens.setup.confirm.set(None),
-        Msg::DiscardBatch => {
-            load_details(model);
-            model.screens.setup.editing.set(false);
+        Msg::CancelBatch => {
             model.screens.setup.confirm.set(None);
+            model.screens.setup.confirm_warning.set(String::new());
         }
+        Msg::DiscardBatch => discard_edits(model),
         Msg::ToggleEdit => {
             if model.screens.setup.editing.get() {
-                // Done: abandon staged edits and revert the form.
-                load_details(model);
-                model.screens.setup.editing.set(false);
-                model.screens.setup.confirm.set(None);
+                discard_edits(model);
             } else {
-                model.screens.setup.editing.set(true);
+                let em = model.screens.setup;
+                em.editing.set(true);
+                em.saved.set(String::new());
                 load_details(model);
+                if is_published(model) {
+                    // Base the edit on the latest room state and remember the
+                    // snapshot so remote updates made meanwhile are flagged.
+                    em.edit_base.set(Some(model.app.event.get_clone()));
+                    crate::sync::refresh_from_room(model);
+                }
             }
         }
         Msg::StageAdd => {
-            model.screens.setup.edit_stages.update(|v| {
-                let num = v.len() as u8 + 1;
+            let em = model.screens.setup;
+            em.edit_stages.update(|v| {
+                // A new test duplicates the last test's settings.
+                let last = v
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| crate::event::Stage::for_test(1));
+                let num = v.iter().map(|s| s.num).max().unwrap_or(0) + 1;
                 v.push(Stage {
                     num,
                     name: format!("Test {num}"),
-                    repeats: 1,
-                    best_x: 1,
-                    timing: TimingStyle::Stopwatch,
+                    repeats: last.repeats,
+                    best_x: last.best_x,
+                    timing: last.timing,
                 });
             });
-            model
-                .screens
-                .setup
-                .edit_rev
-                .set(model.screens.setup.edit_rev.get().wrapping_add(1));
+            em.edit_rev.set(em.edit_rev.get().wrapping_add(1));
         }
         Msg::StageDelete(idx) => {
             let num = model
@@ -228,67 +231,17 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .set(model.screens.setup.edit_rev.get().wrapping_add(1));
         }
         Msg::Publish => publish(model),
-        Msg::PublishAsNew => publish_as_new(model),
-        Msg::SyncToRoom => {
-            crate::app::enqueue_setup(model);
-            model
-                .screens
-                .setup
-                .publish_status
-                .set(Some("Setup re-sent to room.".to_string()));
-        }
         Msg::SetHomeserver(hs) => {
-            model.app.event.update(|e| {
-                e.homeserver = hs.trim().to_string();
-            });
+            let em = model.screens.setup;
+            em.edit_homeserver.set(hs.trim().to_string());
+            // Default the Element link for the chosen homeserver when unset.
+            if em.edit_element_link.get_clone().trim().is_empty() {
+                em.edit_element_link
+                    .set(crate::event::element_link_default(&hs));
+            }
         }
-        Msg::SetReg(reg) => {
-            model.app.event.update(|e| {
-                e.reg = reg;
-            });
-        }
-        Msg::ShowJoinQr => show_join_qr(model),
-        Msg::CloseJoinQr => model.screens.setup.join_qr_visible.set(false),
+        Msg::SetReg(reg) => model.screens.setup.edit_reg.set(reg),
     }
-}
-
-/// Build the invite + join QR for the current event and open the modal.
-#[cfg(target_arch = "wasm32")]
-fn show_join_qr(model: crate::Model) {
-    let event = model.app.event.get_clone();
-    let Some(sid) = event.space_id.clone() else {
-        model.screens.setup.publish_status.set(Some(
-            "Publish the event first, then show the join QR.".to_string(),
-        ));
-        return;
-    };
-    let tid = event.timing_id.clone().unwrap_or_default();
-    let invite = crate::event::Invite {
-        homeserver: event.homeserver,
-        event: event.id,
-        sid,
-        tid,
-        reg: event.reg,
-    };
-    let app_base = {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let origin = window.location().origin().unwrap_or_default();
-        let path = window.location().pathname().unwrap_or_default();
-        format!("{origin}{path}")
-    };
-    let url = invite.url(&app_base);
-    let svg = crate::services::qr::qr_svg(&url, 320).unwrap_or_default();
-    model.screens.setup.join_url.set(url);
-    model.screens.setup.join_qr_svg.set(svg);
-    model.screens.setup.join_qr_visible.set(true);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-fn show_join_qr(model: crate::Model) {
-    model.screens.setup.join_qr_visible.set(false);
 }
 
 /// Build the staged event: committed event + edit-form fields (details,
@@ -296,12 +249,18 @@ fn show_join_qr(model: crate::Model) {
 fn staged_event(model: crate::Model) -> crate::event::EventInfo {
     let em = model.screens.setup;
     let mut ev = model.app.event.get_clone();
+    ev.name = em.edit_name.get_clone().trim().to_string();
     ev.sponsoring_club = em.edit_club.get_clone().trim().to_string();
     ev.year = em.edit_year.get_clone().trim().to_string();
     ev.event_date = em.edit_event_date.get_clone().trim().to_string();
     ev.entry_open = em.edit_entry_open.get_clone().trim().to_string();
     ev.entry_close = em.edit_entry_close.get_clone().trim().to_string();
     ev.stripe_link = em.edit_stripe.get_clone().trim().to_string();
+    ev.parent_room = em.edit_parent_room.get_clone().trim().to_string();
+    ev.entries_enabled = em.edit_entries_enabled.get();
+    ev.homeserver = em.edit_homeserver.get_clone().trim().to_string();
+    ev.reg = em.edit_reg.get();
+    ev.element_link = em.edit_element_link.get_clone().trim().to_string();
     let mut stages = em.edit_stages.get_clone();
     // Display/ordering is by `num`; stable on ties.
     stages.sort_by_key(|s| s.num);
@@ -316,17 +275,37 @@ fn staged_event(model: crate::Model) -> crate::event::EventInfo {
 }
 
 /// Compact (no-op) + diff the staged event against the committed one and open
-/// the confirm modal.
+/// the confirm modal.  A brand-new unsaved draft saves directly when there's
+/// nothing to diff yet (the draft must still be persisted).
 fn save_batch(model: crate::Model) {
     let em = model.screens.setup;
     let committed = model.app.event.get_clone();
     let staged = staged_event(model);
     let diff = crate::batch::event_diff(&committed, &staged);
     if diff.is_empty() {
-        em.feedback.set("No changes to send.".to_string());
+        if em.pre_create.get_clone().is_some() {
+            // Fresh draft with no edits yet: Save Local persists it as-is.
+            em.feedback.set(String::new());
+            send_batch(model);
+        } else {
+            em.feedback.set("No changes to save.".to_string());
+        }
         return;
     }
     em.feedback.set(String::new());
+    // Warn when a published event gained room updates since the edit started;
+    // the staged event was built from the latest committed state, so they're
+    // merged in best-effort.
+    let mut warning = String::new();
+    if is_published(model) {
+        if let Some(base) = em.edit_base.get_clone() {
+            if committed != base {
+                warning = "Updates arrived from the room while you were editing — merged in best-effort; review the summary before sending."
+                    .to_string();
+            }
+        }
+    }
+    em.confirm_warning.set(warning);
     em.confirm.set(Some(diff));
 }
 
@@ -338,61 +317,150 @@ fn send_batch(model: crate::Model) {
     commit_event(model);
     em.editing.set(false);
     em.confirm.set(None);
+    em.confirm_warning.set(String::new());
+    em.edit_base.set(None);
+    em.pre_create.set(None);
+    em.saved.set("Saved.".to_string());
     load_details(model);
 }
 
-/// Build (or select) a draft event from the form fields and switch to it.
+/// Make `ev` the current event with the edit form open, without writing it to
+/// the log — it stays a fresh draft until the user hits Save.  The caller
+/// records `pre_create` first so Discard can restore the previous event.
+fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
+    let id = ev.id.clone();
+    model.app.event.set(ev);
+    model.app.scores.set(Vec::new());
+    model.app.runs.set(Vec::new());
+    crate::event::session_set_event(&id);
+    crate::event::session_set_recent(&id);
+    model.screens.chat.expanded.set(Default::default());
+    model.screens.entries.staged.set(Vec::new());
+    model.screens.entries.confirm.set(None);
+    model.screens.entries.admin.set(false);
+    model.screens.entries.show_form.set(false);
+    model.app.parcel_open_event.set(None);
+    crate::app::refresh_feed(model);
+    let em = model.screens.setup;
+    em.editing.set(true);
+    em.edit_base.set(None);
+    load_details(model);
+}
+
+/// Create a fresh draft and open it for editing.  The id is a random unique
+/// key (never derived from the human fields); name/club/year stay empty until
+/// the organiser fills the details form.  Nothing is saved until Save Local.
 fn create_draft(model: crate::Model) {
-    let name = model.screens.setup.new_name.get_clone().trim().to_string();
-    let club = model.screens.setup.new_club.get_clone().trim().to_string();
-    let year = model.screens.setup.new_year.get_clone().trim().to_string();
-    if name.is_empty() {
-        model
-            .screens
-            .setup
-            .feedback
-            .set("Event name is required".to_string());
-        return;
-    }
-    let id = crate::event::build_event_id(&year, &club, &name);
-    if !crate::event::valid_event_id(&id) {
-        model
-            .screens
-            .setup
-            .feedback
-            .set("Can't build an event id from that — include a year (e.g. 2026)".to_string());
-        return;
-    }
-    // Deterministic id: an existing event with the same id is selected, not duplicated.
-    if crate::event::list_events().contains(&id) {
-        model.screens.setup.feedback.set(String::new());
-        model.screens.setup.show_create.set(false);
-        crate::update(model, crate::Msg::SetEvent(id));
-        return;
-    }
+    let year = js_sys::Date::new_0().get_full_year().to_string();
     let mut e = crate::event::EventInfo {
-        name,
-        sponsoring_club: club,
+        id: crate::event::fresh_event_id(),
         year,
-        id: id.clone(),
         ..Default::default()
     };
+    // A fresh event starts with a single test; the organiser adds more.
+    e.stages = vec![crate::event::Stage::for_test(1)];
     e.ensure_uid();
-    model.app.event.set(e);
-    crate::app::enqueue_setup(model);
-    model.screens.setup.new_name.set(String::new());
-    model.screens.setup.new_club.set(String::new());
+    model
+        .screens
+        .setup
+        .pre_create
+        .set(Some(model.app.event.with(|e| e.id.clone())));
     model.screens.setup.feedback.set(String::new());
-    model.screens.setup.show_create.set(false);
-    crate::update(model, crate::Msg::SetEvent(id));
+    model.screens.setup.saved.set(String::new());
+    switch_to_draft(model, e);
+}
+
+/// Copy the current event to a fresh draft: new name + id + uid, Matrix links
+/// cleared, no timing data.  Entrants and tests are copied; entrant state is
+/// reset for the new event.  The original stays untouched.
+fn copy_as_new(model: crate::Model) {
+    let em = model.screens.setup;
+    let src = model.app.event.get_clone();
+    if src.is_null() {
+        em.feedback.set("No event to copy.".to_string());
+        return;
+    }
+    let mut e = src.clone();
+    let copy_name = if src.name.trim().is_empty() {
+        "Untitled copy".to_string()
+    } else if src.name.ends_with(" Copy") {
+        format!("{} 2", src.name)
+    } else {
+        format!("{} Copy", src.name)
+    };
+    e.name = copy_name.clone();
+    e.id = crate::event::fresh_event_id();
+    e.uid = crate::ids::gen_short_id();
+    e.status = crate::event::EventStatus::Draft;
+    e.space_id = None;
+    e.space_alias = None;
+    e.timing_id = None;
+    e.timing_alias = None;
+    // Entrants + tests are copied; entrant state is reset for the fresh event.
+    for (i, entry) in e.entries.iter_mut().enumerate() {
+        entry.entry_no = (i as u32) + 1;
+        entry.status = crate::event::EntryStatus::Submitted;
+        entry.order = 0;
+    }
+    em.pre_create.set(Some(src.id.clone()));
+    switch_to_draft(model, e);
+    em.feedback.set(format!(
+        "Copied as \"{}\" — rename and tweak before saving.",
+        copy_name
+    ));
+}
+
+/// Abandon the current edit.  A fresh (unsaved) draft/copy is dropped and the
+/// previous event restored; otherwise the form reverts to the committed event.
+fn discard_edits(model: crate::Model) {
+    let em = model.screens.setup;
+    em.editing.set(false);
+    em.confirm.set(None);
+    em.confirm_warning.set(String::new());
+    em.edit_base.set(None);
+    let prev = em.pre_create.get_clone();
+    em.pre_create.set(None);
+    if let Some(prev) = prev {
+        if prev.is_empty() {
+            // No prior event: back to the no-event picker, on the Event page
+            // so the create form is the natural next step.
+            crate::update(model, crate::Msg::ClearEvent);
+            crate::update(model, crate::Msg::Show(crate::Screen::Event));
+        } else {
+            crate::update(model, crate::Msg::SetEvent(prev));
+        }
+    } else {
+        load_details(model);
+    }
 }
 
 /// Refresh the detail-edit fields from the current event.
 fn load_details(model: crate::Model) {
     let e = model.app.event.get_clone();
+    model.screens.setup.edit_name.set(e.name.clone());
     model.screens.setup.edit_club.set(e.sponsoring_club.clone());
     model.screens.setup.edit_year.set(e.year.clone());
-    model.screens.setup.hs_input.set(e.homeserver.clone());
+    model
+        .screens
+        .setup
+        .edit_homeserver
+        .set(e.homeserver.clone());
+    model.screens.setup.edit_reg.set(e.reg);
+    model
+        .screens
+        .setup
+        .edit_element_link
+        .set(e.element_link.clone());
+    model
+        .screens
+        .setup
+        .edit_parent_room
+        .set(e.parent_room.clone());
+    model
+        .screens
+        .setup
+        .edit_entries_enabled
+        .set(e.entries_enabled);
     model
         .screens
         .setup
@@ -433,45 +501,13 @@ fn publish(model: crate::Model) {
         "Matrix publishing is only available in the web build".to_string(),
     ));
 }
-/// Copy a published event into a fresh draft: new id, Matrix links cleared,
-/// no timing data attached (scores live under the old id).  The original stays
-/// untouched, so entries/results survive as an amendable record.
-fn publish_as_new(model: crate::Model) {
-    let em = model.screens.setup;
-    let mut e = model.app.event.get_clone();
-    if e.status == crate::event::EventStatus::Draft {
-        em.publish_status
-            .set(Some("This event isn't published yet.".to_string()));
-        return;
-    }
-    let base = crate::event::build_event_id(&e.year, &e.sponsoring_club, &e.name);
-    let mut id = base.clone();
-    let mut n = 2;
-    while crate::event::list_events().contains(&id) {
-        id = format!("{base}-{n}");
-        n += 1;
-    }
-    e.id = id;
-    e.status = crate::event::EventStatus::Draft;
-    e.space_id = None;
-    e.space_alias = None;
-    e.timing_id = None;
-    e.timing_alias = None;
-    model.app.event.set(e);
-    crate::app::enqueue_setup(model);
-    crate::update(
-        model,
-        crate::Msg::SetEvent(model.app.event.with(|e| e.id.clone())),
-    );
-    crate::update(model, crate::Msg::Show(crate::Screen::Event));
-}
 
 #[cfg(target_arch = "wasm32")]
 fn publish_wasm(model: crate::Model) {
     use crate::event::EventStatus;
 
     let em = model.screens.setup;
-    let event = model.app.event.get_clone();
+    let mut event = model.app.event.get_clone();
     if event.id.is_empty() {
         em.publish_status
             .set(Some("Save the event first (needs a name)".to_string()));
@@ -479,21 +515,39 @@ fn publish_wasm(model: crate::Model) {
     }
     em.publish_status.set(Some("Publishing...".to_string()));
     wasm_bindgen_futures::spawn_local(async move {
-        let res = crate::services::matrix::publish_current_event(&event).await;
-        match res {
-            Ok(rooms) => {
-                let mut event = event;
-                event.space_id = Some(rooms.space.room_id().to_string());
-                event.space_alias = Some(rooms.space_alias.to_string());
-                event.timing_id = Some(rooms.timing.room_id().to_string());
-                event.timing_alias = Some(rooms.timing_alias.to_string());
-                event.status = EventStatus::Published;
-                model.app.event.set(event);
-                crate::app::enqueue_setup(model);
-                crate::sync::flush_pending(model);
+        let res = crate::services::matrix::publish_current_event(&mut event).await;
+        // Rooms are recorded on the event *before* finalize, so a partial
+        // publish (rooms created, a later step failed) still has the ids —
+        // persist it so a re-publish joins by id instead of alias resolution.
+        let rooms_created = event.space_id.is_some();
+        if rooms_created {
+            event.status = EventStatus::Published;
+            model.app.event.set(event.clone());
+            crate::app::enqueue_setup(model);
+        }
+        match (res, rooms_created) {
+            (Ok(_), _) => {
                 em.publish_status.set(Some("Published".to_string()));
+                em.editing.set(false);
+                load_details(model);
+                // Join the fresh timing room so the setup (and entrants, which
+                // ride in the manifest) flush into it.
+                crate::sync::join_current_event(model);
             }
-            Err(e) => em.publish_status.set(Some(format!("Publish failed: {e}"))),
+            (Err(e), true) => {
+                em.publish_status.set(Some(format!(
+                    "Rooms created, but setup sync wasn't confirmed ({e}). The event is marked published — use \"Save and Publish\" to finish syncing."
+                )));
+                em.editing.set(false);
+                load_details(model);
+                crate::sync::join_current_event(model);
+            }
+            (Err(e), false) => {
+                em.publish_status.set(Some(format!(
+                    "Publish failed: {e} — check you're signed in to {} on Home if the session expired.",
+                    event.homeserver
+                )));
+            }
         }
     });
 }
@@ -501,70 +555,196 @@ fn publish_wasm(model: crate::Model) {
 pub fn view(model: crate::Model) -> View {
     view! {
         div {
-            div(class="level") {
-                div(class="level-left") {
-                    h1(class="title is-4") {
-                        (move || {
-                            format!(
-                                "Event: {}  Tests:{}",
-                                model.app.event.with(|e| e.name.clone()),
-                                model.app.event.with(|e| e.stage_count())
-                            )
-                        })
-                    }
-                }
-                div(class="level-right") {
-                    (view_edit_button(model))
-                    (view_create_button(model))
-                }
-            }
-            (view_status_banner(model))
-            (move || {
-                if model.screens.setup.show_create.get() {
-                    view_draft(model)
-                } else {
-                    view! {}
-                }
-            })
+            (view_header(model))
+            (move || view_invite(model))
             (view_details(model))
-            (view_stages(model))
-            (view_publish(model))
-            (view_entries_link(model))
             (view_confirm_modal(model))
         }
     }
 }
 
-/// Link to the Entries page (where entrants are managed now).
-fn view_entries_link(model: crate::Model) -> View {
-    view! {
-        div(class="box") {
-            div(class="level") {
-                div(class="level-left") {
-                    h2(class="title is-5") { "Entries" }
-                }
-                div(class="level-right") {
-                    button(
-                        class="button is-small is-link",
-                        on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Entries)),
-                    ) {
-                        span(class="icon is-small") { i(class="fa fa-users") }
-                        span { "Manage entries" }
+/// The event invite (QR + join URL), shown at the top of the config page once
+/// the event is published and it isn't being edited.
+fn view_invite(model: crate::Model) -> View {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let em = model.screens.setup;
+        if em.editing.get() || !model.app.event.with(|e| e.is_published()) {
+            return view! {};
+        }
+        let event = model.app.event.get_clone();
+        let Some((url, svg, element_link)) = invite_view_data(&event) else {
+            return view! {};
+        };
+        let url_c = url.clone();
+        let element_c = element_link.clone();
+        let element_btn: View = if element_link.is_empty() {
+            view! {}
+        } else {
+            view! {
+                button(
+                    class="button is-small is-light",
+                    on:click=move |_| crate::page::copy_text(&element_c),
+                ) { span(class="icon is-small") { i(class="fa fa-external-link") } span { "Copy Element link" } }
+            }
+        };
+        view! {
+            div(class="box") {
+                h2(class="title is-5") { "Event invite" }
+                div(class="field is-grouped is-vcentered") {
+                    div(class="control") {
+                        div(class="kt-qr-box") {
+                            div(dangerously_set_inner_html=svg) {}
+                        }
+                    }
+                    div(class="control is-expanded") {
+                        p(class="help") { "Scan or share this link to join the event." }
+                        div(class="field is-grouped") {
+                            div(class="control is-expanded") {
+                                input(class="input is-small", readonly=true, value=url) {}
+                            }
+                            div(class="control") {
+                                button(
+                                    class="button is-small is-light",
+                                    on:click=move |_| crate::page::copy_text(&url_c),
+                                ) { span(class="icon is-small") { i(class="fa fa-copy") } span { "Copy URL" } }
+                            }
+                            (element_btn)
+                        }
                     }
                 }
             }
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = model;
+        view! {}
+    }
+}
+
+/// The join-invite data for a published event: `(join_url, qr_svg, element_link)`.
+/// `None` when the event has no space room yet.  wasm only (window + QR).
+#[cfg(target_arch = "wasm32")]
+fn invite_view_data(event: &crate::event::EventInfo) -> Option<(String, String, String)> {
+    let sid = event.space_id.clone()?;
+    let invite = crate::event::Invite {
+        homeserver: event.homeserver.clone(),
+        event: event.id.clone(),
+        sid,
+        tid: event.timing_id.clone().unwrap_or_default(),
+        reg: event.reg,
+    };
+    let app_base = {
+        let window = web_sys::window()?;
+        let origin = window.location().origin().ok()?;
+        let path = window.location().pathname().ok()?;
+        format!("{origin}{path}")
+    };
+    let url = invite.url(&app_base);
+    let svg = crate::services::qr::qr_svg(&url, 320).unwrap_or_default();
+    let base = if event.element_link.trim().is_empty() {
+        crate::event::element_link_default(&event.homeserver)
+    } else {
+        event.element_link.clone()
+    };
+    let link = if base.is_empty() {
+        String::new()
+    } else {
+        // Link directly to the timing room via its alias (#slug-timing:server).
+        let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
+        let server = crate::event::server_name_from_homeserver(&event.homeserver);
+        if server.is_empty() {
+            // Fallback to the space room id if the server name can't be derived.
+            format!(
+                "{}/#/room/{}",
+                base.trim_end_matches('/'),
+                event.space_id.clone().unwrap_or_default()
+            )
+        } else {
+            format!(
+                "{}/#/room/#{}-timing:{}",
+                base.trim_end_matches('/'),
+                slug,
+                server,
+            )
+        }
+    };
+    Some((url, svg, link))
+}
+
+/// Header line: event id (edit mode) or name + id (view mode), with the
+/// lifecycle status tag.  No action buttons up here — they live at the bottom.
+fn view_header(model: crate::Model) -> View {
+    view! {
+        div(class="level") {
+            div(class="level-left") {
+                h1(class="title is-4") {
+                    (move || {
+                        let editing = model.screens.setup.editing.get();
+                        let (id, name) = model.app.event.with(|e| (e.id.clone(), e.name.clone()));
+                        if editing {
+                            format!("event:{id}")
+                        } else if id.is_empty() {
+                            "Event".to_string()
+                        } else {
+                            format!("{name} — event:{id}")
+                        }
+                    })
+                }
+            }
+            div(class="level-right") {
+                (move || {
+                    if model.app.event.with(|e| e.is_null()) {
+                        view! {}
+                    } else {
+                        view_status_tag(model)
+                    }
+                })
+            }
+        }
+    }
+}
+
+/// Lifecycle status tag (draft / published / demo / amend-only) for the header.
+/// "Published" is driven by the room ids, so it's accurate even if the status
+/// flag lags a failed/partial publish.
+fn view_status_tag(model: crate::Model) -> View {
+    let (published, is_demo, status) = model
+        .app
+        .event
+        .with(|e| (e.is_published(), e.is_demo(), e.status.to_string()));
+    let (class, label) = if is_demo {
+        ("is-warning", "Demo (local only)")
+    } else if published || status == "published" {
+        ("is-success", "Published")
+    } else if status == "draft" {
+        ("is-info", "Draft")
+    } else {
+        ("is-success", "Amend-only (running/finished)")
+    };
+    view! { span(class=format!("tag {class}")) { (label) } }
 }
 
 fn view_confirm_modal(model: crate::Model) -> View {
     let em = model.screens.setup;
     crate::view::view_confirm_modal(
         em.confirm,
-        "Send",
+        move || {
+            let published = model
+                .app
+                .event
+                .with(|e| e.status != crate::event::EventStatus::Draft);
+            if published {
+                "Save and Publish".to_string()
+            } else {
+                "Save Local".to_string()
+            }
+        },
         move || crate::update(model, crate::Msg::EventMsg(Msg::SendBatch)),
         move || crate::update(model, crate::Msg::EventMsg(Msg::CancelBatch)),
         move || crate::update(model, crate::Msg::EventMsg(Msg::DiscardBatch)),
+        em.confirm_warning,
     )
 }
 
@@ -576,121 +756,6 @@ fn is_published(model: crate::Model) -> bool {
         .with(|e| e.status != crate::event::EventStatus::Draft)
 }
 
-/// Lifecycle status banner: draft vs published vs local-only demo.
-fn view_status_banner(model: crate::Model) -> View {
-    let (status, is_demo) = model
-        .app
-        .event
-        .with(|e| (e.status.to_string(), e.is_demo()));
-    let (class, label) = if is_demo {
-        ("is-warning", "Demo (local only)")
-    } else if status == "published" {
-        ("is-success", "Published")
-    } else if status == "draft" {
-        ("is-info", "Draft")
-    } else {
-        ("is-success", "Amend-only (running/finished)")
-    };
-    view! {
-        div(class="notification is-light p-2") {
-            span(class=format!("tag {class}")) { (label) }
-            (if is_published(model) {
-                view! {
-                    span(class="help is-inline") {
-                        " Fixed details are locked; entrants and results are amended (no deletion)."
-                    }
-                }
-            } else {
-                view! {}
-            })
-        }
-    }
-}
-
-/// "Edit"/"Done" toggle for the read-only event config.
-fn view_edit_button(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    view! {
-        (move || {
-            let editing = em.editing.get();
-            view! {
-                button(
-                    class=format!("button {}", if editing { "is-success" } else { "is-light" }),
-                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::ToggleEdit)),
-                ) {
-                    (if editing { "Done" } else { "Edit" })
-                }
-            }
-        })
-    }
-}
-
-/// "Create New event" button toggling the draft form.
-fn view_create_button(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    view! {
-        (move || {
-            let open = em.show_create.get();
-            view! {
-                button(
-                    class=format!("button {}", if open { "is-light" } else { "is-primary" }),
-                    on:click=move |_| em.show_create.set(!em.show_create.get()),
-                ) {
-                    (if open { "Cancel" } else { "Create New event" })
-                }
-            }
-        })
-    }
-}
-
-/// Create a new draft event (name / club / year) and switch to it.
-fn view_draft(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    view! {
-        div(class="box") {
-            h2(class="title is-5") { "Draft Event" }
-            div(class="field") {
-                label(class="label") { "Name" }
-                div(class="control") {
-                    input(
-                        class="input",
-                        placeholder="e.g. Khanacross Round 1",
-                        bind:value=em.new_name,
-                        on:keydown=move |ev: web_sys::KeyboardEvent| {
-                            if ev.key_code() == 13 {
-                                crate::update(model, crate::Msg::EventMsg(Msg::CreateDraft));
-                            }
-                        },
-                    )
-                }
-            }
-            div(class="field") {
-                label(class="label") { "Club / district" }
-                div(class="control") {
-                    input(class="input", placeholder="e.g. NDC", bind:value=em.new_club)
-                }
-            }
-            div(class="field") {
-                label(class="label") { "Year" }
-                div(class="control") {
-                    input(class="input", placeholder="e.g. 2026", bind:value=em.new_year)
-                }
-            }
-            div(class="field") {
-                div(class="control") {
-                    button(
-                        class="button is-primary",
-                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::CreateDraft)),
-                    ) {
-                        "Create event"
-                    }
-                }
-            }
-            (move || view_feedback(model))
-        }
-    }
-}
-
 fn view_feedback(model: crate::Model) -> View {
     let msg = model.screens.setup.feedback.get_clone();
     if msg.is_empty() {
@@ -700,21 +765,38 @@ fn view_feedback(model: crate::Model) -> View {
     }
 }
 
-/// Edit the current event's fixed details (tests, dates, club, year, stripe
-/// link, classes).  Everything is read-only until "Edit" is pressed — and
-/// permanently read-only once the event is published.
+/// Edit the current event's details.  Everything is editable while editing —
+/// including a published event (amend-only: no deletions, the class list never
+/// renames, and the publish homeserver/reg lock once published).
 fn view_details(model: crate::Model) -> View {
+    // No event selected: keep the screen to a create prompt — the detail
+    // fields, classes and tests are only meaningful once an event exists.
+    if model.app.event.with(|e| e.is_null()) {
+        return view! {
+            div(class="box") {
+                p(class="help") { "No event selected — create a new event to configure it." }
+                (view_action_bar(model))
+            }
+        };
+    }
     let em = model.screens.setup;
-    let editing = em.editing.get() && !is_published(model);
+    let editing = em.editing.get();
     view! {
         div(class="box") {
-            h2(class="title is-5") {
-                "Event details"
-                (if is_published(model) {
-                    view! { span(class="tag is-light is-pulled-right") { "locked" } }
-                } else {
+            (move || view_feedback(model))
+            (move || {
+                let msg = em.saved.get_clone();
+                if msg.is_empty() {
                     view! {}
-                })
+                } else {
+                    view! { p(class="help is-success") { (msg) } }
+                }
+            })
+            div(class="field") {
+                label(class="label") { "Name" }
+                div(class="control") {
+                    input(class="input", placeholder="e.g. Khanacross Round 1", disabled=!editing, bind:value=em.edit_name)
+                }
             }
             div(class="field is-grouped") {
                 div(class="control is-expanded") {
@@ -749,87 +831,402 @@ fn view_details(model: crate::Model) -> View {
                 }
             }
             div(class="field") {
-                h3(class="title is-6") { "Classes" }
-                (move || view_class_list(model))
-                (move || {
-                    if editing {
+                label(class="label") { "Parent room" }
+                div(class="field has-addons") {
+                    div(class="control is-expanded") {
+                        input(class="input", placeholder="Optional — the club/organisation room this event links to", disabled=!editing, bind:value=em.edit_parent_room)
+                    }
+                    (if editing {
                         view! {
-                            div {
-                                (input_box(
-                                    em.class,
-                                    "New Class?",
-                                    move |msg| crate::update(model, crate::Msg::EventMsg(Msg::ClassInput(msg))),
-                                ))
+                            div(class="control") {
+                                button(
+                                    class="button is-light",
+                                    title="Clear parent room",
+                                    on:click=move |_| em.edit_parent_room.set(String::new()),
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-eraser") }
+                                    span { "Clear" }
+                                }
                             }
                         }
                     } else {
                         view! {}
+                    })
+                }
+            }
+            div(class="field") {
+                label(class="label") { "In-app entries" }
+                (move || {
+                    let on = em.edit_entries_enabled.get();
+                    view! {
+                        div(class="control") {
+                            label(class="checkbox") {
+                                input(
+                                    r#type="checkbox",
+                                    disabled=!em.editing.get(),
+                                    checked=on,
+                                    on:change=move |ev: web_sys::Event| {
+                                        use wasm_bindgen::JsCast;
+                                        let checked = ev
+                                            .target()
+                                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+                                            .map(|i| i.checked())
+                                            .unwrap_or(false);
+                                        em.edit_entries_enabled.set(checked);
+                                    },
+                                )
+                                " Allow competitors to enter in the app"
+                            }
+                        }
                     }
                 })
+                p(class="help") { "Turn this off to close in-app self-entry (officials can still manage entries)." }
             }
-            div(class="field is-grouped") {
-                div(class="control") {
-                    (move || {
-                        if em.editing.get() && !is_published(model) {
-                            view! {
-                                button(
-                                    class="button is-primary",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SaveBatch)),
-                                ) {
-                                    "Save changes"
-                                }
-                            }
-                        } else {
-                            view! {}
-                        }
-                    })
-                }
-                div(class="control") {
-                    (move || {
-                        let st = model.app.event.with(|e| e.status.to_string());
-                        let id = model.app.event.with(|e| e.id.clone());
-                        view! { span(class="tag is-info") { (st) (if id.is_empty() { " · unsaved" } else { "" }) } }
-                    })
-                }
-            }
+            (view_homeserver_fields(model))
+            (move || view_tests_section(model))
+            (move || view_classes_section(model))
+            (move || view_entrants_section(model))
+            hr() {}
+            (move || view_publish_status(model))
+            (move || view_publish_message(model))
+            (view_action_bar(model))
         }
     }
 }
 
-/// Per-test config: name, number, repeats, best-X-of-Y, timing style.
-fn view_stages(model: crate::Model) -> View {
+/// A collapsible section header: chevron + title + count, toggles `open`.
+fn view_section_header(open: Signal<bool>, title: &'static str, count: usize) -> View {
+    view! {
+        button(
+            class="button is-fullwidth is-light is-small",
+            on:click=move |_| open.set(!open.get()),
+        ) {
+            span(class="icon is-small") {
+                i(class=move || if open.get() { "fa fa-chevron-down" } else { "fa fa-chevron-right" })
+            }
+            span { (title) }
+            span(class="tag is-light is-pulled-right") { (count) }
+        }
+    }
+}
+
+/// Tests/stages — collapsible part of the single event box.
+fn view_tests_section(model: crate::Model) -> View {
     let em = model.screens.setup;
     let editing = em.editing.get();
+    let published = is_published(model);
+    // Reactive count: staged stages during editing (tracks add/remove via
+    // edit_rev), committed stages otherwise.
+    let count = if editing {
+        let _ = em.edit_rev.get();
+        untrack(|| em.edit_stages.with(|s| s.len()))
+    } else {
+        model.app.event.with(|e| e.stage_count())
+    };
     view! {
-        div(class="box") {
-            h2(class="title is-5") { "Tests / stages" }
-            (move || view_stage_list(model))
+        div(class="field") {
+            (view_section_header(em.show_tests, "Tests / stages", count))
             (move || {
-                if em.editing.get() {
-                    view! {
+                if !em.show_tests.get() {
+                    return view! {};
+                }
+                view! {
+                    div(class="mt-2") {
+                        (move || view_stage_list(model))
+                        (move || {
+                            if em.editing.get() {
+                                view! {
+                                    div(class="field") {
+                                        div(class="control") {
+                                            button(
+                                                class="button is-small is-link",
+                                                on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::StageAdd)),
+                                            ) {
+                                                span(class="icon is-small") { i(class="fa fa-plus") }
+                                                span { "Add test" }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                view! {}
+                            }
+                        })
+                        (move || {
+                            if !editing {
+                                view! { p(class="help") { "Press Edit to change tests." } }
+                            } else if published {
+                                view! {
+                                    p(class="help") {
+                                        "Tests are editable, but can't be removed once published (amend, not delete)."
+                                    }
+                                }
+                            } else {
+                                view! {}
+                            }
+                        })
+                    }
+                }
+            })
+        }
+    }
+}
+
+/// Classes — collapsible part of the single event box.
+fn view_classes_section(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let editing = em.editing.get();
+    let count = model.app.event.with(|e| e.classes.len());
+    view! {
+        div(class="field") {
+            (view_section_header(em.show_classes, "Classes", count))
+            (move || {
+                if !em.show_classes.get() {
+                    return view! {};
+                }
+                view! {
+                    div(class="mt-2") {
+                        (move || view_class_list(model))
+                        (move || {
+                            if editing {
+                                view! {
+                                    div {
+                                        (input_box(
+                                            em.class,
+                                            "New class",
+                                            move |msg| crate::update(model, crate::Msg::EventMsg(Msg::ClassInput(msg))),
+                                        ))
+                                    }
+                                }
+                            } else {
+                                view! {}
+                            }
+                        })
+                    }
+                }
+            })
+        }
+    }
+}
+
+/// Entrants — collapsible read-only list (management lives on the Entries
+/// screen; the event only carries the final entrant list).
+fn view_entrants_section(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let count = model.app.event.with(|e| e.entries.len());
+    view! {
+        div(class="field") {
+            (view_section_header(em.show_entrants, "Entrants", count))
+            (move || {
+                if !em.show_entrants.get() {
+                    return view! {};
+                }
+                view! {
+                    div(class="mt-2") {
+                        (move || view_entrant_list_readonly(model))
                         div(class="field") {
                             div(class="control") {
                                 button(
                                     class="button is-small is-link",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::StageAdd)),
+                                    on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Entries)),
                                 ) {
-                                    span(class="icon is-small") { i(class="fa fa-plus") }
-                                    span { "Add test" }
+                                    span(class="icon is-small") { i(class="fa fa-users") }
+                                    span { "Manage entries" }
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+        }
+    }
+}
+
+/// Read-only entrant list: car number + name + status, in running order.
+fn view_entrant_list_readonly(model: crate::Model) -> View {
+    let entries = model.app.event.with(|e| {
+        let mut v = e.entries.clone();
+        v.sort_by_key(crate::event::entry_sort_key);
+        v
+    });
+    if entries.is_empty() {
+        return view! {
+            p(class="help") { "No entrants yet — manage entries on the Entries screen." }
+        };
+    }
+    let items: Vec<View> = entries
+        .iter()
+        .map(|e| {
+            let car = e.car.clone();
+            let name = e.name.clone();
+            let status = e.status.to_string();
+            let car_tag: View = if car.is_empty() {
+                view! { span(class="tag is-light") { "?" } }
+            } else {
+                view! { span(class="tag is-black") { (car) } }
+            };
+            view! {
+                li {
+                    div(class="field is-grouped is-grouped-multiline is-vcentered") {
+                        div(class="control") { (car_tag) }
+                        div(class="control") { span { (name) } }
+                        div(class="control") { span(class="tag is-light") { (status) } }
+                    }
+                }
+            }
+        })
+        .collect();
+    view! { ul(class="todo-list") { (items) } }
+}
+
+/// Publish status, grouped above the bottom action bar.
+fn view_publish_status(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    view! {
+        (move || {
+            if em.editing.get() {
+                return view! {
+                    p(class="help") {
+                        "Save to finish editing; a published event's save re-syncs it to the room."
+                    }
+                };
+            }
+            let is_null = model.app.event.with(|e| e.is_null());
+            let is_demo = model.app.event.with(|e| e.is_demo());
+            let published = is_published(model);
+            if is_null {
+                view! { p(class="help") { "Create or open an event first." } }
+            } else if is_demo {
+                view! {
+                    div(class="control") {
+                        span(class="tag is-warning") { "Demo — local only, never published" }
+                    }
+                }
+            } else if published {
+                let alias = model
+                    .app
+                    .event
+                    .with(|e| e.space_alias.clone())
+                    .unwrap_or_default();
+                view! {
+                    div(class="field is-grouped") {
+                        div(class="control") {
+                            span(class="tag is-success") {
+                                (if alias.is_empty() {
+                                    "Published".to_string()
+                                } else {
+                                    format!("Published {alias}")
+                                })
+                            }
+                        }
+                        (if em.needs_sync.get() {
+                            view! {
+                                div(class="control") {
+                                    span(class="tag is-danger") { "unsynced — edit & save to re-sync" }
+                                }
+                            }
+                        } else {
+                            view! {}
+                        })
+                    }
+                    p(class="help") {
+                        "Published — edits re-sync to the room; entrants and results are amended (no deletion)."
+                    }
+                }
+            } else {
+                view! {
+                    p(class="help") {
+                        "Publish to Matrix to create the event's rooms and push the setup (including the entrant list) into them."
+                    }
+                }
+            }
+        })
+    }
+}
+
+/// The publish status message as a colored notification: danger on failure,
+/// success on "Published", info otherwise — prominent, not a tiny help line.
+fn view_publish_message(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    view! {
+        (move || {
+            let Some(msg) = em.publish_status.get_clone() else {
+                return view! {};
+            };
+            let is_error = msg.starts_with("Publish failed")
+                || msg.starts_with("Can't publish")
+                || msg.starts_with("Rooms created");
+            let is_success = msg.starts_with("Published");
+            let class = if is_error {
+                "notification is-danger is-light p-2"
+            } else if is_success {
+                "notification is-success is-light p-2"
+            } else {
+                "notification is-info is-light p-2"
+            };
+            view! {
+                div(class=class) {
+                    span(class="icon") {
+                        i(class=if is_error { "fa fa-triangle-exclamation" } else if is_success { "fa fa-circle-check" } else { "fa fa-info" })
+                    }
+                    span { (msg) }
+                }
+            }
+        })
+    }
+}
+
+/// Bottom action bar: every action lives here.  Edit mode → Cancel + Save;
+/// view mode → Edit + Publish, then (after a divider) Clone Event + Create New
+/// event — the new-event actions are less related to the event being edited.
+fn view_action_bar(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    view! {
+        div {
+            (move || {
+                if em.editing.get() {
+                    view! {
+                        div(class="field is-grouped") {
+                            div(class="control") {
+                                button(
+                                    class="button is-light",
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::DiscardBatch)),
+                                ) {
+                                    "Cancel"
+                                }
+                            }
+                            div(class="control") {
+                                button(
+                                    class="button is-primary",
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SaveBatch)),
+                                ) {
+                                    (if is_published(model) {
+                                        "Save and Publish"
+                                    } else {
+                                        "Save Local"
+                                    })
                                 }
                             }
                         }
                     }
                 } else {
-                    view! {}
+                    view! {
+                        div(class="field is-grouped") {
+                            (view_edit_btn(model))
+                            (view_publish_btn(model))
+                        }
+                    }
                 }
             })
             (move || {
-                if !editing {
-                    view! { p(class="help") { "Press Edit to change tests." } }
-                } else if is_published(model) {
+                if !em.editing.get() {
                     view! {
-                        p(class="help") {
-                            "Tests are editable, but can't be removed once published (amend, not delete)."
+                        div {
+                            hr() {}
+                            div(class="field is-grouped") {
+                                (view_clone_btn(model))
+                                (view_create_btn(model))
+                            }
                         }
                     }
                 } else {
@@ -840,6 +1237,200 @@ fn view_stages(model: crate::Model) -> View {
     }
 }
 
+/// "Edit" — enter edit mode (view mode only).
+fn view_edit_btn(model: crate::Model) -> View {
+    view! {
+        (move || {
+            if !model.app.event.with(|e| !e.is_null()) || model.screens.setup.editing.get() {
+                return view! {};
+            }
+            view! {
+                button(
+                    class="button is-light",
+                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::ToggleEdit)),
+                ) {
+                    "Edit"
+                }
+            }
+        })
+    }
+}
+
+/// "Clone Event" — copy the opened event into a fresh editable draft.
+fn view_clone_btn(model: crate::Model) -> View {
+    view! {
+        (move || {
+            if !model.app.event.with(|e| !e.is_null()) || model.screens.setup.editing.get() {
+                return view! {};
+            }
+            view! {
+                button(
+                    class="button is-light",
+                    title="Clone this event into a fresh editable draft (entrants + tests included)",
+                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::CopyAsNew)),
+                ) {
+                    "Clone Event"
+                }
+            }
+        })
+    }
+}
+
+/// "Create New event" — a fresh editable draft (view mode only).
+fn view_create_btn(model: crate::Model) -> View {
+    view! {
+        (move || {
+            if model.screens.setup.editing.get() {
+                return view! {};
+            }
+            view! {
+                button(
+                    class="button is-primary",
+                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::CreateDraft)),
+                ) {
+                    "Create New event"
+                }
+            }
+        })
+    }
+}
+
+/// "Publish" — first publish of a saved, non-demo draft (view mode only).
+/// Hidden once the event has room ids (published).  Disabled until a homeserver
+/// is selected, so "no homeserver" never surfaces as a late error.
+fn view_publish_btn(model: crate::Model) -> View {
+    view! {
+        (move || {
+            let em = model.screens.setup;
+            if em.editing.get() {
+                return view! {};
+            }
+            let (is_null, is_demo, published, has_hs) = model.app.event.with(|e| {
+                (e.is_null(), e.is_demo(), e.is_published(), !e.homeserver.trim().is_empty())
+            });
+            if is_null || is_demo || published {
+                return view! {};
+            }
+            view! {
+                button(
+                    class="button is-link",
+                    disabled=!has_hs,
+                    title=if has_hs { "" } else { "Select a homeserver in Edit first" },
+                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::Publish)),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-paper-plane") }
+                    span { "Publish" }
+                }
+            }
+        })
+    }
+}
+
+/// Publish-to-Matrix config, in the details: pick a saved homeserver from the
+/// login list (reg mode follows the picked account) and set the Element link.
+fn view_homeserver_fields(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let editing = em.editing.get();
+    view! {
+        div(class="field") {
+            label(class="label") { "Publish to homeserver" }
+            (view_saved_hs_checklist(model))
+            div(class="field") {
+                label(class="label") { "Element Web link" }
+                div(class="control") {
+                    input(class="input", placeholder="Optional — e.g. https://app.element.io", disabled=!editing, bind:value=em.edit_element_link)
+                }
+                p(class="help") {
+                    "Optional link for officials/competitors to open the event's rooms in Element. Defaults to app.element.io for Matrix, localhost:8085 for a custom homeserver."
+                }
+            }
+        }
+    }
+}
+
+/// Saved-login homeserver picker as toggleable tag-style buttons (wasm only:
+/// reads stored sessions).  `edit_homeserver` is the single source of truth —
+/// the matching tag is filled with a check; clicking a selected tag again
+/// clears it (back to offline), so there's always a way to unpick.
+fn view_saved_hs_checklist(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let editing = em.editing.get();
+    let published = is_published(model);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let sessions = crate::services::matrix::load_sessions();
+        let buttons: Vec<View> = sessions
+            .into_iter()
+            .map(|s| {
+                view! {
+                    (move || {
+                        let hs = s.homeserver.clone();
+                        let on = em.edit_homeserver.get_clone() == hs;
+                        let label = crate::page::home::hs_host_port(&hs);
+                        view! {
+                            button(
+                                class=format!(
+                                    "button is-small kt-hs-tag {}",
+                                    if on { "is-primary is-selected" } else { "is-light" }
+                                ),
+                                disabled=!editing || published,
+                                title=if on {
+                                    "Selected — click to go offline (no homeserver)"
+                                } else {
+                                    "Publish to this homeserver"
+                                },
+                                on:click=move |_| {
+                                    if on {
+                                        crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(String::new())));
+                                    } else {
+                                        let reg = crate::services::matrix::load_session_for(&hs)
+                                            .map(|s| s.reg)
+                                            .unwrap_or(crate::event::RegistrationMode::Sso);
+                                        crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(hs.clone())));
+                                        crate::update(model, crate::Msg::EventMsg(Msg::SetReg(reg)));
+                                    }
+                                },
+                            ) {
+                                span(class="icon is-small") {
+                                    i(class=if on { "fa fa-square-check" } else { "fa fa-square" })
+                                }
+                                span { (label) }
+                            }
+                        }
+                    })
+                }
+            })
+            .collect();
+        view! {
+            div(class="field") {
+                label(class="label is-small") { "From your logins" }
+                div(class="kt-hs-tags") {
+                    (buttons)
+                }
+                (move || {
+                    let hs = em.edit_homeserver.get_clone();
+                    if hs.is_empty() {
+                        view! {
+                            p(class="help") {
+                                "No homeserver selected — pick one above to enable Publish (or leave offline for a local-only event)."
+                            }
+                        }
+                    } else {
+                        view! { p(class="help") { "Publish to: " (hs) " — click the tag again to go offline." } }
+                    }
+                })
+                p(class="help") { "Homeservers are added on the Home page." }
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (model, editing, published);
+        view! {}
+    }
+}
+
+/// Per-test config: name, number, repeats, best-X-of-Y, timing style.
 fn view_stage_list(model: crate::Model) -> View {
     let em = model.screens.setup;
     let editing = em.editing.get();
@@ -995,23 +1586,29 @@ fn view_timing_buttons(model: crate::Model, idx: usize) -> View {
     view! {
         div(class="buttons has-addons") {
             (move || {
-                let on = em.edit_stages.with(|st| st.get(idx).map(|s| s.timing == TimingStyle::Stopwatch).unwrap_or(false));
+                // Untracked: re-reading the stage list here would rebuild the
+                // row on every keystroke in another field and reset the input
+                // values.  The button highlight is refreshed by `edit_rev`,
+                // bumped by the click handler below.
+                let on = untrack(|| em.edit_stages.with(|st| st.get(idx).map(|s| s.timing == TimingStyle::Stopwatch).unwrap_or(false)));
                 view! {
                     button(
                         class=format!("button is-small {}", if on { "is-primary is-selected" } else { "is-light" }),
                         on:click=move |_| {
                             em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) { s.timing = TimingStyle::Stopwatch; });
+                            em.edit_rev.set(em.edit_rev.get().wrapping_add(1));
                         },
                     ) { "Stopwatch" }
                 }
             })
             (move || {
-                let on = em.edit_stages.with(|st| st.get(idx).map(|s| s.timing == TimingStyle::Rally).unwrap_or(false));
+                let on = untrack(|| em.edit_stages.with(|st| st.get(idx).map(|s| s.timing == TimingStyle::Rally).unwrap_or(false)));
                 view! {
                     button(
                         class=format!("button is-small {}", if on { "is-primary is-selected" } else { "is-light" }),
                         on:click=move |_| {
                             em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) { s.timing = TimingStyle::Rally; });
+                            em.edit_rev.set(em.edit_rev.get().wrapping_add(1));
                         },
                     ) { "Rally" }
                 }
@@ -1020,299 +1617,9 @@ fn view_timing_buttons(model: crate::Model, idx: usize) -> View {
     }
 }
 
-/// Publish the event (space + timing room) using the Home-page identity.
-fn view_publish(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    view! {
-        div(class="box") {
-            h2(class="title is-5") { "Publish" }
-            div(class="field is-grouped") {
-                (move || {
-                    let is_demo = model.app.event.with(|e| e.is_demo());
-                    let published = is_published(model);
-                    if is_demo {
-                        view! {
-                            div(class="control") {
-                                span(class="tag is-warning") { "Demo — local only, never published" }
-                            }
-                        }
-                    } else if published {
-                        view! {
-                            div(class="buttons") {
-                                button(
-                                    class="button is-link",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SyncToRoom)),
-                                ) {
-                                    span(class="icon is-small") { i(class="fa fa-arrows-rotate") }
-                                    span { "Sync setup to room" }
-                                    (if em.needs_sync.get() {
-                                        view! { span(class="tag is-danger") { "unsynced" } }
-                                    } else {
-                                        view! {}
-                                    })
-                                }
-                                button(
-                                    class="button is-primary",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::PublishAsNew)),
-                                ) {
-                                    "Publish as New"
-                                }
-                            }
-                        }
-                    } else {
-                        view! {
-                            div(class="control") {
-                                button(
-                                    class="button is-primary",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::Publish)),
-                                ) {
-                                    "Publish to Matrix"
-                                }
-                            }
-                        }
-                    }
-                })
-                div(class="control") {
-                    (move || {
-                        let status = model.app.event.with(|e| e.status.to_string());
-                        let space = model.app.event.with(|e| e.space_alias.clone());
-                        match space {
-                            Some(alias) => view! { span(class="tag is-success") { "Published " (alias) } },
-                            None => view! { span(class="tag is-light") { (status) } },
-                        }
-                    })
-                }
-                div(class="control") {
-                    (move || {
-                        if is_published(model) {
-                            view! {
-                                button(
-                                    class="button is-small is-light",
-                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::ShowJoinQr)),
-                                ) {
-                                    span(class="icon is-small") { i(class="fa fa-qrcode") }
-                                    span { "Show join QR" }
-                                }
-                            }
-                        } else {
-                            view! {}
-                        }
-                    })
-                }
-            }
-            (move || view_matrix_config(model))
-            (move || match em.publish_status.get_clone() {
-                Some(s) => view! { p(class="help") { (s) } },
-                None => view! {
-                    p(class="help") {
-                        "A new event must publish before any timing happens. Once published, edits become amendments synced to the room."
-                    }
-                },
-            })
-            (move || {
-                if model.screens.setup.join_qr_visible.get() {
-                    view_join_qr_modal(model)
-                } else {
-                    view! {}
-                }
-            })
-        }
-    }
-}
-
-/// Matrix/publish config: pick a logged-in homeserver (which also provides its
-/// reg mode) or type one, choose the reg mode, then publish.
-fn view_matrix_config(model: crate::Model) -> View {
-    use crate::event::RegistrationMode;
-    let reg = model.app.event.with(|e| e.reg);
-    let hs = model.app.event.with(|e| e.homeserver.clone());
-    let matrix_url = "https://matrix-client.matrix.org";
-
-    // Precompute the saved-homeserver picker (wasm-only: reads stored sessions).
-    let saved_picker: View = {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let sessions = crate::services::matrix::load_sessions();
-            if sessions.is_empty() {
-                view! {}
-            } else {
-                let options: Vec<View> = sessions
-                    .iter()
-                    .map(|s| {
-                        let disp = s.homeserver.clone();
-                        let val = disp.clone();
-                        view! { option(value=val) { (disp) } }
-                    })
-                    .collect();
-                view! {
-                    div(class="control") {
-                        select(
-                            class="select is-small",
-                            on:change=move |ev: web_sys::Event| {
-                                use wasm_bindgen::JsCast;
-                                let v = ev
-                                    .target()
-                                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
-                                    .map(|e| e.value())
-                                    .unwrap_or_default();
-                                if !v.is_empty() {
-                                    let reg = crate::services::matrix::load_session_for(&v)
-                                        .map(|s| s.reg)
-                                        .unwrap_or(RegistrationMode::Sso);
-                                    model.screens.setup.hs_input.set(v.clone());
-                                    crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(v)));
-                                    crate::update(model, crate::Msg::EventMsg(Msg::SetReg(reg)));
-                                }
-                            },
-                        ) {
-                            option(value="") { "Saved homeservers…" }
-                            (options)
-                        }
-                    }
-                }
-            }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            view! {}
-        }
-    };
-
-    let open_class = if reg == RegistrationMode::Open {
-        "button is-small is-primary"
-    } else {
-        "button is-small"
-    };
-    let sso_class = if reg == RegistrationMode::Sso {
-        "button is-small is-primary"
-    } else {
-        "button is-small"
-    };
-    let matrix_btn = matrix_url.to_string();
-    view! {
-        div(class="field") {
-            label(class="label is-small") { "Publish to homeserver" }
-            div(class="field has-addons") {
-                div(class="control is-expanded") {
-                    input(
-                        class="input is-small",
-                        placeholder="https://matrix-client.matrix.org",
-                        bind:value=model.screens.setup.hs_input,
-                        on:input=move |_| {
-                            let v = model.screens.setup.hs_input.get_clone();
-                            crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(v)));
-                        },
-                    )
-                }
-                (saved_picker)
-                div(class="control") {
-                    button(
-                        class="button is-small is-light",
-                        on:click=move |_| {
-                            model.screens.setup.hs_input.set(matrix_btn.clone());
-                            crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(matrix_btn.clone())));
-                            crate::update(model, crate::Msg::EventMsg(Msg::SetReg(RegistrationMode::Sso)));
-                        },
-                    ) {
-                        span(class="icon is-small") { i(class="fa fa-id-badge") }
-                        span { "Use Matrix.org (SSO)" }
-                    }
-                }
-            }
-            div(class="field") {
-                label(class="label is-small") { "Registration mode" }
-                div(class="buttons has-addons") {
-                    button(
-                        class=open_class,
-                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SetReg(RegistrationMode::Open))),
-                    ) { "Auto-register (event HS)" }
-                    button(
-                        class=sso_class,
-                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SetReg(RegistrationMode::Sso))),
-                    ) { "SSO only (public HS)" }
-                }
-                p(class="help") {
-                    "Auto-register: the device creates an account on sign-in. SSO: passwordless sign-in (matrix.org)."
-                }
-            }
-            p(class="help") { "Current: " (hs) }
-        }
-    }
-}
-
-/// The join-QR modal: QR, invite fields, URL copy, Element link, print.
-fn view_join_qr_modal(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    let svg = em.join_qr_svg.get_clone();
-    let url = em.join_url.get_clone();
-    let (event, hs, reg, sid) = model.app.event.with(|e| {
-        (
-            e.id.clone(),
-            e.homeserver.clone(),
-            e.reg,
-            e.space_id.clone().unwrap_or_default(),
-        )
-    });
-    let element_link = format!("https://app.element.io/#/room/{sid}");
-    let reg_txt = match reg {
-        crate::event::RegistrationMode::Open => "open",
-        crate::event::RegistrationMode::Sso => "sso",
-    };
-    let url_c = url.clone();
-    let element_c = element_link.clone();
-    view! {
-        div(class="kt-modal") {
-            div(class="kt-modal-card") {
-                h3(class="title is-5") { "Join this event" }
-                div(class="kt-qr-box") {
-                    div(dangerously_set_inner_html=svg) {}
-                }
-                div(class="field") {
-                    label(class="label is-small") { "Invite fields" }
-                    p(class="help") {
-                        "Homeserver: " (hs) " · Event: " (event) " · Reg: " (reg_txt) " · Space: " (sid)
-                    }
-                }
-                div(class="field") {
-                    label(class="label is-small") { "Join URL" }
-                    div(class="control") {
-                        input(class="input is-small", readonly=true, value=url) {}
-                    }
-                    div(class="control") {
-                        button(
-                            class="button is-small is-light",
-                            on:click=move |_| crate::page::copy_text(&url_c),
-                        ) { span(class="icon is-small") { i(class="fa fa-copy") } span { "Copy URL" } }
-                        button(
-                            class="button is-small is-light",
-                            on:click=move |_| crate::page::copy_text(&element_c),
-                        ) { span(class="icon is-small") { i(class="fa fa-external-link") } span { "Copy Element link" } }
-                    }
-                }
-                div(class="field is-grouped is-grouped-centered") {
-                    div(class="control") {
-                        button(
-                            class="button is-small is-link",
-                            on:click=move |_| {
-                                if let Some(w) = web_sys::window() { let _ = w.print(); }
-                            },
-                        ) { span(class="icon is-small") { i(class="fa fa-print") } span { "Print" } }
-                    }
-                    div(class="control") {
-                        button(
-                            class="button is-small",
-                            on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::CloseJoinQr)),
-                        ) { span(class="icon is-small") { i(class="fa fa-times") } span { "Close" } }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn view_class_list(model: crate::Model) -> View {
     let em = model.screens.setup;
-    let editing = em.editing.get() && !is_published(model);
+    let editing = em.editing.get();
     // Editing shows the staged class list; read-only shows the committed one.
     let classes = if editing {
         em.edit_classes.get_clone()
@@ -1328,23 +1635,12 @@ fn view_class_list(model: crate::Model) -> View {
             view! {
                 li {
                     span(class="tag is-medium") {
-                        (if editing {
-                            view! {
-                                i(
-                                    class="fa fa-pen-to-square",
-                                    on:click=move |_| {
-                                        crate::update(model, crate::Msg::EventMsg(Msg::EditClass(class.clone())))
-                                    },
-                                )
-                            }
-                        } else {
-                            view! {}
-                        })
                         (class_disp)
                         (if editing {
                             view! {
                                 button(
                                     class="delete is-danger",
+                                    title="Remove class",
                                     on:click=move |_| {
                                         crate::update(model, crate::Msg::EventMsg(Msg::DeleteClass(class_del.clone())))
                                     },
@@ -1358,5 +1654,5 @@ fn view_class_list(model: crate::Model) -> View {
             }
         })
         .collect::<Vec<View>>();
-    view! { ul(class="todo-list") { (items) } }
+    view! { (items) }
 }

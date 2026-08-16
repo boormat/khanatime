@@ -42,7 +42,10 @@ pub enum Msg {
     Forget(String),
     /// Connect to a homeserver given only its URL: SSO when advertised, else
     /// auto-register a fresh account on an open-registration server.
-    AddHomeserver(String),
+    AddHomeserver {
+        hs: String,
+        username: String,
+    },
 }
 
 pub fn update(model: Model, msg: Msg) {
@@ -67,10 +70,6 @@ pub fn resume_on_load(model: Model) {
     let hs = model.app.event.with(|e| e.homeserver.clone());
     if hs.is_empty() {
         return; // no published homeserver on the event yet
-    }
-    // Only auto-resume the session that is still active (not soft-logged-out).
-    if crate::services::matrix::active_hs().as_deref() != Some(hs.as_str()) {
-        return;
     }
     let Some(stored) = crate::services::matrix::load_session_for(&hs) else {
         return;
@@ -147,6 +146,17 @@ pub fn resume_on_load(_model: Model) {}
 #[cfg(not(target_arch = "wasm32"))]
 pub fn join_current_event(_model: Model) {}
 
+/// Re-fetch the current event's room history and merge it into local state —
+/// used when an edit of a published event starts, so the edit is based on the
+/// latest room state and remote updates made meanwhile are detected.
+#[cfg(target_arch = "wasm32")]
+pub fn refresh_from_room(model: Model) {
+    spawn_backfill(model);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn refresh_from_room(_model: Model) {}
+
 // ----- outgoing (wasm) -----
 
 /// Send every unsent outbox message for the current event to its room, oldest
@@ -163,10 +173,12 @@ pub fn flush_pending(model: Model) {
 #[cfg(target_arch = "wasm32")]
 fn flush_pending_wasm(model: Model) {
     let Some(room) = crate::services::matrix::room() else {
+        crate::app::refresh_feed(model);
         return;
     };
     let id = model.app.event.with(|e| e.id.clone());
     if id.is_empty() {
+        crate::app::refresh_feed(model);
         return;
     }
     let pending = crate::log::load_pending(&id);
@@ -176,7 +188,14 @@ fn flush_pending_wasm(model: Model) {
         return;
     }
     wasm_bindgen_futures::spawn_local(async move {
+        let room_id = room.room_id().to_string();
         for msg in pending {
+            // Never send a duplicate: if the content is already confirmed in
+            // the room, drop it from the outbox without re-sending.
+            if crate::log::confirmed_in_room(&id, &msg.body, &room_id) {
+                crate::log::drop_pending(&id, &msg.local_id);
+                continue;
+            }
             match crate::services::matrix::send_log_message(&room, &msg).await {
                 Ok(mid) => {
                     crate::log::promote(&id, &msg.local_id, &mid);
@@ -215,8 +234,12 @@ pub fn relay_to_room(model: Model) {
         .enumerate()
         .filter(|(_, m)| {
             // Re-broadcast anything not yet confirmed in this room, except
-            // locally-adopted entries which are already there.
-            !m.origin.is_empty() && m.origin != room_id && m.origin != crate::log::ADOPT_ORIGIN
+            // locally-adopted entries which are already there — and never send
+            // a duplicate (content already published through this room).
+            !m.origin.is_empty()
+                && m.origin != room_id
+                && m.origin != crate::log::ADOPT_ORIGIN
+                && !crate::log::confirmed_in_room(&id, &m.body, &room_id)
         })
         .map(|(i, _)| i)
         .collect();
@@ -496,7 +519,7 @@ fn update_wasm(model: Model, msg: Msg) {
         Msg::Logout => logout(model),
         Msg::Relogin(hs) => relogin(model, hs),
         Msg::Forget(hs) => forget(model, hs),
-        Msg::AddHomeserver(hs) => add_homeserver(model, hs),
+        Msg::AddHomeserver { hs, username } => add_homeserver(model, hs, username),
     }
 }
 
@@ -504,7 +527,7 @@ fn update_wasm(model: Model, msg: Msg) {
 
 /// A fresh Matrix username for auto-registration on an event homeserver.
 #[cfg(target_arch = "wasm32")]
-fn gen_join_username() -> String {
+pub fn gen_join_username() -> String {
     format!("kt{}", crate::ids::gen_short_id().to_lowercase())
 }
 
@@ -687,10 +710,10 @@ fn forget(model: Model, hs: String) {
 
 /// Connect to a homeserver given only its URL.  Reuses a stored session when
 /// one exists; otherwise starts SSO when the server advertises it, or
-/// auto-registers a fresh account on an open-registration server (the local
-/// dev stack).  The user never types a username/password.
+/// registers a fresh account on an open-registration server (the local dev
+/// stack) using the caller-chosen `username`.
 #[cfg(target_arch = "wasm32")]
-fn add_homeserver(model: Model, hs: String) {
+fn add_homeserver(model: Model, hs: String, username: String) {
     let sm = model.screens.home;
     if hs.trim().is_empty() {
         model
@@ -709,7 +732,7 @@ fn add_homeserver(model: Model, hs: String) {
     model.app.conn.set(ConnState::Connecting);
     // Open the tab synchronously from the click handler (popup blockers reject
     // `window.open` after an await); it's pointed at the SSO URL when needed
-    // and closed when we auto-register instead.
+    // and closed when we register instead.
     let tab = match web_sys::window().map(|w| w.open()) {
         Some(Ok(Some(tab))) => Some(tab),
         _ => None,
@@ -724,30 +747,14 @@ fn add_homeserver(model: Model, hs: String) {
             if crate::services::matrix::oidc_supported(&client).await {
                 Ok::<_, String>(Added::Sso)
             } else {
-                // Open-registration server (the dev stack): auto-register a
-                // fresh account and keep it for reuse.
+                // Open-registration server (the dev stack): register with the
+                // user-chosen username.  If it's taken, register_or_login tries
+                // to log in; if the password doesn't match, the error surfaces.
                 let reg = crate::event::RegistrationMode::Open;
-                let mut ok = crate::services::matrix::register_or_login(
-                    &client,
-                    &gen_join_username(),
-                    &crate::ids::gen_short_id(),
-                )
-                .await
-                .is_ok();
-                if !ok {
-                    ok = crate::services::matrix::register_or_login(
-                        &client,
-                        &gen_join_username(),
-                        &crate::ids::gen_short_id(),
-                    )
-                    .await
-                    .is_ok();
-                }
-                if !ok {
-                    return Err("Couldn't create an account on this homeserver".to_string());
-                }
+                let password = crate::ids::gen_short_id();
+                crate::services::matrix::register_or_login(&client, &username, &password).await?;
                 crate::services::matrix::set_session_reg(&hs, reg);
-                crate::services::matrix::save_session(&client, &hs);
+                crate::services::matrix::save_session_with_password(&client, &hs, &password);
                 crate::services::matrix::set_client(Some(client.clone()));
                 let room = crate::services::matrix::join_room_for_event(
                     &client,

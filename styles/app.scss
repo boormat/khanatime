@@ -13,6 +13,20 @@
   }
 }
 
+// Event homeserver picker: toggleable tag-style buttons (checkbox look), spaced
+// apart rather than joined like a tabbar.  The selected tag is filled with a
+// check; clicking it again clears it (offline).
+.kt-hs-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.kt-hs-tag {
+  border-radius: 4px;
+  font-family: monospace;
+}
+
 // Chat transaction-log viewer: a single scrollable monospace text box.
 .kt-log {
   font-family: monospace;

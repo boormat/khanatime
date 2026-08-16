@@ -30,12 +30,15 @@ pub fn car_number(car: String) -> View {
 
 /// Batch-edit confirmation modal: a diff list with Send / Keep editing /
 /// Discard.  Rendered (as Bulma `.modal.is-active`) while `confirm` is `Some`.
+/// `send_label` is re-evaluated reactively; `warning` (if non-empty) is shown
+/// above the diff list.
 pub fn view_confirm_modal(
     confirm: Signal<Option<Vec<String>>>,
-    send_label: &'static str,
+    send_label: impl Fn() -> String + 'static,
     send: impl Fn() + 'static,
     keep: impl Fn() + 'static,
     discard: impl Fn() + 'static,
+    warning: Signal<String>,
 ) -> View {
     use std::rc::Rc;
     let send = Rc::new(send);
@@ -49,6 +52,13 @@ pub fn view_confirm_modal(
                     let send = send.clone();
                     let keep = keep.clone();
                     let discard = discard.clone();
+                    let label = send_label();
+                    let warning = warning.get_clone();
+                    let warning_view = if warning.is_empty() {
+                        view! {}
+                    } else {
+                        view! { p(class="help is-warning") { (warning) } }
+                    };
                     view! {
                         div(class="modal is-active") {
                             div(class="modal-background")
@@ -57,6 +67,7 @@ pub fn view_confirm_modal(
                                     p(class="modal-card-title") { "Confirm changes" }
                                 }
                                 section(class="modal-card-body") {
+                                    (warning_view)
                                     ul {
                                         (lines.iter().map(|l| {
                                             let text = l.clone();
@@ -66,7 +77,7 @@ pub fn view_confirm_modal(
                                 }
                                 footer(class="modal-card-foot") {
                                     button(class="button is-primary", on:click=move |_| send()) {
-                                        (send_label)
+                                        (label)
                                     }
                                     button(class="button", on:click=move |_| keep()) {
                                         "Keep editing"

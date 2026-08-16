@@ -531,12 +531,14 @@ pub fn view(model: crate::Model) -> View {
 
 fn view_confirm_modal(model: crate::Model) -> View {
     let em = model.screens.entries;
+    let no_warning = create_signal(String::new());
     crate::view::view_confirm_modal(
         em.confirm,
-        "Send",
+        || "Send".to_string(),
         move || crate::update(model, crate::Msg::EntriesMsg(Msg::SendBatch)),
         move || crate::update(model, crate::Msg::EntriesMsg(Msg::CancelBatch)),
         move || crate::update(model, crate::Msg::EntriesMsg(Msg::DiscardBatch)),
+        no_warning,
     )
 }
 
@@ -902,6 +904,16 @@ fn view_enter_form(model: crate::Model) -> View {
         (move || {
             if em.admin.get() {
                 return view! {};
+            }
+            // In-app self-entry can be disabled per event (officials in admin
+            // mode still manage entries).
+            if !model.app.event.with(|e| e.entries_enabled) {
+                return view! {
+                    div(class="box") {
+                        h2(class="title is-5") { "Enter the event" }
+                        p(class="help") { "In-app entries are closed for this event." }
+                    }
+                };
             }
             if em.show_form.get() {
                 view! {

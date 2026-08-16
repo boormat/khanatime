@@ -129,13 +129,36 @@ src/
 - `EventStatus` is `Draft → Published → Running → Finished`. Anything after
   draft is **amend-only**: never delete data, change state instead (entries get
   `Withdrawn`, a used test/entry can't be removed — see
-  `event::stage_has_timing`/`entry_has_timing` guards). Fixed details lock at
-  publish; "Publish as New" clones to a fresh draft id.
+  `event::stage_has_timing`/`entry_has_timing` guards). Event details stay
+  editable (the class list never renames; the publish homeserver/reg lock once
+  published). "Clone Event" copies the opened event (entrants + tests, entrant
+  state reset) into a fresh editable draft id/name/uid.
+- The event **id is a random opaque key** (`event::fresh_event_id`, e.g.
+  `kt-3K9XQ2MNVZ`) — never derived from the human fields. Name/club/year are
+  ordinary editable fields that only matter at publish, when they form the room
+  alias (`build_event_id`). An event can be created with an empty name (must be
+  named before publish).
+- A new event starts with a single test (`EventInfo::default`); `Add test`
+  duplicates the last test's settings. In-app self-entry is **off by default**
+  (`entries_enabled`); officials can always manage entries.
+- The publish homeserver is picked from the **saved logins** via a checkbox
+  list on the details form ("Offline only" = no homeserver, a local-only event
+  until one is chosen). Homeservers are added on the Home page.
 - A new event must publish before any timing starts (`event::publish_errors`:
-  no demo, at least one stage, no scores/runs). Demo = `demo-training`, local
-  only, never joins a room (`sync::join_current_event`/`resume_on_load` skip it).
-- Amending a published event sets `needs_sync`; "Sync setup to room" re-broadcasts
-  the manifest (`matrix::send_setup`, last-writer-wins).
+  no demo, a name + 4-digit year (room alias), at least one stage, no
+  scores/runs). Demo = `demo-training`, local only, never joins a room
+  (`sync::join_current_event`/`resume_on_load` skip it).
+- Saving a **draft** writes the setup manifest locally (Save Local); saving a
+  **published** event is "Save and Publish" — the diff is confirmed, then the
+  manifest is re-broadcast (last-writer-wins). First publish creates the rooms
+  and pushes the setup manifest (which carries the entrant list) into the room;
+  `sync::join_current_event` then joins the timing room so it flushes. Starting
+  an edit of a published event refreshes from the room and records the base
+  snapshot; if the room gained updates mid-edit, the confirm modal warns and
+  merges best-effort.
+- Publish homeserver/Element-link defaults are centralized in `event.rs`
+  (`is_matrix_org_homeserver` / `element_link_default`); `matrix::is_matrix_org`
+  delegates to them — keep that single source of truth.
 
 ## Sync model (current direction)
 

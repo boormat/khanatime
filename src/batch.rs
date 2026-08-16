@@ -244,11 +244,22 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
         &base.sponsoring_club,
         &staged.sponsoring_club,
     );
+    field("Name", &base.name, &staged.name);
     field("Year", &base.year, &staged.year);
     field("Event date", &base.event_date, &staged.event_date);
     field("Entry open", &base.entry_open, &staged.entry_open);
     field("Entry close", &base.entry_close, &staged.entry_close);
     field("Stripe link", &base.stripe_link, &staged.stripe_link);
+    field("Parent room", &base.parent_room, &staged.parent_room);
+    field("Homeserver", &base.homeserver, &staged.homeserver);
+    field("Element link", &base.element_link, &staged.element_link);
+    if base.entries_enabled != staged.entries_enabled {
+        lines.push(if staged.entries_enabled {
+            "+ In-app entries: enabled".to_string()
+        } else {
+            "− In-app entries: disabled".to_string()
+        });
+    }
 
     let (added, removed) = class_delta(&base.classes, &staged.classes);
     if !removed.is_empty() {
@@ -469,13 +480,15 @@ mod tests {
 
     #[test]
     fn event_diff_stages() {
-        let mut staged = base();
-        staged.stages = base().stages[..2].to_vec();
-        let lines = event_diff(&base(), &staged);
+        let mut base3 = base();
+        base3.stages = (1..=3).map(crate::event::Stage::for_test).collect();
+        let mut staged = base3.clone();
+        staged.stages.pop();
+        let lines = event_diff(&base3, &staged);
         let joined = lines.join("\n");
         assert!(joined.contains("− Test 3"));
         // no unrelated changes
         assert!(!joined.contains("Year"));
-        assert!(event_diff(&base(), &base()).is_empty());
+        assert!(event_diff(&base3, &base3).is_empty());
     }
 }

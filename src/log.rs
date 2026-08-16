@@ -208,6 +208,52 @@ pub fn enqueue_pending(id: &str, msg: LogMsg) {
     save_pending(id, &pending);
 }
 
+/// Enqueue a setup-manifest, replacing any superseded setup manifest already in
+/// the outbox.  Setup is last-writer-wins, so only the latest needs to be
+/// pending — otherwise every Save Local on a draft would queue a draft setup
+/// that then gets flushed into the room on publish (draft history in the room).
+pub fn enqueue_setup_pending(id: &str, msg: LogMsg) {
+    if id.is_empty() {
+        return;
+    }
+    let mut pending = load_pending(id);
+    pending.retain(|m| {
+        !m.body
+            .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
+    });
+    pending.push(msg);
+    save_pending(id, &pending);
+}
+
+/// Remove a pending message by local id (e.g. one already confirmed in the
+/// room, so it must not be re-sent).
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm flush dedup
+pub fn drop_pending(id: &str, local_id: &str) {
+    if id.is_empty() || local_id.is_empty() {
+        return;
+    }
+    let mut pending = load_pending(id);
+    let before = pending.len();
+    pending.retain(|m| m.local_id != local_id);
+    if pending.len() != before {
+        save_pending(id, &pending);
+    }
+}
+
+/// True when `body`'s content id is already published through `room_id` for
+/// event `id` (a log entry with that room as origin) — so it must not be sent
+/// to the room again.  Never send a duplicate message.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm flush/relay
+pub fn confirmed_in_room(id: &str, body: &str, room_id: &str) -> bool {
+    if id.is_empty() || room_id.is_empty() {
+        return false;
+    }
+    let cid = crate::ids::content_id(body);
+    load_log(id)
+        .iter()
+        .any(|m| m.origin == room_id && crate::ids::content_id(&m.body) == cid)
+}
+
 /// Append a received room message to the log, skipping a duplicate `mid` or a
 /// message whose body resolves to an already-logged content id (the same
 /// observation arriving via room, relay or QR collapses to one entry).

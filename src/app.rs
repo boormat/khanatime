@@ -582,7 +582,9 @@ pub fn enqueue_setup(model: Model) {
         serde_json::to_string(&ev).unwrap()
     );
     let sender = model.app.identity.get_clone();
-    crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(body, sender));
+    // Setup is last-writer-wins: replace any superseded setup in the outbox so
+    // a draft's Save Local history never gets flushed into the room on publish.
+    crate::log::enqueue_setup_pending(&id, crate::log::LogMsg::new_pending(body, sender));
     refresh_feed(model);
     crate::sync::flush_pending(model);
 }

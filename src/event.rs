@@ -173,6 +173,20 @@ pub struct EventInfo {
     pub timing_id: Option<String>,
     #[serde(default)]
     pub timing_alias: Option<String>,
+
+    // ---- optional event config (editable anytime) ----
+    /// Optional parent room (club/organisation space) this event links into.
+    #[serde(default)]
+    pub parent_room: String,
+    /// Allow competitors to self-enter in the app (the Entries page form).
+    /// Off by default; officials can always manage entries.
+    #[serde(default)]
+    pub entries_enabled: bool,
+    /// Optional Element Web origin for opening the event's rooms (auto-defaults
+    /// per homeserver: app.element.io for Matrix, localhost:8085 for a custom
+    /// homeserver).
+    #[serde(default)]
+    pub element_link: String,
 }
 
 /// How a scanned invite should authenticate on its homeserver.
@@ -462,7 +476,7 @@ impl Default for EventInfo {
         let classes = ["Outright", "Female", "Junior"];
         let classes = classes.map(String::from).into();
         let name = "".into();
-        let stages: Vec<Stage> = (1..=3).map(Stage::for_test).collect();
+        let stages: Vec<Stage> = (1..=1).map(Stage::for_test).collect();
         let entries = vec![];
         Self {
             name,
@@ -489,6 +503,9 @@ impl Default for EventInfo {
             space_alias: None,
             timing_id: None,
             timing_alias: None,
+            parent_room: String::new(),
+            entries_enabled: false,
+            element_link: String::new(),
         }
     }
 }
@@ -1251,6 +1268,7 @@ pub fn is_active_entry(e: &Entry) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Slugify a string for use in ids/aliases: lowercase `[a-z0-9]` joined by `-`.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // room aliases (wasm publish)
 pub fn slugify(s: &str) -> String {
     let mut out = String::new();
     for c in s.to_lowercase().chars() {
@@ -1280,6 +1298,10 @@ pub fn year_token(s: &str) -> String {
 /// Always `kt-<year>`; the club slug is inserted when the event slug is short
 /// (<5 chars) or missing, so abbreviations like `kt-2026-ndc-kcr1` come out
 /// naturally.  Both slugs may be user-supplied abbreviations.
+///
+/// The event's own id is random; this slug is used for the room alias at
+/// publish (wasm) and in tests.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn build_event_id(year: &str, club_slug: &str, event_slug: &str) -> String {
     let year = year_token(year);
     let club = slugify(club_slug);
@@ -1305,6 +1327,7 @@ pub fn build_event_id(year: &str, club_slug: &str, event_slug: &str) -> String {
 
 /// Validate a candidate event id: `kt-` prefix, contains a 4-digit year,
 /// lowercase alnum + `-`, no leading/trailing/double dashes, sane length.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // room-alias check (wasm publish)
 pub fn valid_event_id(id: &str) -> bool {
     if !id.starts_with(ID_PREFIX) {
         return false;
@@ -1327,6 +1350,63 @@ pub fn valid_event_id(id: &str) -> bool {
         .windows(4)
         .any(|w| w.iter().all(|b| b.is_ascii_digit()));
     has_year
+}
+
+/// A fresh, unique event id: opaque random key (`kt-<short id>`), never
+/// derived from the human fields.  Name/club/year are ordinary editable fields
+/// — they matter at publish, when they form the room alias.
+pub fn fresh_event_id() -> String {
+    format!("{ID_PREFIX}{}", crate::ids::gen_short_id())
+}
+
+/// True when `homeserver` belongs to matrix.org (matched by host, like the
+/// stored-session helper in `services/matrix.rs` — pure here so it's usable
+/// off-wasm too, e.g. for the Element-link default).
+pub fn is_matrix_org_homeserver(homeserver: &str) -> bool {
+    let host = homeserver
+        .split("://")
+        .nth(1)
+        .unwrap_or(homeserver)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(homeserver);
+    let host = host.split(':').next().unwrap_or(host).to_lowercase();
+    host == "matrix.org" || host.ends_with(".matrix.org")
+}
+
+/// Default Element Web origin for `homeserver` (used when the event has no
+/// explicit `element_link`): app.element.io for Matrix, else the local Element
+/// dev instance.  Empty for an unknown/blank homeserver.
+pub fn element_link_default(homeserver: &str) -> String {
+    let hs = homeserver.trim();
+    if hs.is_empty() {
+        return String::new();
+    }
+    if is_matrix_org_homeserver(hs) {
+        "https://app.element.io".to_string()
+    } else {
+        "http://localhost:8085".to_string()
+    }
+}
+
+/// Extract the Matrix server name (host, optionally with port) from a
+/// homeserver URL, suitable for building a room alias:
+/// `http://localhost:8008` → `"localhost:8008"`, `https://matrix.org` →
+/// `"matrix.org"`.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm invite_view_data
+pub fn server_name_from_homeserver(homeserver: &str) -> String {
+    let hs = homeserver.trim();
+    if hs.is_empty() {
+        return String::new();
+    }
+    let hostport = hs
+        .split("://")
+        .nth(1)
+        .unwrap_or(hs)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(hs);
+    hostport.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1639,6 +1719,14 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     }
     if event.homeserver.trim().is_empty() {
         errs.push("Pick a homeserver to publish to.".to_string());
+    }
+    // The human fields form the room alias at publish, so they must be usable
+    // even though the event id itself is random.
+    if event.name.trim().is_empty() || year_token(&event.year).is_empty() {
+        errs.push(
+            "Add the event name and a 4-digit year before publishing (they form the room alias)."
+                .to_string(),
+        );
     }
     if event.stages.is_empty() {
         errs.push("Add at least one test before publishing.".to_string());
@@ -2123,8 +2211,9 @@ mod tests {
     #[test]
     fn publish_errors_catch_bad_state() {
         let mut ev = EventInfo {
-            id: "kt-2026-x".into(),
+            id: crate::ids::gen_short_id(),
             name: "X".into(),
+            year: "2026".into(),
             stages: vec![],
             homeserver: "http://localhost:8008".into(),
             ..Default::default()
@@ -2409,7 +2498,8 @@ mod tests {
     #[test]
     fn default_event_has_stages() {
         let ev = EventInfo::default();
-        assert_eq!(ev.stage_count(), 3);
+        // A fresh event starts with a single test; the organiser adds more.
+        assert_eq!(ev.stage_count(), 1);
         let first = ev.stage(0);
         assert_eq!(first.num, 1);
         assert_eq!(first.name, "Test 1");
@@ -2499,6 +2589,7 @@ mod tests {
         b.entry_no = 2;
         let ev = EventInfo {
             entries: vec![a, b],
+            stages: vec![Stage::for_test(1), Stage::for_test(2)],
             ..Default::default()
         };
         let finish = |test: u8, car: &str, ith: u8, ds: u16| RunRecord {
@@ -2528,7 +2619,7 @@ mod tests {
             ev.classes
         );
         let alice = &rv.rows[&1u32].columns;
-        assert_eq!(alice.len(), 3);
+        assert_eq!(alice.len(), 2);
         // cumulative time after stage 2 = sum of both stage scores
         assert_eq!(
             alice[1]
@@ -2683,6 +2774,7 @@ mod tests {
         b.entry_no = 2;
         let ev = EventInfo {
             entries: vec![a, b],
+            stages: (1..=3).map(Stage::for_test).collect(),
             ..Default::default()
         };
         let finish = |test: u8, car: &str, ith: u8, ds: u16| RunRecord {
@@ -3084,5 +3176,35 @@ mod tests {
         assert_eq!(shared_car_key(" abc 123 "), "abc 123");
         assert_eq!(shared_car_key("Bob's MX5"), "bob's mx5");
         assert_eq!(shared_car_key("Erin's   MX-5"), "erin's mx-5");
+    }
+
+    #[test]
+    fn server_name_from_homeserver_extracts_host_port() {
+        assert_eq!(
+            server_name_from_homeserver("http://localhost:8008"),
+            "localhost:8008"
+        );
+        assert_eq!(
+            server_name_from_homeserver("https://matrix.example.com"),
+            "matrix.example.com"
+        );
+        assert_eq!(
+            server_name_from_homeserver("https://matrix.org"),
+            "matrix.org"
+        );
+        assert_eq!(server_name_from_homeserver(""), "");
+    }
+
+    #[test]
+    fn element_link_default_per_homeserver() {
+        assert_eq!(
+            element_link_default("https://matrix.org"),
+            "https://app.element.io"
+        );
+        assert_eq!(
+            element_link_default("http://localhost:8008"),
+            "http://localhost:8085"
+        );
+        assert_eq!(element_link_default(""), "");
     }
 }
