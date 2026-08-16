@@ -183,11 +183,37 @@ pub fn view(model: crate::Model) -> View {
 /// Compact one-line summary for a feed entry.
 fn line_summary(e: &FeedEntry) -> String {
     let summary = if let Some(t) = &e.timing {
-        format!("[KT {} test={} car={}]", t.r#type, t.test, t.car)
+        let time = t
+            .time_ds
+            .map(|ds| format!(" {:.1}s", ds as f32 / 10.0))
+            .unwrap_or_default();
+        let flags = t
+            .flags
+            .filter(|&f| f > 0)
+            .map(|f| format!(" {f}F"))
+            .unwrap_or_default();
+        let status = t
+            .status
+            .as_deref()
+            .filter(|&s| s != "ok")
+            .map(|s| format!(" {s}"))
+            .unwrap_or_default();
+        format!(
+            "[{} test={} car={}{time}{flags}{status}]",
+            t.r#type, t.test, t.car
+        )
     } else if e.body.starts_with(TimingEvent::SETUP_PREFIX) {
-        "[setup]".to_string()
+        let payload = &e.body[TimingEvent::SETUP_PREFIX.len()..];
+        let name = serde_json::from_str::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "unnamed".to_string());
+        format!("[setup: {name}]")
     } else if e.body.starts_with(TimingEvent::RESULT_PREFIX) {
         "[result]".to_string()
+    } else if e.body.starts_with(TimingEvent::ENTRY_PREFIX) {
+        "[entry]".to_string()
     } else {
         e.body.clone()
     };

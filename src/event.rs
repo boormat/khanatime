@@ -62,21 +62,22 @@ pub enum TimingStyle {
 
 /// Configuration for one test (stage) in an event.
 ///
-/// `num` gives the stage its display/ordering number.  `repeats` is the total
-/// number of runs each car attempts (the Y in "best X of Y") and `best_x` is
-/// how many of those count towards the stage score.  These are captured on the
-/// setup page; the results engine sums the car's best `best_x` runs per test.
+/// `num` gives the stage its display/ordering number.  `runs_total` is the
+/// total number of runs each car attempts and `runs_scored` is how many of
+/// those count towards the stage score (best N of total).  These are captured
+/// on the setup page; the results engine sums the car's best `runs_scored`
+/// runs per test.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Stage {
     pub num: u8, // display/ordering number, e.g. 1..12
     #[serde(default)]
     pub name: String,
-    /// Total runs per car per test (the Y in "best X of Y").
-    #[serde(default = "default_one")]
-    pub repeats: u8,
-    /// Counted runs (the X in "best X of Y"; X <= repeats).
-    #[serde(default = "default_one")]
-    pub best_x: u8,
+    /// Total runs per car per test.
+    #[serde(default = "default_one", rename = "repeats")]
+    pub runs_total: u8,
+    /// Scored runs (best N of total; N <= runs_total).
+    #[serde(default = "default_one", rename = "best_x")]
+    pub runs_scored: u8,
     #[serde(default)]
     pub timing: TimingStyle,
 }
@@ -92,12 +93,12 @@ impl Default for Stage {
 }
 
 impl Stage {
-    pub fn new(name: String, repeats: u8, best_x: u8, timing: TimingStyle) -> Self {
+    pub fn new(name: String, runs_total: u8, runs_scored: u8, timing: TimingStyle) -> Self {
         Self {
             num: 1,
             name,
-            repeats,
-            best_x,
+            runs_total,
+            runs_scored,
             timing,
         }
     }
@@ -108,8 +109,8 @@ impl Stage {
         Self {
             num,
             name,
-            repeats: 1,
-            best_x: 1,
+            runs_total: 1,
+            runs_scored: 1,
             timing: TimingStyle::Stopwatch,
         }
     }
@@ -990,17 +991,18 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
         .collect()
 }
 
-/// Best-X-of-Y aggregate for one car in one test: the sum of the car's best
-/// `best_x` counting runs of the (up to) `repeats` it attempted, where only
-/// the first `repeats` runs (by run order) may count — extra runs beyond Y
-/// are excluded no matter their time.  A car that hasn't completed X runs yet
-/// scores nothing: the real runs are returned for display but `sum` stays
-/// None.  A 0-of-0 stage (Y = 0) is completed by every entrant with a total
-/// time of zero — any runs recorded are display-only (struck out).  DNF/FTS/WD
-/// finishes and a declared DNS (a `start` marked `dns`, no finish) are
-/// completed attempts; a DNS scores the no-time `base + 100`.  Returns the
-/// aggregate score together with every real run (in run order, counted runs
-/// flagged).  None when the car has no attempts in the test.
+/// Best-N-of-total aggregate for one car in one test: the sum of the car's
+/// best `runs_scored` counting runs of the (up to) `runs_total` it attempted,
+/// where only the first `runs_total` runs (by run order) may count — extra
+/// runs beyond total are excluded no matter their time.  A car that hasn't
+/// completed `runs_scored` runs yet scores nothing: the real runs are returned
+/// for display but `sum` stays None.  A 0-of-0 stage (total = 0) is completed
+/// by every entrant with a total time of zero — any runs recorded are
+/// display-only (struck out).  DNF/FTS/WD finishes and a declared DNS (a
+/// `start` marked `dns`, no finish) are completed attempts; a DNS scores the
+/// no-time `base + 100`.  Returns the aggregate score together with every real
+/// run (in run order, counted runs flagged).  None when the car has no attempts
+/// in the test.
 fn stage_result(
     stage: &Stage,
     runs: &[RunRecord],
@@ -1016,7 +1018,7 @@ fn stage_result(
     // A 0-of-0 stage (Y = 0): zero required runs, so every entrant has
     // completed it with a total time of zero.  Any runs recorded are
     // display-only (struck out, never counted).
-    if stage.repeats == 0 {
+    if stage.runs_total == 0 {
         let mut relevant: Vec<&RunRecord> = relevant;
         relevant.sort_by_key(|r| r.ts);
         let all: Vec<RunScore> = relevant
@@ -1074,11 +1076,11 @@ fn stage_result(
     }
 
     // Completeness gate: no score until the entrant has done enough runs.
-    let y = stage.repeats as usize;
-    let fill_target = if stage.best_x == 0 {
+    let y = stage.runs_total as usize;
+    let fill_target = if stage.runs_scored == 0 {
         y
     } else {
-        (stage.best_x.max(1)) as usize
+        (stage.runs_scored.max(1)) as usize
     };
     let done = all.len().min(y);
     if done < fill_target {
@@ -1091,10 +1093,10 @@ fn stage_result(
     // Counting-eligible slots: the first Y runs (by timestamp order).  Beyond-Y
     // runs are excluded no matter how fast.
     let eligible: Vec<usize> = (0..all.len()).filter(|&i| i < y).collect();
-    let keep = if stage.best_x == 0 {
+    let keep = if stage.runs_scored == 0 {
         eligible.len()
     } else {
-        (stage.best_x as usize).min(eligible.len()).max(1)
+        (stage.runs_scored as usize).min(eligible.len()).max(1)
     };
     let mut best = eligible.clone();
     best.sort_by_key(|&i| (all[i].score, all[i].ts));
@@ -1626,15 +1628,15 @@ pub fn demo_event() -> EventInfo {
         ..Default::default()
     };
     // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
-    ev.stages[1].repeats = 3;
-    ev.stages[1].best_x = 2;
+    ev.stages[1].runs_total = 3;
+    ev.stages[1].runs_scored = 2;
     // Stage 3 is 0 of 0: everyone completes it with a total time of zero, so
     // positions tie and the cumulative chain continues on to stage 4.
-    ev.stages[2].repeats = 0;
-    ev.stages[2].best_x = 0;
+    ev.stages[2].runs_total = 0;
+    ev.stages[2].runs_scored = 0;
     // Stage 4 is a normal single run after the zero stage.
-    ev.stages[3].repeats = 1;
-    ev.stages[3].best_x = 1;
+    ev.stages[3].runs_total = 1;
+    ev.stages[3].runs_scored = 1;
     for (car, name, classes) in [
         ("1", "Alice", &["Outright", "Female"][..]),
         ("2", "Bob", &["Outright"][..]),
@@ -2327,12 +2329,12 @@ mod tests {
     }
 
     #[test]
-    fn stage_result_best_x_of_y() {
+    fn stage_result_runs_scored_of_total() {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 1,
-            repeats: 3,
-            best_x: 2,
+            runs_total: 3,
+            runs_scored: 2,
             ..ev.stage(0).clone()
         };
         let finish = |ith: u8, ds: u16| RunRecord {
@@ -2350,13 +2352,13 @@ mod tests {
             Some(300)
         );
         let mut best1 = stage.clone();
-        best1.best_x = 1;
+        best1.runs_scored = 1;
         assert_eq!(
             stage_result(&best1, &runs, 1, "7", 0).and_then(|ss| ss.sum),
             Some(100)
         );
         let mut best0 = stage.clone();
-        best0.best_x = 0; // count all runs up to repeats
+        best0.runs_scored = 0; // count all runs up to repeats
         assert_eq!(
             stage_result(&best0, &runs, 1, "7", 0).and_then(|ss| ss.sum),
             Some(600)
@@ -2368,8 +2370,8 @@ mod tests {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 1,
-            repeats: 3, // Y = 3: only the first three runs may count
-            best_x: 2,
+            runs_total: 3, // Y = 3: only the first three runs may count
+            runs_scored: 2,
             ..ev.stage(0).clone()
         };
         let finish = |ith: u8, ds: u16| RunRecord {
@@ -2398,8 +2400,8 @@ mod tests {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 1,
-            repeats: 3, // Y = 3
-            best_x: 2,
+            runs_total: 3, // Y = 3
+            runs_scored: 2,
             ..ev.stage(0).clone()
         };
         let finish = |ith: u8, ds: u16| RunRecord {
@@ -2459,7 +2461,7 @@ mod tests {
     #[test]
     fn stage_result_status_and_dns() {
         let ev = EventInfo::default();
-        let stage = ev.stage(0); // repeats=1, best_x=1
+        let stage = ev.stage(0); // runs_total=1, runs_scored=1
         let run = |ith: u8, time_ds, flags| RunRecord {
             r#type: "finish".into(),
             test: 1,
@@ -2498,8 +2500,8 @@ mod tests {
         let first = ev.stage(0);
         assert_eq!(first.num, 1);
         assert_eq!(first.name, "Test 1");
-        assert_eq!(first.repeats, 1);
-        assert_eq!(first.best_x, 1);
+        assert_eq!(first.runs_total, 1);
+        assert_eq!(first.runs_scored, 1);
         assert_eq!(first.timing, TimingStyle::Stopwatch);
     }
 
@@ -2511,8 +2513,8 @@ mod tests {
                 Stage {
                     num: 2,
                     name: "Creek".into(),
-                    repeats: 3,
-                    best_x: 2,
+                    runs_total: 3,
+                    runs_scored: 2,
                     timing: TimingStyle::Rally,
                 },
             ],
@@ -2522,7 +2524,7 @@ mod tests {
         let back: EventInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(back.stage_count(), 2);
         assert_eq!(back.stage(1).name, "Creek");
-        assert_eq!(back.stage(1).repeats, 3);
+        assert_eq!(back.stage(1).runs_total, 3);
         assert_eq!(back.stage(1).timing, TimingStyle::Rally);
     }
 
@@ -2628,11 +2630,11 @@ mod tests {
     }
 
     #[test]
-    fn demo_best_x_of_y_sums_runs_on_stage() {
+    fn demo_runs_scored_of_total_sums_runs_on_stage() {
         let ev = demo_event();
         // Stage 2 ships as best-2-of-3; exercise that configuration.
-        assert_eq!(ev.stages[1].repeats, 3);
-        assert_eq!(ev.stages[1].best_x, 2);
+        assert_eq!(ev.stages[1].runs_total, 3);
+        assert_eq!(ev.stages[1].runs_scored, 2);
         let finish = |ith: u8, ds: u16| RunRecord {
             r#type: "finish".into(),
             test: 2,
@@ -2661,14 +2663,14 @@ mod tests {
         let ev = demo_event();
         assert_eq!(ev.stage_count(), 4);
         // Stage 2 stays the multi-run test.
-        assert_eq!(ev.stages[1].repeats, 3);
-        assert_eq!(ev.stages[1].best_x, 2);
+        assert_eq!(ev.stages[1].runs_total, 3);
+        assert_eq!(ev.stages[1].runs_scored, 2);
         // Stage 3 is 0 of 0: everyone completes it with a zero total.
-        assert_eq!(ev.stages[2].repeats, 0);
-        assert_eq!(ev.stages[2].best_x, 0);
+        assert_eq!(ev.stages[2].runs_total, 0);
+        assert_eq!(ev.stages[2].runs_scored, 0);
         // Stage 4 is a normal single run after the zero stage.
-        assert_eq!(ev.stages[3].repeats, 1);
-        assert_eq!(ev.stages[3].best_x, 1);
+        assert_eq!(ev.stages[3].runs_total, 1);
+        assert_eq!(ev.stages[3].runs_scored, 1);
     }
 
     #[test]
@@ -2676,8 +2678,8 @@ mod tests {
         let ev = EventInfo::default();
         let stage = Stage {
             num: 3,
-            repeats: 0, // 0 of 0: everyone completes with a zero total
-            best_x: 0,
+            runs_total: 0, // 0 of 0: everyone completes with a zero total
+            runs_scored: 0,
             ..ev.stage(0).clone()
         };
         let finish = RunRecord {
@@ -2708,8 +2710,8 @@ mod tests {
         b.entry_no = 2;
         // Stage 2 becomes 0 of 0; stages 1 and 3 stay normal single runs.
         let mut stages: Vec<Stage> = (1..=3).map(Stage::for_test).collect();
-        stages[1].repeats = 0;
-        stages[1].best_x = 0;
+        stages[1].runs_total = 0;
+        stages[1].runs_scored = 0;
         let ev = EventInfo {
             entries: vec![a, b],
             stages,

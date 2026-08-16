@@ -681,6 +681,7 @@ fn forget(model: Model, hs: String) {
     let is_active = crate::services::matrix::active_hs().as_deref() == Some(hs.as_str());
     if !is_active {
         crate::services::matrix::remove_session(&hs);
+        model.screens.home.refresh.update(|v| v.wrapping_add(1));
         return;
     }
     let sm = model.screens.home;

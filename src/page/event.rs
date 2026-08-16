@@ -192,8 +192,8 @@ pub fn update(model: crate::Model, msg: Msg) {
                 v.push(Stage {
                     num,
                     name: format!("Test {num}"),
-                    repeats: last.repeats,
-                    best_x: last.best_x,
+                    runs_total: last.runs_total,
+                    runs_scored: last.runs_scored,
                     timing: last.timing,
                 });
             });
@@ -265,8 +265,8 @@ fn staged_event(model: crate::Model) -> crate::event::EventInfo {
     // Display/ordering is by `num`; stable on ties.
     stages.sort_by_key(|s| s.num);
     for s in stages.iter_mut() {
-        if s.best_x > s.repeats {
-            s.best_x = s.repeats;
+        if s.runs_scored > s.runs_total {
+            s.runs_scored = s.runs_total;
         }
     }
     ev.stages = stages;
@@ -557,7 +557,7 @@ pub fn view(model: crate::Model) -> View {
         div {
             (view_header(model))
             (move || view_invite(model))
-            (view_details(model))
+            (move || view_details(model))
             (view_confirm_modal(model))
         }
     }
@@ -1445,7 +1445,7 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
     }
 }
 
-/// Per-test config: name, number, repeats, best-X-of-Y, timing style.
+/// Per-test config: name, number, total runs, scored runs, timing style.
 fn view_stage_list(model: crate::Model) -> View {
     let em = model.screens.setup;
     let editing = em.editing.get();
@@ -1471,8 +1471,8 @@ fn view_stage_list(model: crate::Model) -> View {
                     div(class="columns is-vcentered is-hidden-mobile") {
                         div(class="column is-1") { strong { "No." } }
                         div(class="column is-4") { strong { "Name" } }
-                        div(class="column is-2") { strong { "Repeats" } }
-                        div(class="column is-2") { strong { "Best X of Y" } }
+                        div(class="column is-2") { strong { "Total runs" } }
+                        div(class="column is-2") { strong { "Scored runs" } }
                         div(class="column is-2") { strong { "Timing" } }
                         div(class="column is-1") { }
                     }
@@ -1498,8 +1498,8 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
     let em = model.screens.setup;
     let num = stage.num.to_string();
     let name = stage.name.clone();
-    let repeats = stage.repeats.to_string();
-    let best_x = stage.best_x.to_string();
+    let runs_total = stage.runs_total.to_string();
+    let runs_scored = stage.runs_scored.to_string();
     view! {
         div(class="columns is-vcentered") {
             div(class="column is-1") {
@@ -1530,13 +1530,13 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
                     class="input",
                     r#type="number",
                     min="0",
-                    value=repeats,
+                    value=runs_total,
                     on:input=move |ev: web_sys::Event| {
                         let v = input_value(&ev).trim().parse::<u8>().unwrap_or(1);
                         em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) {
-                            s.repeats = v;
-                            if s.best_x > v {
-                                s.best_x = v;
+                            s.runs_total = v;
+                            if s.runs_scored > v {
+                                s.runs_scored = v;
                             }
                         });
                     },
@@ -1547,11 +1547,11 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
                     class="input",
                     r#type="number",
                     min="0",
-                    value=best_x,
+                    value=runs_scored,
                     on:input=move |ev: web_sys::Event| {
                         let v = input_value(&ev).trim().parse::<u8>().unwrap_or(1);
                         em.edit_stages.update(|st| if let Some(s) = st.get_mut(idx) {
-                            s.best_x = v.min(s.repeats);
+                            s.runs_scored = v.min(s.runs_total);
                         });
                     },
                 )
@@ -1579,8 +1579,8 @@ fn view_stage_row(model: crate::Model, idx: usize, stage: &Stage) -> View {
 fn view_stage_row_readonly(stage: &Stage) -> View {
     let num = stage.num.to_string();
     let name = stage.name.clone();
-    let repeats = stage.repeats.to_string();
-    let best_x = stage.best_x.to_string();
+    let runs_total = stage.runs_total.to_string();
+    let runs_scored = stage.runs_scored.to_string();
     let timing_label = match stage.timing {
         TimingStyle::Stopwatch => "Stopwatch",
         TimingStyle::Rally => "Rally",
@@ -1589,8 +1589,8 @@ fn view_stage_row_readonly(stage: &Stage) -> View {
         div(class="columns is-vcentered") {
             div(class="column is-1") { span(class="tag is-light") { (num) } }
             div(class="column is-4") { (name) }
-            div(class="column is-2") { (repeats) }
-            div(class="column is-2") { (best_x) }
+            div(class="column is-2") { (runs_total) }
+            div(class="column is-2") { (runs_scored) }
             div(class="column is-3") { span(class="tag is-light") { (timing_label) } }
         }
     }

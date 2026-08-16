@@ -149,6 +149,7 @@ fn view_sessions(model: crate::Model) -> View {
     view! {
         (move || {
             let sm = model.screens.home;
+            let _ = sm.refresh.get();
             let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
             let sessions = crate::services::matrix::load_sessions();
             let rows: Vec<View> = sessions
@@ -375,8 +376,8 @@ struct StageProgress {
     num: u8,
     name: String,
     completed: usize,
-    min_runs: usize,
-    all_runs: usize,
+    scored_runs: usize,
+    total_runs: usize,
 }
 
 /// (total, active competitors, withdrawn, draft, reserve) entry counts.
@@ -407,8 +408,8 @@ fn is_active(e: &Entry) -> bool {
 
 /// Per-stage progress for active entries:
 /// - completed: has a real (non-withdrawn) recorded time
-/// - min_runs: finished at least `best_x` runs (the X of best-X-of-Y)
-/// - all_runs: finished all `repeats` runs (the Y)
+/// - scored_runs: finished at least `runs_scored` runs
+/// - total_runs: finished all `runs_total` runs
 fn stage_progress(
     event: &EventInfo,
     scores: &[ScoreData],
@@ -459,8 +460,8 @@ fn stage_progress(
                 num: st.num,
                 name: st.name.clone(),
                 completed: completed.get(&st.num).copied().unwrap_or(0),
-                min_runs: done(st.best_x),
-                all_runs: done(st.repeats),
+                scored_runs: done(st.runs_scored),
+                total_runs: done(st.runs_total),
             }
         })
         .collect()
@@ -542,8 +543,8 @@ fn view_status_summary(model: crate::Model) -> View {
         };
         let pct = (s.completed * 100 + active / 2) / active.max(1);
         let completed_cell = format!("{} / {} ({pct}%)", s.completed, active);
-        let min_cell = s.min_runs.to_string();
-        let all_cell = s.all_runs.to_string();
+        let min_cell = s.scored_runs.to_string();
+        let all_cell = s.total_runs.to_string();
         rows.push(view! {
             tr {
                 td { (stage_name) }
@@ -601,14 +602,14 @@ fn view_status_summary(model: crate::Model) -> View {
                     tr {
                         th { "Test" }
                         th { "Completed (needs it)" }
-                        th { "Done min runs (X)" }
-                        th { "Done all runs (Y)" }
+                        th { "Scored runs" }
+                        th { "Total runs" }
                     }
                 }
                 tbody { (rows) }
             }
             p(class="help") {
-                "Completed = recorded a time for the test. X = best X of Y runs, Y = runs per test."
+                "Completed = recorded a time for the test. Scored = finished at least the scored-run count. Total = finished all runs."
             }
         }
     }
@@ -1182,8 +1183,8 @@ mod tests {
         let stage = |num: u8| Stage {
             num,
             name: format!("Test {num}"),
-            repeats: 2,
-            best_x: 1,
+            runs_total: 2,
+            runs_scored: 1,
             timing: TimingStyle::Stopwatch,
         };
         ev.stages = vec![stage(1), stage(2)];
@@ -1204,9 +1205,9 @@ mod tests {
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].completed, 2);
         assert_eq!(p[1].completed, 1);
-        assert_eq!(p[0].min_runs, 2); // both active have >= 1 run
-        assert_eq!(p[0].all_runs, 1); // only Alice has 2 runs (repeats=2)
-        assert_eq!(p[1].min_runs, 1); // only Alice ran stage 2
-        assert_eq!(p[1].all_runs, 1);
+        assert_eq!(p[0].scored_runs, 2); // both active have >= 1 run
+        assert_eq!(p[0].total_runs, 1); // only Alice has 2 runs (runs_total=2)
+        assert_eq!(p[1].scored_runs, 1); // only Alice ran stage 2
+        assert_eq!(p[1].total_runs, 1);
     }
 }

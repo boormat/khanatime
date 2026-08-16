@@ -225,8 +225,8 @@ fn stage_desc(s: &Stage) -> String {
         TimingStyle::Rally => "Rally",
     };
     format!(
-        "Test {}: {} — best {} of {}, {}",
-        s.num, s.name, s.best_x, s.repeats, style
+        "Test {}: {} — {} of {} scored, {}",
+        s.num, s.name, s.runs_scored, s.runs_total, style
     )
 }
 
