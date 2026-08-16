@@ -1,8 +1,6 @@
 use sycamore::prelude::*;
 
-use crate::event::{
-    elapsed_ds, next_run, pending_starts, upsert_ktime, KTime, RunRecord, RUN_FINISH,
-};
+use crate::event::{elapsed_ds, pending_starts, upsert_ktime, KTime, RunRecord, RUN_FINISH};
 use crate::page::{pad, penalty};
 
 // Big-button finish timing: pending starts (tap to select), car chips,
@@ -104,10 +102,6 @@ fn do_finish(model: crate::Model) {
         None => time_to_ds(&sm.time.get_clone()),
     };
     let ktime: KTime = penalty::to_ktime(sm.penalty, time_ds);
-    let run = match &pending {
-        Some(s) => s.run,
-        None => model.app.runs.with(|runs| next_run(runs, test, &car)),
-    };
     let comment = sm.comment.get_clone();
     let comment_opt = if comment.trim().is_empty() {
         None
@@ -119,7 +113,6 @@ fn do_finish(model: crate::Model) {
         r#type: RUN_FINISH.to_string(),
         test,
         car: car.clone(),
-        run,
         ts: now,
         time_ds: Some(time_ds),
         status: Some(sm.penalty.status.get_clone()),
@@ -127,6 +120,7 @@ fn do_finish(model: crate::Model) {
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
         comment: comment_opt,
+        refs: vec![],
     };
 
     model.app.scores.update(|s| {
@@ -265,7 +259,7 @@ fn view_pending(model: crate::Model) -> View {
                     .iter()
                     .map(|r| {
                         let rr = r.clone();
-                        let disp = format!("#{} run {}", r.car, r.run);
+                        let disp = format!("#{}", r.car);
                         let age = fmt_age(now - r.ts);
                         let is_selected = r.car == model.screens.finish.car.get_clone();
                         view! {
@@ -303,7 +297,7 @@ fn view_selected(model: crate::Model) -> View {
                     let age = fmt_age(js_sys::Date::now() as i64 - start.ts);
                     view! {
                         div(class="notification is-primary is-light") {
-                            ("#") (car) (" run ") (start.run) (" — started ") (age) (" — elapsed ") (fmt_ds(ds)) (" s")
+                            ("#") (car) (" — started ") (age) (" — elapsed ") (fmt_ds(ds)) (" s")
                         }
                     }
                 }

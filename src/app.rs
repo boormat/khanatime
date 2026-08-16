@@ -424,13 +424,7 @@ pub fn update(model: Model, msg: Msg) {
                     .map(|r| r.car.clone())
                     .unwrap_or_default()
             });
-            let run = model.app.runs.with(|runs| {
-                runs.iter()
-                    .find(|r| r.uid == uid)
-                    .map(|r| r.run)
-                    .unwrap_or(1)
-            });
-            crate::page::enqueue_void(model, &uid, test, &car, run);
+            crate::page::enqueue_void(model, &uid, test, &car);
         }
         Msg::ScanStart => {
             #[cfg(target_arch = "wasm32")]

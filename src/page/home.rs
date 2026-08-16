@@ -429,7 +429,7 @@ fn stage_progress(
     }
 
     // Distinct finished runs per (stage, car).
-    let mut runs_done: HashMap<(u8, String), HashSet<u8>> = HashMap::new();
+    let mut runs_done: HashMap<(u8, String), HashSet<String>> = HashMap::new();
     for r in runs {
         if r.r#type != RUN_FINISH || r.voided {
             continue;
@@ -437,7 +437,7 @@ fn stage_progress(
         runs_done
             .entry((r.test, r.car.clone()))
             .or_default()
-            .insert(r.run);
+            .insert(r.uid.clone());
     }
 
     event

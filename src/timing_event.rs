@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// observation's `uid`; the original is never rewritten or removed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimingEvent {
-    pub r#type: String, // start | finish | amend | void
+    pub r#type: String, // start | stop | finish | amend | void
     /// Event uid (the wire identity, not the human slug).
     pub event_id: String,
     /// This observation's id — the indelible thing.
@@ -20,7 +20,6 @@ pub struct TimingEvent {
     pub target: Option<String>,
     pub test: u8,
     pub car: String,
-    pub run: u8,
     pub ts: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_ds: Option<u16>,
@@ -32,6 +31,9 @@ pub struct TimingEvent {
     pub official_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// UIDs of the start/stop observations this finish is based on (audit trail).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
 }
 
 impl TimingEvent {
@@ -51,7 +53,7 @@ impl TimingEvent {
     /// [crate::event::EntryMsg]).
     pub const ENTRY_PREFIX: &'static str = "khanatime_entry:";
 
-    pub fn new(r#type: &str, event_id: &str, test: u8, car: &str, run: u8) -> Self {
+    pub fn new(r#type: &str, event_id: &str, test: u8, car: &str) -> Self {
         Self {
             r#type: r#type.to_string(),
             event_id: event_id.to_string(),
@@ -59,13 +61,13 @@ impl TimingEvent {
             target: None,
             test,
             car: car.to_string(),
-            run,
             ts: js_sys::Date::now() as i64,
             time_ds: None,
             status: None,
             flags: None,
             official_id: None,
             comment: None,
+            refs: vec![],
         }
     }
 
@@ -88,16 +90,29 @@ impl TimingEvent {
         }
     }
 
-    /// A `finish` payload for an entered time.
+    /// A `start` payload.
+    pub fn start(event_id: &str, test: u8, car: &str) -> Self {
+        Self::new("start", event_id, test, car)
+    }
+
+    /// A `stop` payload (lightweight off-course status with elapsed time).
+    pub fn stop(event_id: &str, test: u8, car: &str, time_ds: u16) -> Self {
+        let mut te = Self::new("stop", event_id, test, car);
+        te.time_ds = Some(time_ds);
+        te
+    }
+
+    /// A `finish` payload for an entered time, referencing the contributing observations.
     pub fn finish(
         event_id: &str,
-        stage: u8,
+        test: u8,
         car: &str,
-        run: u8,
         time: &crate::event::KTime,
+        refs: Vec<String>,
     ) -> Self {
-        let mut te = Self::new("finish", event_id, stage, car, run);
+        let mut te = Self::new("finish", event_id, test, car);
         te.apply_time(time);
+        te.refs = refs;
         te
     }
 
@@ -108,10 +123,9 @@ impl TimingEvent {
         target: &str,
         test: u8,
         car: &str,
-        run: u8,
         time: &crate::event::KTime,
     ) -> Self {
-        let mut te = Self::new("amend", event_id, test, car, run);
+        let mut te = Self::new("amend", event_id, test, car);
         te.target = Some(target.to_string());
         te.apply_time(time);
         te
@@ -119,8 +133,8 @@ impl TimingEvent {
 
     /// Void an existing observation by `target` uid.  Final — if wrong, enter
     /// a fresh observation.
-    pub fn void(event_id: &str, target: &str, test: u8, car: &str, run: u8) -> Self {
-        let mut te = Self::new("void", event_id, test, car, run);
+    pub fn void(event_id: &str, target: &str, test: u8, car: &str) -> Self {
+        let mut te = Self::new("void", event_id, test, car);
         te.target = Some(target.to_string());
         te
     }
@@ -167,13 +181,13 @@ mod tests {
             target: None,
             test: 1,
             car: "7".into(),
-            run: 2,
             ts: 0,
             time_ds: None,
             status: None,
             flags: None,
             official_id: None,
             comment: None,
+            refs: vec![],
         }
     }
 
@@ -220,5 +234,22 @@ mod tests {
         }));
         let content = te.to_matrix_content();
         assert_eq!(TimingEvent::from_matrix_content(&content), Some(te));
+    }
+
+    #[test]
+    fn refs_omitted_when_empty() {
+        let te = base();
+        let json = serde_json::to_value(&te).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("refs"));
+    }
+
+    #[test]
+    fn refs_present_when_nonempty() {
+        let mut te = base();
+        te.refs = vec!["abc".into(), "def".into()];
+        let json = serde_json::to_value(&te).unwrap();
+        let refs = json["refs"].as_array().unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].as_str(), Some("abc"));
     }
 }

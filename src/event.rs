@@ -18,19 +18,19 @@ pub const ROLE_COMPETITOR: &str = "competitor";
 
 // Run record types (mirrors the Matrix TimingEvent wire types).
 pub const RUN_START: &str = "start";
+pub const RUN_STOP: &str = "stop";
 pub const RUN_FINISH: &str = "finish";
 
-/// One start or finish observation for a car on a test.  Persisted per event
+/// One start, stop, or finish observation for a car on a test.  Persisted per event
 /// under `runs:<id>` and exchanged over Matrix as a [TimingEvent].
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct RunRecord {
     /// Observation id — the indelible thing.  Generated at enqueue time;
     /// carried on the wire so mirrors across transports collapse to one.
     pub uid: String,
-    pub r#type: String, // RUN_START | RUN_FINISH
+    pub r#type: String, // RUN_START | RUN_STOP | RUN_FINISH
     pub test: u8,
     pub car: String,
-    pub run: u8,
     pub ts: i64, // ms since epoch
     #[serde(default)]
     pub time_ds: Option<u16>,
@@ -42,6 +42,9 @@ pub struct RunRecord {
     pub official_id: Option<String>,
     #[serde(default)]
     pub comment: Option<String>,
+    /// UIDs of the start/stop observations this finish references (audit trail).
+    #[serde(default)]
+    pub refs: Vec<String>,
     /// Derived (replay) state: the observation was `void`ed.  Never on the wire.
     #[serde(skip)]
     pub voided: bool,
@@ -452,7 +455,8 @@ pub struct ResultScore {
 /// One run of a car in a test, as shown in the results Time cell.
 #[derive(Default, Clone, Debug)]
 pub struct RunScore {
-    pub run: u8,
+    /// Timestamp of the original observation (used for ordering and tiebreaking).
+    pub ts: i64,
     /// As-entered result (a clean time with flags/garage, or DNF/FTS/WD/DNS).
     pub time: KTime,
     /// Net score (elapsed + penalties, or the aborted/DNS base-penalty).
@@ -1013,6 +1017,8 @@ fn stage_result(
     // completed it with a total time of zero.  Any runs recorded are
     // display-only (struck out, never counted).
     if stage.repeats == 0 {
+        let mut relevant: Vec<&RunRecord> = relevant;
+        relevant.sort_by_key(|r| r.ts);
         let all: Vec<RunScore> = relevant
             .iter()
             .filter(|r| {
@@ -1026,7 +1032,7 @@ fn stage_result(
                     (KTime::NOSHO, base_time as u32 + 100)
                 };
                 RunScore {
-                    run: r.run,
+                    ts: r.ts,
                     time,
                     score,
                     counted: false,
@@ -1055,26 +1061,26 @@ fn stage_result(
                 (KTime::NOSHO, base_time as u32 + 100)
             };
             RunScore {
-                run: r.run,
+                ts: r.ts,
                 time,
                 score,
                 counted: false,
             }
         })
         .collect();
-    all.sort_by_key(|r| r.run);
+    all.sort_by_key(|r| r.ts);
     if all.is_empty() {
         return None; // only in-progress starts: nothing to show or score yet
     }
 
     // Completeness gate: no score until the entrant has done enough runs.
-    let y = stage.repeats;
+    let y = stage.repeats as usize;
     let fill_target = if stage.best_x == 0 {
         y
     } else {
-        stage.best_x.max(1)
+        (stage.best_x.max(1)) as usize
     };
-    let done = all.iter().filter(|r| r.run <= y).count() as u8;
+    let done = all.len().min(y);
     if done < fill_target {
         return Some(StageScore {
             sum: None,
@@ -1082,17 +1088,16 @@ fn stage_result(
         });
     }
 
-    // Counting-eligible slots: the first Y runs (by run order).  Beyond-Y runs
-    // are excluded no matter how fast.  A cancelled stage (Y = 0) has no
-    // eligible slots at all, so nothing is ever counted.
-    let eligible: Vec<usize> = (0..all.len()).filter(|&i| all[i].run <= y).collect();
+    // Counting-eligible slots: the first Y runs (by timestamp order).  Beyond-Y
+    // runs are excluded no matter how fast.
+    let eligible: Vec<usize> = (0..all.len()).filter(|&i| i < y).collect();
     let keep = if stage.best_x == 0 {
         eligible.len()
     } else {
         (stage.best_x as usize).min(eligible.len()).max(1)
     };
     let mut best = eligible.clone();
-    best.sort_by_key(|&i| (all[i].score, all[i].run));
+    best.sort_by_key(|&i| (all[i].score, all[i].ts));
     for &i in best.iter().take(keep) {
         all[i].counted = true;
     }
@@ -1767,17 +1772,8 @@ pub fn find_run<'a>(runs: &'a [RunRecord], uid: &str) -> Option<&'a RunRecord> {
     runs.iter().find(|r| r.uid == uid)
 }
 
-/// The run number the next start for `(test, car)` should use.
-pub fn next_run(runs: &[RunRecord], test: u8, car: &str) -> u8 {
-    runs.iter()
-        .filter(|r| r.test == test && r.car == car)
-        .map(|r| r.run)
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(1)
-}
-
 /// Cars that started `test` but have no finish yet, oldest first.
+/// A start is "matched" when a finish record references its uid in `refs`.
 pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
     let mut out: Vec<&RunRecord> = runs
         .iter()
@@ -1785,13 +1781,9 @@ pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
         .filter(|r| r.status.as_deref() != Some("dns"))
         .filter(|r| !r.voided)
         .filter(|r| {
-            !runs.iter().any(|f| {
-                f.r#type == RUN_FINISH
-                    && !f.voided
-                    && f.test == r.test
-                    && f.car == r.car
-                    && f.run == r.run
-            })
+            !runs
+                .iter()
+                .any(|f| f.r#type == RUN_FINISH && !f.voided && f.refs.contains(&r.uid))
         })
         .collect();
     out.sort_by_key(|r| r.ts);
@@ -1837,13 +1829,13 @@ pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
         r#type: te.r#type.clone(),
         test: te.test,
         car: te.car.clone(),
-        run: te.run,
         ts: te.ts,
         time_ds: te.time_ds,
         status: te.status.clone(),
         flags: te.flags,
         official_id: te.official_id.clone(),
         comment: te.comment.clone(),
+        refs: te.refs.clone(),
         voided: false,
     }
 }
@@ -2071,14 +2063,13 @@ mod tests {
         assert_eq!(local.id, "kt-2026-a");
     }
 
-    fn run(r#type: &str, test: u8, car: &str, run: u8, ts: i64) -> RunRecord {
+    fn run(r#type: &str, test: u8, car: &str, ts: i64) -> RunRecord {
         let t = r#type;
         RunRecord {
-            uid: format!("uid-{t}-{ts}-{run}"),
+            uid: format!("uid-{t}-{ts}"),
             r#type: t.into(),
             test,
             car: car.into(),
-            run,
             ts,
             ..Default::default()
         }
@@ -2086,29 +2077,23 @@ mod tests {
 
     #[test]
     fn add_run_dedupes() {
-        let mut runs = vec![run("start", 1, "7", 1, 100)];
-        assert!(!add_run(&mut runs, run("start", 1, "7", 1, 100)));
-        assert!(add_run(&mut runs, run("start", 1, "7", 2, 200)));
+        let mut runs = vec![run("start", 1, "7", 100)];
+        assert!(!add_run(&mut runs, run("start", 1, "7", 100)));
+        assert!(add_run(&mut runs, run("start", 1, "7", 200)));
         assert_eq!(runs.len(), 2);
-    }
-
-    #[test]
-    fn next_run_counts_starts() {
-        let runs = vec![run("start", 1, "7", 1, 100), run("start", 1, "7", 2, 200)];
-        assert_eq!(next_run(&runs, 1, "7"), 3);
-        assert_eq!(next_run(&runs, 1, "8"), 1);
-        assert_eq!(next_run(&runs, 2, "7"), 1);
     }
 
     #[test]
     fn pending_starts_hides_finished_and_dns() {
         let mut runs = vec![
-            run("start", 1, "7", 1, 100),
-            run("start", 1, "8", 1, 200),
-            run("start", 1, "9", 1, 300),
-            run("finish", 1, "8", 1, 400),
+            run("start", 1, "7", 100),
+            run("start", 1, "8", 200),
+            run("start", 1, "9", 300),
+            run("finish", 1, "8", 400),
         ];
-        let mut dns = run("start", 1, "9", 1, 300);
+        // Finish for car 8 references start uid "uid-start-200"
+        runs[3].refs = vec!["uid-start-200".into()];
+        let mut dns = run("start", 1, "9", 300);
         dns.status = Some("dns".into());
         runs[2] = dns;
         let pending = pending_starts(&runs, 1);
@@ -2119,11 +2104,13 @@ mod tests {
 
     #[test]
     fn pending_for_car_true_when_unfinished() {
-        let runs = vec![
-            run("start", 1, "7", 1, 100),
-            run("start", 1, "8", 1, 200),
-            run("finish", 1, "8", 1, 300),
+        let mut runs = vec![
+            run("start", 1, "7", 100),
+            run("start", 1, "8", 200),
+            run("finish", 1, "8", 300),
         ];
+        // Finish for car 8 references start uid "uid-start-200"
+        runs[2].refs = vec!["uid-start-200".into()];
         assert!(pending_for_car(&runs, 1, "7"));
         assert!(!pending_for_car(&runs, 1, "8"));
         assert!(!pending_for_car(&runs, 2, "7"));
@@ -2138,7 +2125,7 @@ mod tests {
 
     #[test]
     fn finish_to_ktime_maps_status() {
-        let mut c = run("finish", 1, "7", 1, 0);
+        let mut c = run("finish", 1, "7", 0);
         c.time_ds = Some(1234);
         c.flags = Some(2);
         assert_eq!(
@@ -2149,10 +2136,10 @@ mod tests {
                 garage: false
             })
         );
-        let mut dnf = run("finish", 1, "7", 1, 0);
+        let mut dnf = run("finish", 1, "7", 0);
         dnf.status = Some("dnf".into());
         assert_eq!(finish_to_ktime(&dnf), KTime::DNF);
-        let mut g = run("finish", 1, "7", 1, 0);
+        let mut g = run("finish", 1, "7", 0);
         g.status = Some("garage".into());
         g.time_ds = Some(55);
         assert_eq!(
@@ -2175,13 +2162,13 @@ mod tests {
             target: None,
             test: 2,
             car: "17".into(),
-            run: 3,
             ts: 42,
             time_ds: Some(999),
             status: Some("clean".into()),
             flags: Some(1),
             official_id: Some("u".into()),
             comment: None,
+            refs: vec![],
         };
         let r = record_from_timing(&te);
         assert_eq!(r.uid, "ABCDEFGHJK");
@@ -2189,7 +2176,6 @@ mod tests {
         assert_eq!(r.r#type, "finish");
         assert_eq!(r.test, 2);
         assert_eq!(r.car, "17");
-        assert_eq!(r.run, 3);
         assert_eq!(r.ts, 42);
         assert_eq!(r.time_ds, Some(999));
         assert_eq!(r.status.as_deref(), Some("clean"));
@@ -2252,7 +2238,6 @@ mod tests {
             r#type: RUN_START.to_string(),
             test: 1,
             car: "1".into(),
-            run: 1,
             ts: 1,
             ..Default::default()
         };
@@ -2292,7 +2277,6 @@ mod tests {
             r#type: RUN_FINISH.to_string(),
             test: 3,
             car: "8".into(),
-            run: 1,
             ts: 1,
             ..Default::default()
         }];
@@ -2355,7 +2339,6 @@ mod tests {
             r#type: "finish".into(),
             test: 1,
             car: "7".into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(ds),
             ..Default::default()
@@ -2393,7 +2376,6 @@ mod tests {
             r#type: "finish".into(),
             test: 1,
             car: "7".into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(ds),
             ..Default::default()
@@ -2407,7 +2389,7 @@ mod tests {
         ];
         let ss = stage_result(&stage, &runs, 1, "7", 0).unwrap();
         assert_eq!(ss.sum, Some(900)); // best 2 of the first 3, run 4 ignored
-        let shown: Vec<(u8, bool)> = ss.runs.iter().map(|r| (r.run, r.counted)).collect();
+        let shown: Vec<(i64, bool)> = ss.runs.iter().map(|r| (r.ts, r.counted)).collect();
         assert_eq!(shown, vec![(1, true), (2, true), (3, false), (4, false)]);
     }
 
@@ -2424,7 +2406,6 @@ mod tests {
             r#type: "finish".into(),
             test: 1,
             car: "7".into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(ds),
             ..Default::default()
@@ -2433,11 +2414,8 @@ mod tests {
         // One run of best-2-of-3: the real run is shown but scores nothing.
         let ss = stage_result(&stage, &[finish(1, 450)], 1, "7", 0).unwrap();
         assert_eq!(ss.sum, None);
-        let shown: Vec<(u8, u32, bool)> = ss
-            .runs
-            .iter()
-            .map(|r| (r.run, r.score, r.counted))
-            .collect();
+        let shown: Vec<(i64, u32, bool)> =
+            ss.runs.iter().map(|r| (r.ts, r.score, r.counted)).collect();
         assert_eq!(shown, vec![(1, 450, false)]);
 
         // Two runs of best-2-of-3: enough attempts, both count.
@@ -2457,7 +2435,6 @@ mod tests {
             r#type: "start".into(),
             test: 1,
             car: "7".into(),
-            run: 2,
             ts: 2,
             status: Some("dns".into()),
             ..Default::default()
@@ -2473,7 +2450,6 @@ mod tests {
             r#type: "start".into(),
             test: 1,
             car: "7".into(),
-            run: 1,
             ts: 1,
             ..Default::default()
         };
@@ -2488,7 +2464,6 @@ mod tests {
             r#type: "finish".into(),
             test: 1,
             car: "7".into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(time_ds),
             flags: Some(flags),
@@ -2505,7 +2480,6 @@ mod tests {
             r#type: "start".into(),
             test: 1,
             car: "9".into(),
-            run: 1,
             ts: 1,
             status: Some("dns".into()),
             ..Default::default()
@@ -2617,7 +2591,6 @@ mod tests {
             r#type: "finish".into(),
             test,
             car: car.into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(ds),
             ..Default::default()
@@ -2664,7 +2637,6 @@ mod tests {
             r#type: "finish".into(),
             test: 2,
             car: "1".into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(ds),
             ..Default::default()
@@ -2676,10 +2648,10 @@ mod tests {
         // Best 2 of 3 = 450 + 100 = 550.
         assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 550);
         // Display order is run order, with the non-counting run struck out.
-        let shown: Vec<(u8, u32, bool)> = stage2
+        let shown: Vec<(i64, u32, bool)> = stage2
             .runs
             .iter()
-            .map(|r| (r.run, r.score, r.counted))
+            .map(|r| (r.ts, r.score, r.counted))
             .collect();
         assert_eq!(shown, vec![(1, 450, true), (2, 470, false), (3, 100, true)]);
     }
@@ -2712,7 +2684,6 @@ mod tests {
             r#type: "finish".into(),
             test: 3,
             car: "7".into(),
-            run: 1,
             ts: 1,
             time_ds: Some(450),
             ..Default::default()
@@ -2748,7 +2719,6 @@ mod tests {
             r#type: "finish".into(),
             test,
             car: car.into(),
-            run: 1,
             ts: test as i64,
             time_ds: Some(ds),
             ..Default::default()
@@ -2802,7 +2772,6 @@ mod tests {
             r#type: "finish".into(),
             test,
             car: car.into(),
-            run: ith,
             ts: ith as i64,
             time_ds: Some(ds),
             ..Default::default()

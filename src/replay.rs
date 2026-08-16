@@ -78,6 +78,10 @@ fn apply(
         let run = crate::event::record_from_timing(&te);
         crate::event::add_run(runs, run);
     }
+    if te.r#type == crate::event::RUN_STOP {
+        let run = crate::event::record_from_timing(&te);
+        crate::event::add_run(runs, run);
+    }
     if te.r#type == crate::event::RUN_START && te.status.as_deref() == Some("dns") {
         // A no-show start scores NOSHO so the results cell reads "DNS".
         crate::event::upsert_ktime(scores, te.test, &te.car, crate::event::KTime::NOSHO);
@@ -134,7 +138,6 @@ fn patch_target(
     }
     r.test = te.test;
     r.car = te.car.clone();
-    r.run = te.run;
     r.time_ds = te.time_ds;
     r.status = te.status.clone();
     r.flags = te.flags;
@@ -178,15 +181,7 @@ mod tests {
         )
     }
 
-    fn te(
-        r#type: &str,
-        event_id: &str,
-        test: u8,
-        car: &str,
-        run: u8,
-        ts: i64,
-        time_ds: u16,
-    ) -> TimingEvent {
+    fn te(r#type: &str, event_id: &str, test: u8, car: &str, ts: i64, time_ds: u16) -> TimingEvent {
         let t = r#type;
         TimingEvent {
             r#type: t.into(),
@@ -195,13 +190,13 @@ mod tests {
             target: None,
             test,
             car: car.into(),
-            run,
             ts,
             time_ds: Some(time_ds),
             status: Some("clean".into()),
             flags: Some(0),
             official_id: None,
             comment: None,
+            refs: vec![],
         }
     }
 
@@ -246,11 +241,8 @@ mod tests {
         ev.status = EventStatus::Running;
         let log = vec![
             room(100, setup_body(&ev)),
-            room(200, te("start", "ev-uid-demo", 1, "7", 1, 150, 0).body()),
-            room(
-                300,
-                te("finish", "ev-uid-demo", 1, "7", 1, 280, 1234).body(),
-            ),
+            room(200, te("start", "ev-uid-demo", 1, "7", 150, 0).body()),
+            room(300, te("finish", "ev-uid-demo", 1, "7", 280, 1234).body()),
         ];
         let (ev2, scores, runs) = replay(&log, &[]);
         assert_eq!(ev2.id, "kt-2026-demo");
@@ -274,11 +266,11 @@ mod tests {
     fn pending_wins_over_stale_remote() {
         let log = vec![room(
             300,
-            te("finish", "ev-uid-demo", 1, "7", 1, 280, 9999).body(),
+            te("finish", "ev-uid-demo", 1, "7", 280, 9999).body(),
         )];
         let pending = vec![pend(
             400,
-            te("finish", "ev-uid-demo", 1, "7", 1, 390, 1234).body(),
+            te("finish", "ev-uid-demo", 1, "7", 390, 1234).body(),
         )];
         let (_, scores, _) = replay(&log, &pending);
         assert_eq!(scores.len(), 1);
@@ -294,7 +286,7 @@ mod tests {
 
     #[test]
     fn duplicate_runs_collapse() {
-        let body = te("finish", "ev-uid-demo", 1, "7", 1, 280, 1234).body();
+        let body = te("finish", "ev-uid-demo", 1, "7", 280, 1234).body();
         let log = vec![room(300, body.clone())];
         let pending = vec![pend(300, body.clone())];
         let (_, _, runs) = replay(&log, &pending);
@@ -408,7 +400,6 @@ mod tests {
         target: Option<&str>,
         test: u8,
         car: &str,
-        run: u8,
         ts: i64,
         time_ds: Option<u16>,
     ) -> TimingEvent {
@@ -419,13 +410,13 @@ mod tests {
             target: target.map(str::to_string),
             test,
             car: car.into(),
-            run,
             ts,
             time_ds,
             status: Some("clean".into()),
             flags: Some(0),
             official_id: None,
             comment: None,
+            refs: vec![],
         }
     }
 
@@ -443,7 +434,6 @@ mod tests {
                     None,
                     1,
                     "7",
-                    1,
                     280,
                     Some(1234),
                 )
@@ -458,7 +448,6 @@ mod tests {
                     Some("obs-1"),
                     1,
                     "7",
-                    1,
                     300,
                     Some(999),
                 )
@@ -491,37 +480,15 @@ mod tests {
             room(100, setup_body(&ev)),
             room(
                 200,
-                obs_te("start", "ev-uid-demo", "s1", None, 1, "7", 1, 200, None).body(),
+                obs_te("start", "ev-uid-demo", "s1", None, 1, "7", 200, None).body(),
             ),
             room(
                 300,
-                obs_te(
-                    "finish",
-                    "ev-uid-demo",
-                    "f1",
-                    None,
-                    1,
-                    "7",
-                    1,
-                    400,
-                    Some(800),
-                )
-                .body(),
+                obs_te("finish", "ev-uid-demo", "f1", None, 1, "7", 400, Some(800)).body(),
             ),
             room(
                 400,
-                obs_te(
-                    "void",
-                    "ev-uid-demo",
-                    "v1",
-                    Some("f1"),
-                    1,
-                    "7",
-                    1,
-                    450,
-                    None,
-                )
-                .body(),
+                obs_te("void", "ev-uid-demo", "v1", Some("f1"), 1, "7", 450, None).body(),
             ),
         ];
         let (_, _, runs) = replay(&log, &[]);
@@ -547,7 +514,6 @@ mod tests {
                     Some("obs-1"),
                     1,
                     "7",
-                    1,
                     200,
                     Some(555),
                 )
@@ -562,7 +528,6 @@ mod tests {
                     None,
                     1,
                     "7",
-                    1,
                     250,
                     Some(1111),
                 )
@@ -594,7 +559,6 @@ mod tests {
             None,
             1,
             "7",
-            1,
             280,
             Some(1234),
         )

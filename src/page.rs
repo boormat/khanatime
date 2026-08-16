@@ -43,13 +43,13 @@ pub fn enqueue_run(model: crate::Model, run: &crate::event::RunRecord) {
         target: None,
         test: run.test,
         car: run.car.clone(),
-        run: run.run,
         ts: run.ts,
         time_ds: run.time_ds,
         status: run.status.clone(),
         flags: run.flags,
         official_id: run.official_id.clone(),
         comment: run.comment.clone(),
+        refs: run.refs.clone(),
     };
     let sender = model.app.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
@@ -70,11 +70,7 @@ pub fn enqueue_ktime(
     if id.is_empty() || uid.is_empty() {
         return;
     }
-    let run = model
-        .app
-        .runs
-        .with(|runs| crate::event::next_run(runs, test, car));
-    let mut te = crate::timing_event::TimingEvent::finish(&uid, test, car, run, time);
+    let mut te = crate::timing_event::TimingEvent::finish(&uid, test, car, time, vec![]);
     te.official_id = Some(model.app.identity.get_clone());
     te.comment = comment;
     let sender = model.app.identity.get_clone();
@@ -120,7 +116,6 @@ pub fn enqueue_amend(
     target_uid: &str,
     test: u8,
     car: &str,
-    run: u8,
     time: &crate::event::KTime,
     comment: Option<String>,
 ) {
@@ -128,7 +123,7 @@ pub fn enqueue_amend(
     if id.is_empty() || uid.is_empty() {
         return;
     }
-    let mut te = crate::timing_event::TimingEvent::amend(&uid, target_uid, test, car, run, time);
+    let mut te = crate::timing_event::TimingEvent::amend(&uid, target_uid, test, car, time);
     te.official_id = Some(model.app.identity.get_clone());
     te.comment = comment;
     let sender = model.app.identity.get_clone();
@@ -137,7 +132,6 @@ pub fn enqueue_amend(
         if let Some(r) = runs.iter_mut().find(|r| r.uid == target_uid) {
             r.test = te.test;
             r.car = te.car.clone();
-            r.run = te.run;
             r.time_ds = te.time_ds;
             r.status = te.status.clone();
             r.flags = te.flags;
@@ -153,12 +147,12 @@ pub fn enqueue_amend(
 #[allow(dead_code)] // wired by the amend/void UI (Phase 1 backend)
 /// Void an existing observation by `target_uid`: enqueue a `void` message and
 /// mark the local run record voided (excluded from pairing/scores).
-pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str, run: u8) {
+pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) {
     let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
     }
-    let mut te = crate::timing_event::TimingEvent::void(&uid, target_uid, test, car, run);
+    let mut te = crate::timing_event::TimingEvent::void(&uid, target_uid, test, car);
     te.official_id = Some(model.app.identity.get_clone());
     let sender = model.app.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
@@ -175,7 +169,7 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str, 
 /// Shared timing log: all starts and finishes for a test, newest first, with
 /// void buttons.  Used by all timing screens.
 pub fn view_timing_log(model: crate::Model, test: u8) -> View {
-    use crate::event::{RunRecord, RUN_FINISH, RUN_START};
+    use crate::event::{RunRecord, RUN_FINISH, RUN_START, RUN_STOP};
     view! {
         div(class="box") {
             h3(class="title is-6") { "Log" }
@@ -183,7 +177,7 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                 let mut runs: Vec<RunRecord> = model.app.runs.with(|runs| {
                     runs.iter()
                         .filter(|r| r.test == test && !r.voided)
-                        .filter(|r| r.r#type == RUN_START || r.r#type == RUN_FINISH)
+                        .filter(|r| r.r#type == RUN_START || r.r#type == RUN_FINISH || r.r#type == RUN_STOP)
                         .cloned()
                         .collect()
                 });
@@ -195,8 +189,8 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                     .iter()
                     .map(|r| {
                         let uid = r.uid.clone();
-                        let icon = if r.r#type == RUN_START { "\u{25B6}" } else { "\u{25A0}" };
-                        let label = format!("{} #{} run {}", icon, r.car, r.run);
+                        let icon = if r.r#type == RUN_START { "\u{25B6}" } else if r.r#type == RUN_STOP { "\u{23F9}" } else { "\u{25A0}" };
+                        let label = format!("{} #{}", icon, r.car);
                         let ts = fmt_log_ts(r.ts);
                         let official_view: View = match &r.official_id {
                             Some(o) if !o.is_empty() => {

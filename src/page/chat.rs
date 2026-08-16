@@ -183,10 +183,7 @@ pub fn view(model: crate::Model) -> View {
 /// Compact one-line summary for a feed entry.
 fn line_summary(e: &FeedEntry) -> String {
     let summary = if let Some(t) = &e.timing {
-        format!(
-            "[KT {} test={} car={} run={}]",
-            t.r#type, t.test, t.car, t.run
-        )
+        format!("[KT {} test={} car={}]", t.r#type, t.test, t.car)
     } else if e.body.starts_with(TimingEvent::SETUP_PREFIX) {
         "[setup]".to_string()
     } else if e.body.starts_with(TimingEvent::RESULT_PREFIX) {

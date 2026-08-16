@@ -1,8 +1,7 @@
 use sycamore::prelude::*;
 
 use crate::event::{
-    elapsed_ds, next_run, pending_for_car, pending_starts, upsert_ktime, RunRecord, RUN_FINISH,
-    RUN_START,
+    elapsed_ds, pending_for_car, pending_starts, upsert_ktime, RunRecord, RUN_FINISH, RUN_START,
 };
 use crate::page::{pad, penalty};
 
@@ -39,7 +38,6 @@ pub struct Model {
 #[derive(Clone)]
 pub struct PendingFinish {
     pub car: String,
-    pub run: u8,
     pub elapsed_ds: u16,
 }
 
@@ -89,18 +87,17 @@ fn start_car(model: crate::Model) {
     if unknown_comment_required(model) {
         return;
     }
-    let car = sm.car.get_clone().trim().to_string();
-    if car.is_empty() {
-        sm.feedback.set(Some("Pick a car number".to_string()));
-        return;
-    }
+    let car = if sm.car.get_clone().trim().is_empty() {
+        "?".to_string()
+    } else {
+        sm.car.get_clone().trim().to_string()
+    };
     let test = sm.test.get();
     if pending_for_car(&model.app.runs.get_clone(), test, &car) {
         sm.feedback
             .set(Some("Car is already on course — use STOP".to_string()));
         return;
     }
-    let run = model.app.runs.with(|runs| next_run(runs, test, &car));
     let comment = sm.comment.get_clone();
     let comment_opt = if comment.trim().is_empty() {
         None
@@ -112,7 +109,6 @@ fn start_car(model: crate::Model) {
         r#type: RUN_START.to_string(),
         test,
         car: car.clone(),
-        run,
         ts: js_sys::Date::now() as i64,
         time_ds: None,
         status: Some("clean".to_string()),
@@ -120,16 +116,20 @@ fn start_car(model: crate::Model) {
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
         comment: comment_opt,
+        refs: vec![],
     };
     crate::page::enqueue_run(model, &record);
     sm.feedback.set(None);
-    sm.car.set(String::new());
-    sm.comment.set(String::new());
+    // Car stays selected for the start→finish cycle
 }
 
 fn stop_car(model: crate::Model) {
     let sm = model.screens.stopwatch;
-    let car = sm.car.get_clone().trim().to_string();
+    let car = if sm.car.get_clone().trim().is_empty() {
+        "?".to_string()
+    } else {
+        sm.car.get_clone().trim().to_string()
+    };
     let test = sm.test.get();
     let runs = model.app.runs.get_clone();
     let pending = pending_starts(&runs, test)
@@ -137,20 +137,12 @@ fn stop_car(model: crate::Model) {
         .find(|r| r.car == car)
         .cloned();
     let now = js_sys::Date::now() as i64;
-    let (finish_car, run, elapsed) = match pending {
-        Some(start) => (start.car.clone(), start.run, elapsed_ds(start.ts, now)),
-        None => {
-            if car.is_empty() {
-                sm.feedback.set(Some("Pick a car number".to_string()));
-                return;
-            }
-            let run = model.app.runs.with(|runs| next_run(runs, test, &car));
-            (car.clone(), run, 0)
-        }
+    let (finish_car, elapsed) = match pending {
+        Some(start) => (start.car.clone(), elapsed_ds(start.ts, now)),
+        None => (car.clone(), 0),
     };
     sm.pending.set(Some(PendingFinish {
         car: finish_car,
-        run,
         elapsed_ds: elapsed,
     }));
     sm.feedback.set(None);
@@ -181,16 +173,12 @@ fn manual_time(model: crate::Model) {
         .into_iter()
         .find(|r| r.car == car)
         .cloned();
-    let (finish_car, run) = match pending {
-        Some(start) => (start.car.clone(), start.run),
-        None => {
-            let run = model.app.runs.with(|runs| next_run(runs, test, &car));
-            (car.clone(), run)
-        }
+    let finish_car = match &pending {
+        Some(start) => start.car.clone(),
+        None => car.clone(),
     };
     sm.pending.set(Some(PendingFinish {
         car: finish_car,
-        run,
         elapsed_ds: elapsed,
     }));
     sm.time.set(String::new());
@@ -211,7 +199,6 @@ fn commit(model: crate::Model) {
         r#type: RUN_FINISH.to_string(),
         test: sm.test.get(),
         car: pending.car.clone(),
-        run: pending.run,
         ts: now,
         time_ds: Some(time_ds),
         status: Some(sm.penalty.status.get_clone()),
@@ -219,13 +206,14 @@ fn commit(model: crate::Model) {
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
         comment: None,
+        refs: vec![],
     };
     model.app.scores.update(|s| {
         upsert_ktime(s, sm.test.get(), &pending.car, ktime);
     });
     crate::page::enqueue_run(model, &record);
     sm.pending.set(None);
-    sm.car.set(String::new());
+    sm.car.set(String::new()); // clear car after finish
     sm.comment.set(String::new());
     sm.feedback.set(None);
     penalty::clear(sm.penalty);
@@ -246,11 +234,9 @@ fn void_observation(model: crate::Model, uid: &str) {
         Some(r) => r.clone(),
         None => return,
     };
-    crate::page::enqueue_void(model, uid, test, &run.car, run.run);
-    sm.feedback.set(Some(format!(
-        "Voided {} #{} run {}",
-        run.r#type, run.car, run.run
-    )));
+    crate::page::enqueue_void(model, uid, test, &run.car);
+    sm.feedback
+        .set(Some(format!("Voided {} #{}", run.r#type, run.car)));
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +384,7 @@ fn view_pending(model: crate::Model) -> View {
             let pending_opt = sm.pending.get_clone();
             match pending_opt {
                 Some(p) => {
-                    let disp = format!("{}  Run {} — elapsed {:.2}s", p.car, p.run, p.elapsed_ds as f32 / 10.0);
+                    let disp = format!("{} — elapsed {:.2}s", p.car, p.elapsed_ds as f32 / 10.0);
                     view! {
                         div(class="box") {
                             h3(class="title is-6") { "Confirm finish" }

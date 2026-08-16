@@ -1,6 +1,6 @@
 use sycamore::prelude::*;
 
-use crate::event::{next_run, RunRecord, RUN_START};
+use crate::event::{RunRecord, RUN_START};
 use crate::page::pad;
 
 // Big-button start timing: pick a car, press START.  Records a `start` run
@@ -51,7 +51,6 @@ fn start_car(model: crate::Model) {
         return;
     }
     let test = sm.test.get();
-    let run = model.app.runs.with(|runs| next_run(runs, test, &car));
     let comment = sm.comment.get_clone();
     let comment_opt = if comment.trim().is_empty() {
         None
@@ -63,7 +62,6 @@ fn start_car(model: crate::Model) {
         r#type: RUN_START.to_string(),
         test,
         car: car.clone(),
-        run,
         ts: js_sys::Date::now() as i64,
         time_ds: None,
         status: Some("clean".to_string()),
@@ -71,6 +69,7 @@ fn start_car(model: crate::Model) {
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
         comment: comment_opt,
+        refs: vec![],
     };
     crate::page::enqueue_run(model, &record_run);
     sm.feedback.set(None);
@@ -87,13 +86,11 @@ fn mark_dns(model: crate::Model) {
         return;
     }
     let test = sm.test.get();
-    let run = model.app.runs.with(|runs| next_run(runs, test, &car));
     let record_run = RunRecord {
         uid: String::new(), // stamped at enqueue
         r#type: RUN_START.to_string(),
         test,
         car: car.clone(),
-        run,
         ts: js_sys::Date::now() as i64,
         time_ds: None,
         status: Some("dns".to_string()),
@@ -101,6 +98,7 @@ fn mark_dns(model: crate::Model) {
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
         comment: None,
+        refs: vec![],
     };
     crate::page::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".
