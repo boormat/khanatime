@@ -547,9 +547,11 @@ async fn read_event_meta(client: &Client, room: &Room) -> Option<String> {
 
 /// Create the event space + timing room, or join our existing ones.
 ///
-/// Idempotent: if the space alias is already taken by *this* event, it is
-/// joined and reused (multi-device convergence).  If it is taken by a
-/// different event, an error is returned with a suggestion to disambiguate.
+/// A same-device re-publish joins by the stored room id (no directory GET).
+/// A first publish creates the rooms via `POST /createRoom` with their aliases;
+/// if an alias is already taken it tries to resolve + join, but the directory
+/// GET isn't CORS-enabled on every homeserver (matrix-client.matrix.org among
+/// them), so that fallback is best-effort and surfaces a clear error otherwise.
 pub async fn publish_event(
     client: &Client,
     event: &crate::event::EventInfo,
@@ -567,44 +569,103 @@ pub async fn publish_event(
     let space_alias = alias(client, &event.id)?;
     let timing_alias = alias(client, &format!("{}-timing", event.id))?;
 
-    let space = match client.is_room_alias_available(&space_alias).await {
-        Ok(true) => create_room_with_alias(client, &space_alias, &event.name, true).await?,
-        Ok(false) => {
-            let res = client
-                .resolve_room_alias(&space_alias)
+    // Same-device re-publish: join our rooms by id — avoids the directory GET
+    // that is CORS-blocked on some homeservers.
+    let (space, timing) = if let (Some(sid), Some(tid)) = (&event.space_id, &event.timing_id) {
+        let space_rid: ruma::OwnedRoomId =
+            sid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
+        let timing_rid: ruma::OwnedRoomId =
+            tid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
+        (
+            client
+                .join_room_by_id(&space_rid)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())?,
+            client
+                .join_room_by_id(&timing_rid)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    } else {
+        let space = create_or_join_space(client, &space_alias, &event).await?;
+        let timing = create_or_join_timing(client, &timing_alias).await?;
+        (space, timing)
+    };
+
+    finalize_rooms(client, &event, &space, &timing, &space_alias, &timing_alias).await
+}
+
+/// Create the space with its alias, or join the existing one if the alias is
+/// taken — verified to belong to this event, else a disambiguation error.
+async fn create_or_join_space(
+    client: &Client,
+    space_alias: &OwnedRoomAliasId,
+    event: &crate::event::EventInfo,
+) -> Result<Room, String> {
+    match create_room_with_alias(client, space_alias, &event.name, true).await {
+        Ok(room) => Ok(room),
+        Err(create_err) => {
+            let room_id = resolve_alias_id(client, space_alias).await.ok_or_else(|| {
+                format!("{create_err} — couldn't check the alias (directory lookup blocked)")
+            })?;
             let room = client
-                .join_room_by_id(&res.room_id)
+                .join_room_by_id(&room_id)
                 .await
                 .map_err(|e| e.to_string())?;
             match read_event_meta(client, &room).await {
-                Some(id) if id == event.id => room,
-                _ => {
-                    return Err(format!(
-                        "Space alias '{space_alias}' is in use by a different event — add the club/district or override the event slug"
-                    ));
-                }
+                Some(id) if id == event.id => Ok(room),
+                _ => Err(format!(
+                    "Space alias '{space_alias}' is in use by a different event — add the club/district or override the event slug"
+                )),
             }
         }
-        Err(e) => return Err(e.to_string()),
-    };
+    }
+}
 
-    let timing = match client.is_room_alias_available(&timing_alias).await {
-        Ok(true) => create_room_with_alias(client, &timing_alias, "timing", false).await?,
-        Ok(false) => {
-            let res = client
-                .resolve_room_alias(&timing_alias)
+/// Create the timing room with its alias, or join the existing one.
+async fn create_or_join_timing(
+    client: &Client,
+    timing_alias: &OwnedRoomAliasId,
+) -> Result<Room, String> {
+    match create_room_with_alias(client, timing_alias, "timing", false).await {
+        Ok(room) => Ok(room),
+        Err(create_err) => {
+            let room_id = resolve_alias_id(client, timing_alias)
                 .await
-                .map_err(|e| e.to_string())?;
+                .ok_or_else(|| {
+                    format!("{create_err} — couldn't check the alias (directory lookup blocked)")
+                })?;
             client
-                .join_room_by_id(&res.room_id)
+                .join_room_by_id(&room_id)
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())
         }
-        Err(e) => return Err(e.to_string()),
-    };
+    }
+}
 
+/// Best-effort resolve an alias to a room id (the directory GET can be
+/// CORS-blocked on some homeservers).
+async fn resolve_alias_id(
+    client: &Client,
+    room_alias: &OwnedRoomAliasId,
+) -> Option<ruma::OwnedRoomId> {
+    client
+        .resolve_room_alias(room_alias)
+        .await
+        .ok()
+        .map(|r| r.room_id)
+}
+
+/// Link the space/timing rooms, write the event meta + topic, seed the setup
+/// manifest, and return the pair.
+async fn finalize_rooms(
+    client: &Client,
+    event: &crate::event::EventInfo,
+    space: &Room,
+    timing: &Room,
+    space_alias: &OwnedRoomAliasId,
+    timing_alias: &OwnedRoomAliasId,
+) -> Result<EventRooms, String> {
     // Link space <-> timing room.
     let via = vec![server_name(client)];
     space
@@ -638,13 +699,13 @@ pub async fn publish_event(
         .map_err(|e| e.to_string())?;
 
     // Give the timing room its setup manifest so fresh devices can adopt it.
-    let _ = send_setup(&timing, &event).await;
+    let _ = send_setup(timing, event).await;
 
     Ok(EventRooms {
-        space,
-        timing,
-        space_alias,
-        timing_alias,
+        space: space.clone(),
+        timing: timing.clone(),
+        space_alias: space_alias.clone(),
+        timing_alias: timing_alias.clone(),
     })
 }
 
@@ -768,20 +829,23 @@ pub async fn join_room_by_alias(client: &Client, alias: &str) -> Result<Room, St
         .map_err(|e| e.to_string())
 }
 
-/// Join the current event's timing room by published alias, then published id.
+/// Join the current event's timing room by published id, then by alias.
 /// Returns `None` when the event has no room yet (draft) or the join fails —
 /// rooms are only created by the publish workflow, never here.
+///
+/// The by-id join is a `POST` and is preferred: joining by alias resolves the
+/// alias via a directory `GET` that some homeservers don't CORS-enable.
 pub async fn join_room_for_event(client: &Client, event: &crate::event::EventInfo) -> Option<Room> {
-    if let Some(alias) = &event.timing_alias {
-        if let Ok(room) = join_room_by_alias(client, alias).await {
-            return Some(room);
-        }
-    }
     if let Some(id) = &event.timing_id {
         if let Ok(room_id) = id.parse::<ruma::OwnedRoomId>() {
             if let Ok(room) = client.join_room_by_id(&room_id).await {
                 return Some(room);
             }
+        }
+    }
+    if let Some(alias) = &event.timing_alias {
+        if let Ok(room) = join_room_by_alias(client, alias).await {
+            return Some(room);
         }
     }
     None
