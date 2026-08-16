@@ -23,6 +23,8 @@ pub struct Model {
     pub join_msg: Signal<String>,
     /// Homeserver awaiting a Forget confirmation ("are you sure" modal).
     pub forget_target: Signal<Option<String>>,
+    /// The Accounts box is collapsed to a one-line summary.
+    pub collapsed: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -33,6 +35,7 @@ pub fn init() -> Model {
         join_url: create_signal(String::new()),
         join_msg: create_signal(String::new()),
         forget_target: create_signal(None),
+        collapsed: create_signal(false),
     }
 }
 
@@ -45,10 +48,8 @@ pub fn view(model: crate::Model) -> View {
                 view! {
                     section(class="hero is-small") {
                         div(class="hero-body") {
-                            h1(class="title") { "Khana Time Tracker" }
-                            p(class="subtitle") {
-                                "Log in to your Matrix account, then open an event to watch live results."
-                            }
+                            h1(class="title") { "Khana Time" }
+                            p(class="subtitle")
                         }
                     }
                     (view_sessions(model))
@@ -63,7 +64,7 @@ fn view_dashboard(model: crate::Model) -> View {
     view! {
         section(class="hero is-small") {
             div(class="hero-body") {
-                h1(class="title") { "Khana Time Tracker" }
+                h1(class="title") { "Khana Time" }
             }
         }
         (move || view_sessions(model))
@@ -147,16 +148,6 @@ fn view_sessions(model: crate::Model) -> View {
                     let controls = view! {
                         div(class="buttons has-addons is-small") {
                             button(
-                                class="button is-small is-light",
-                                disabled=!is_active,
-                                on:click=move |_| {
-                                    crate::update(
-                                        model,
-                                        crate::Msg::Conn(crate::sync::Msg::Logout),
-                                    )
-                                },
-                            ) { "Logout" }
-                            button(
                                 class="button is-small is-link",
                                 disabled=logged_in,
                                 on:click=move |_| {
@@ -166,6 +157,16 @@ fn view_sessions(model: crate::Model) -> View {
                                     )
                                 },
                             ) { "Login" }
+                            button(
+                                class="button is-small is-light",
+                                disabled=!is_active,
+                                on:click=move |_| {
+                                    crate::update(
+                                        model,
+                                        crate::Msg::Conn(crate::sync::Msg::Logout),
+                                    )
+                                },
+                            ) { "Logout" }
                             button(
                                 class="button is-small is-danger is-outlined",
                                 disabled=is_active,
@@ -183,7 +184,10 @@ fn view_sessions(model: crate::Model) -> View {
                                         div(class="is-flex is-align-items-center") {
                                             span(class="has-text-weight-medium") { (user) }
                                             (if is_active {
-                                                view! { span(class="tag is-success is-light is-small ml-2") { "active" } }
+                                                view! { span(class="tag is-success is-small ml-2") {
+                                                    span(class="icon is-small") { i(class="fa fa-check") }
+                                                    span { "Logged in" }
+                                                } }
                                             } else {
                                                 view! {}
                                             })
@@ -205,19 +209,82 @@ fn view_sessions(model: crate::Model) -> View {
                 view! {}
             };
             let conn = model.app.conn.get_clone();
+            let collapsed = sm.collapsed.get();
             view! {
                 div(class="box") {
-                    h2(class="title is-5") { "Accounts" }
-                    (empty)
-                    (rows)
-                    div(class="kt-session-row") {
-                        div { (status_html(conn.clone())) }
+                    div(
+                        class="is-flex is-align-items-center is-justify-content-space-between",
+                        on:click=move |_| sm.collapsed.set(!sm.collapsed.get()),
+                    ) {
+                        h2(class="title is-5") { "Accounts" }
+                        div(class="is-flex is-align-items-center") {
+                            (if collapsed {
+                                view_account_summary(model)
+                            } else {
+                                view! {}
+                            })
+                            span(class="icon has-text-grey") {
+                                i(class=if collapsed { "fa fa-chevron-down" } else { "fa fa-chevron-up" })
+                            }
+                        }
                     }
-                    (view_account_footer(model))
+                    (if !collapsed {
+                        view! {
+                            (empty)
+                            (rows)
+                            (if !logged_in {
+                                view! {
+                                    div(class="kt-session-row") {
+                                        div { (status_html(conn.clone())) }
+                                    }
+                                }
+                            } else {
+                                view! {}
+                            })
+                            (view_account_footer(model))
+                        }
+                    } else {
+                        view! {}
+                    })
                     (view_forget_modal(model))
                 }
             }
         })
+    }
+}
+
+/// One-line summary shown when the Accounts box is collapsed: the logged-in
+/// Matrix account id, or the custom homeserver `host:port`, or Offline.
+#[cfg(target_arch = "wasm32")]
+fn view_account_summary(model: crate::Model) -> View {
+    let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
+    let sess = logged_in
+        .then(|| crate::services::matrix::active_hs())
+        .flatten()
+        .and_then(|hs| crate::services::matrix::load_session_for(&hs));
+    let Some(sess) = sess else {
+        return view! { span(class="tag is-grey is-light is-small") { "Offline" } };
+    };
+    if crate::services::matrix::is_matrix_org(&sess.homeserver) {
+        view! { span(class="tag is-success is-light is-small") {
+            span(class="icon is-small") { i(class="fa fa-check") }
+            span { (sess.user_id) }
+        } }
+    } else {
+        view! { span(class="tag is-link is-light is-small") { (hs_host_port(&sess.homeserver)) } }
+    }
+}
+
+/// Homeserver as `host[:port]` for a badge (strips scheme and trailing slash).
+#[cfg(target_arch = "wasm32")]
+fn hs_host_port(hs: &str) -> String {
+    let Ok(url) = url::Url::parse(hs) else {
+        return hs.to_string();
+    };
+    let host = url.host_str().unwrap_or_default();
+    match url.port() {
+        Some(p) => format!("{host}:{p}"),
+        None => host.to_string(),
     }
 }
 
@@ -553,9 +620,7 @@ fn view_account_footer(model: crate::Model) -> View {
     } else {
         view! {}
     };
-    let has_matrix_org = crate::services::matrix::load_sessions()
-        .iter()
-        .any(|s| s.homeserver == "https://matrix.org");
+    let has_matrix_org = crate::services::matrix::has_matrix_org_session();
     let primary = if let Some(inv) = &pending {
         let join_hs = inv.homeserver.clone();
         view! {
@@ -609,14 +674,6 @@ fn view_account_footer(model: crate::Model) -> View {
                     span { "Add custom homeserver" }
                 }
             }
-        }
-        (if sm.show_add_hs.get() {
-            view_add_hs_modal(model)
-        } else {
-            view! {}
-        })
-        p(class="help") {
-            "matrix.org accounts are passwordless (SSO). The localhost dev server registers a new account for you."
         }
     }
 }

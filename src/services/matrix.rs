@@ -191,6 +191,21 @@ pub fn load_session_for(homeserver: &str) -> Option<StoredSession> {
         .find(|s| s.homeserver == homeserver)
 }
 
+/// True when `homeserver` belongs to matrix.org.  Its session is stored as the
+/// resolved endpoint (matrix-client.matrix.org), so match by host.
+pub fn is_matrix_org(homeserver: &str) -> bool {
+    let host = url::Url::parse(homeserver)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_owned()))
+        .unwrap_or_default();
+    host == "matrix.org" || host.ends_with(".matrix.org")
+}
+
+/// True when a stored session belongs to matrix.org.
+pub fn has_matrix_org_session() -> bool {
+    read_sessions().iter().any(|s| is_matrix_org(&s.homeserver))
+}
+
 /// The currently-active homeserver (most recently used), if any.
 pub fn active_hs() -> Option<String> {
     active_hs_key()
