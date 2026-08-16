@@ -157,6 +157,14 @@ pub struct EventInfo {
     pub status: EventStatus,
 
     // ---- Matrix (populated on publish) ----
+    /// Homeserver the event is published on.  Required before publish; drives
+    /// which session is resumed and which homeserver the invite points at.
+    #[serde(default)]
+    pub homeserver: String,
+    /// How a scanned invite should sign in on that homeserver (`open` =
+    /// auto-register an account; `sso` = public HS, offer SSO only).
+    #[serde(default)]
+    pub reg: RegistrationMode,
     #[serde(default)]
     pub space_id: Option<String>,
     #[serde(default)]
@@ -165,6 +173,18 @@ pub struct EventInfo {
     pub timing_id: Option<String>,
     #[serde(default)]
     pub timing_alias: Option<String>,
+}
+
+/// How a scanned invite should authenticate on its homeserver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationMode {
+    /// Public homeserver (e.g. matrix.org): never auto-register, offer SSO.
+    #[default]
+    Sso,
+    /// Event/local homeserver with open registration: auto-register a fresh
+    /// account if the device has no stored session for it.
+    Open,
 }
 
 /// Lifecycle of an entry in the event.
@@ -463,6 +483,8 @@ impl Default for EventInfo {
             organisers: vec![],
             officials: vec![],
             status: EventStatus::Draft,
+            homeserver: String::new(),
+            reg: RegistrationMode::default(),
             space_id: None,
             space_alias: None,
             timing_id: None,
@@ -1287,21 +1309,22 @@ pub fn valid_event_id(id: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Invite URL.  `?homeserver=..&event=<id>&timing=<alias>&space=<alias>`
+// Invite URL.  `?homeserver=..&event=<id>&sid=<space id>&tid=<timing id>&reg=..`
+// Room ids only — no aliases, no fallbacks.  Event details come from the room.
 // ---------------------------------------------------------------------------
 
-// Invite URL + codec.  Wired to a UI later (timing-unknown / publish flow);
-// covered by unit tests today.
+/// QR / URL invite for joining a published event.  Minimal and self-contained:
+/// enough to connect, adopt by room id and sign in per `reg`; the event's full
+/// setup arrives from the room afterwards.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub struct Invite {
     pub homeserver: String,
-    pub event: String,  // event id
-    pub timing: String, // timing room alias, e.g. "#kt-2026-..-timing:matrix.org"
-    pub space: String,  // space room alias
+    pub event: String, // event id
+    pub sid: String,   // space room id
+    pub tid: String,   // timing room id
+    pub reg: RegistrationMode,
 }
 
-#[allow(dead_code)]
 fn encode_query(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -1315,7 +1338,6 @@ fn encode_query(s: &str) -> String {
     out
 }
 
-#[allow(dead_code)]
 fn hex(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),
@@ -1325,7 +1347,6 @@ fn hex(b: u8) -> Option<u8> {
     }
 }
 
-#[allow(dead_code)]
 fn decode_query(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1344,45 +1365,65 @@ fn decode_query(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-#[allow(dead_code)]
 impl Invite {
     pub fn to_query(&self) -> String {
         format!(
-            "homeserver={}&event={}&timing={}&space={}",
+            "homeserver={}&event={}&sid={}&tid={}&reg={}",
             encode_query(&self.homeserver),
             encode_query(&self.event),
-            encode_query(&self.timing),
-            encode_query(&self.space),
+            encode_query(&self.sid),
+            encode_query(&self.tid),
+            encode_query(reg_str(self.reg)),
         )
     }
 
     pub fn from_query(q: &str) -> Option<Invite> {
         let mut homeserver = None;
         let mut event = None;
-        let mut timing = None;
-        let mut space = None;
+        let mut sid = None;
+        let mut tid = None;
+        let mut reg = None;
         for pair in q.split('&') {
             let mut it = pair.splitn(2, '=');
             let (k, v) = (it.next()?, it.next()?);
             match k {
                 "homeserver" => homeserver = Some(decode_query(v)),
                 "event" => event = Some(decode_query(v)),
-                "timing" => timing = Some(decode_query(v)),
-                "space" => space = Some(decode_query(v)),
+                "sid" => sid = Some(decode_query(v)),
+                "tid" => tid = Some(decode_query(v)),
+                "reg" => reg = Some(decode_query(v)),
                 _ => {}
             }
         }
         Some(Invite {
             homeserver: homeserver.unwrap_or_default(),
             event: event?,
-            timing: timing.unwrap_or_default(),
-            space: space.unwrap_or_default(),
+            sid: sid.unwrap_or_default(),
+            tid: tid.unwrap_or_default(),
+            // Default to SSO (conservative) on an unknown/absent reg.
+            reg: reg.and_then(|r| reg_from_str(&r)).unwrap_or_default(),
         })
     }
 
-    /// Absolute invite URL for `origin` (e.g. `window.location.origin`).
-    pub fn url(&self, origin: &str) -> String {
-        format!("{origin}?{}", self.to_query())
+    /// Absolute invite URL for `app_base` (origin + path, e.g.
+    /// `https://host/khanatime/`).
+    pub fn url(&self, app_base: &str) -> String {
+        format!("{app_base}?{}", self.to_query())
+    }
+}
+
+fn reg_str(mode: RegistrationMode) -> &'static str {
+    match mode {
+        RegistrationMode::Open => "open",
+        RegistrationMode::Sso => "sso",
+    }
+}
+
+fn reg_from_str(s: &str) -> Option<RegistrationMode> {
+    match s {
+        "open" => Some(RegistrationMode::Open),
+        "sso" => Some(RegistrationMode::Sso),
+        _ => None,
     }
 }
 
@@ -1515,18 +1556,24 @@ pub fn ensure_demo() {
     }
 }
 
-/// Enqueue an event-setup manifest into the event's transaction log (the
-/// durable record of its configuration).
+/// The `khanatime_setup:` manifest body for an event.
+pub fn setup_body(ev: &EventInfo) -> String {
+    format!(
+        "{}{}",
+        crate::timing_event::TimingEvent::SETUP_PREFIX,
+        serde_json::to_string(ev).unwrap()
+    )
+}
+
+/// Enqueue an event-setup manifest into the event's outbox (publisher side).
 pub fn enqueue_event_setup(ev: &EventInfo) {
     if ev.id.is_empty() {
         return;
     }
-    let body = format!(
-        "{}{}",
-        crate::timing_event::TimingEvent::SETUP_PREFIX,
-        serde_json::to_string(ev).unwrap()
+    crate::log::enqueue_pending(
+        &ev.id,
+        crate::log::LogMsg::new_pending(setup_body(ev), String::new()),
     );
-    crate::log::enqueue_pending(&ev.id, crate::log::LogMsg::new_pending(body, String::new()));
 }
 
 // ---------------------------------------------------------------------------
@@ -1556,6 +1603,9 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     let mut errs: Vec<String> = vec![];
     if event.is_demo() {
         errs.push("Demo events are for local training only and can't be published.".to_string());
+    }
+    if event.homeserver.trim().is_empty() {
+        errs.push("Pick a homeserver to publish to.".to_string());
     }
     if event.stages.is_empty() {
         errs.push("Add at least one test before publishing.".to_string());
@@ -1754,15 +1804,42 @@ mod tests {
     #[test]
     fn invite_round_trip() {
         let inv = Invite {
-            homeserver: "http://localhost:8008".to_string(),
+            homeserver: "https://matrix-client.matrix.org".to_string(),
             event: "kt-2026-ndc-kcr1".to_string(),
-            timing: "#kt-2026-ndc-kcr1-timing:matrix.org".to_string(),
-            space: "#kt-2026-ndc-kcr1:localhost".to_string(),
+            sid: "!abc:matrix.org".to_string(),
+            tid: "!xyz:matrix.org".to_string(),
+            reg: RegistrationMode::Sso,
         };
         let q = inv.to_query();
-        assert!(q.contains("timing=%23kt-2026"));
+        assert!(q.contains("sid=%21abc"));
+        assert!(q.contains("reg=sso"));
         let back = Invite::from_query(&q).expect("parses");
         assert_eq!(back, inv);
+    }
+
+    #[test]
+    fn invite_open_reg_round_trip() {
+        let inv = Invite {
+            homeserver: "http://192.168.1.10:8008".to_string(),
+            event: "kt-2026-x".to_string(),
+            sid: "!a:b".to_string(),
+            tid: "!b:b".to_string(),
+            reg: RegistrationMode::Open,
+        };
+        let back = Invite::from_query(&inv.to_query()).unwrap();
+        assert_eq!(back.reg, RegistrationMode::Open);
+    }
+
+    #[test]
+    fn invite_defaults_to_sso_and_missing_event_none() {
+        // Absent reg -> conservative sso.
+        let q = "homeserver=http://h&event=kt-2026&sid=!a&tid=!b";
+        assert_eq!(Invite::from_query(q).unwrap().reg, RegistrationMode::Sso);
+        // Missing event -> None.
+        assert!(Invite::from_query("homeserver=http://h&sid=!a").is_none());
+        // Unknown reg -> sso.
+        let q = "homeserver=http://h&event=e&sid=!a&tid=!b&reg=warp";
+        assert_eq!(Invite::from_query(q).unwrap().reg, RegistrationMode::Sso);
     }
 
     #[test]
@@ -1770,12 +1847,13 @@ mod tests {
         let inv = Invite {
             homeserver: "http://localhost:8008".to_string(),
             event: "kt-2026".to_string(),
-            timing: "#t:localhost".to_string(),
-            space: "#s:localhost".to_string(),
+            sid: "!s:localhost".to_string(),
+            tid: "!t:localhost".to_string(),
+            reg: RegistrationMode::Open,
         };
         assert!(inv
-            .url("http://localhost:8080")
-            .starts_with("http://localhost:8080?"));
+            .url("http://localhost:8080/khanatime/")
+            .starts_with("http://localhost:8080/khanatime/?"));
     }
 
     #[test]
@@ -1975,6 +2053,7 @@ mod tests {
             id: "kt-2026-x".into(),
             name: "X".into(),
             stages: vec![],
+            homeserver: "http://localhost:8008".into(),
             ..Default::default()
         };
         let score = ScoreData {

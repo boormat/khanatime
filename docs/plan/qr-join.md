@@ -24,19 +24,23 @@ display.
 ## Link format
 
 ```
-{app-origin}/#join?hs=http%3A%2F%2F192.168.1.10%3A8008&ev=kt-2026-mydogs&u=timer&p=chase
+{app-base}?homeserver=..&event=kt-2026-mydogs&sid=!..&tid=!..&reg=open|sso
 ```
 
-- `#join?` — namespaced so no other hash use can collide.
-- `hs` — LAN-reachable homeserver URL (percent-encoded).
-- `ev` — event id. The space alias is derivable once connected:
-  `#<ev>:<server_name>` (see `alias()` in `services/matrix.rs`). Accept a full
-  alias (leading `%23`) as a fallback form.
-- `u` / `p` — optional credentials. Only sane on a LAN/dev server where
-  `register_or_login` accepts anything. Never for a public HS.
-- ~100 chars → tiny, low-density QR that scans instantly. (QR practical
-  ceiling is ~1–2KB; we're nowhere near it. Spec max is 2,953 bytes binary at
-  V40-L if ever needed for animated data transfer — separate topic.)
+Query string (coexists with `#screen` hash routing). Room ids only — **no
+aliases, no fallbacks**.
+
+- `homeserver` — the event's publish homeserver URL (percent-encoded).
+- `event` — event id (kept for immediate local identity/robustness; the full
+  details come from the room's setup messages via backfill).
+- `sid` / `tid` — space and timing **room ids** (join by id = `POST`, CORS-safe).
+- `reg` — `open` (event/local HS: auto-register if no stored session) or `sso`
+  (public HS: never auto-register, offer SSO). Sourced from the event's stored
+  config; absent → treated as `sso`.
+- ~180 chars → small, low-density QR that scans instantly.
+
+`homeserver`/`reg` come from the event config (set on the Event admin page
+before publish); they are fixed in the invite — not editable at scan time.
 
 ## Startup flow
 
@@ -48,7 +52,7 @@ let model = Model::init();
 app::setup_effects(model);
 #[cfg(target_arch = "wasm32")]
 if let Some(link) = join::from_location() {
-    join::consume_hash();           // history.replaceState: reload resumes normally
+    join::consume();                // history.replaceState: reload resumes normally
     app::show(model, Screen::Home); // conn status visible while joining
     crate::update(model, Msg::Join(link)); // link OVERRIDES warm_start/resume_on_load
 } else {
@@ -57,10 +61,18 @@ if let Some(link) = join::from_location() {
 ```
 
 The link wins over the persisted session: it's an explicit "join this event on
-this server" instruction. `save_session` overwrites storage during the
-pipeline, so subsequent loads resume the joined event normally.
+this server" instruction. `save_session` (upsert by homeserver) records the
+joined session, so subsequent loads resume the joined event normally.
 
 ## Components
+
+> **Implemented** (2026): the sections below are the original sketches. The
+> build used the existing `event::Invite` codec (`homeserver/event/sid/tid/reg`,
+> room ids only) instead of `JoinLink`/`#join?`; `join::from_location`/`consume`
+> read the query; `sync::join_via_link` reuses a stored session for the hs or
+> auto-registers (`reg=open`) / parks `pending_join`+SSO (`reg=sso`); adopt is by
+> `sid` via `matrix::open_published_event`, seeding the setup to the durable log
+> (`log::seed_setup_to_log`, never re-broadcast). Task list above is current.
 
 ### 1. `src/join.rs` (new module)
 
@@ -179,24 +191,24 @@ if let Some(link) = model.app.pending_join.get_clone() {
 
 ## Task list
 
-- [ ] `src/join.rs`: `JoinLink`, `parse_join_hash` (+ pct-decode), unit tests
-      (valid full/minimal link, missing hs/ev → None, non-join hash → None,
-      full-alias fallback, encoded chars in u/p).
-- [ ] `app.rs`: `Msg::Join` variant + dispatch; `pending_join` signal on
-      `AppState`.
-- [ ] `sync.rs`: `join_via_link` pipeline (login → open published → seed
-      manifest → start_sync → SetEvent → Show(Results)); resume `pending_join`
-      at the end of `connect()`'s success branch.
-- [ ] `services/matrix.rs`: alias-from-event-id helper for the join.
-- [ ] `main.rs`: startup wiring (`from_location`, `consume_hash`, override
-      warm path).
-- [ ] Home: prefill hs + pending-join hint when `pending_join` is set.
-- [ ] QR display: `qrcode` crate, modal with join URL + hs override input,
-      origin/hostname derivation.
-- [ ] Tests: parser units; `./scripts/check.sh` green (fmt + clippy
-      `--all-targets` + tests — same as CI gate).
-- [ ] Docs: AGENTS.md src tree gains `join.rs` (tree is already stale —
-      app.rs/log.rs/replay.rs/services/ missing; fix while there).
+- [x] `Invite` codec (in `event.rs`): `homeserver/event/sid/tid/reg` (room ids
+      only — no aliases, no fallbacks), pct-encode/decode, `url(app_base)`; unit
+      tests (round-trip both reg modes, defaults to sso, missing event → None).
+- [x] `app.rs`: `Msg::Join(Invite)` + dispatch; `pending_join` on `AppState`.
+- [x] `sync.rs`: `join_via_link` (reuse stored session for the hs, else
+      auto-register for `reg=open` or park `pending_join`/SSO for `reg=sso`;
+      adopt by `sid`, seed setup to durable log, start_sync, SetEvent, Results);
+      `connect()` resumes `pending_join`; `resume_on_load` keyed by the event's
+      homeserver.
+- [x] `services/matrix.rs`: multi-homeserver session registry; `open_published_event`
+      by room id; `ensure_client_for(event.homeserver)` for publish.
+- [x] `main.rs`: startup wiring (`from_location`, `consume`, override warm path).
+- [x] Home: prefill hs + pending-join hint (and Element link for `sso`).
+- [x] QR display: Event admin "Show join QR" modal (QR via `qr_svg`, invite-field
+      readout, URL copy, Open-in-Element link, print); event config requires
+      homeserver + reg before publish.
+- [x] Tests + `./scripts/check.sh` green.
+- [x] Docs: AGENTS.md src tree + conventions; this plan.
 - [ ] Manual LAN test (below).
 
 ## Gotchas

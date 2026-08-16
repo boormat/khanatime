@@ -68,12 +68,12 @@ pub fn update(model: crate::Model, msg: Msg) {
             #[cfg(not(target_arch = "wasm32"))]
             let _ = model;
         }
-        Msg::OpenResult(alias) => {
+        Msg::OpenResult(room_id) => {
             #[cfg(target_arch = "wasm32")]
-            open_result(model, alias);
+            open_result(model, room_id);
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let _ = (model, alias);
+                let _ = (model, room_id);
             }
         }
         Msg::ScanQr => {
@@ -140,7 +140,7 @@ fn search(model: crate::Model) {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn open_result(model: crate::Model, alias: String) {
+fn open_result(model: crate::Model, room_id: String) {
     let em = model.screens.events;
     let Some(client) = crate::services::matrix::client() else {
         em.feedback
@@ -150,11 +150,13 @@ fn open_result(model: crate::Model, alias: String) {
     em.search_busy.set(true);
     em.feedback.set(String::new());
     wasm_bindgen_futures::spawn_local(async move {
-        let res = crate::services::matrix::open_published_event(&client, &alias).await;
+        let res = crate::services::matrix::open_published_event(&client, &room_id).await;
         em.search_busy.set(false);
         match res {
             Ok(ev) => {
-                crate::event::enqueue_event_setup(&ev);
+                // Seed into the durable log (not the outbox) so the adopted
+                // setup replays into a current event without being re-broadcast.
+                crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
                 crate::update(model, crate::Msg::SetEvent(ev.id));
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
             }
@@ -353,7 +355,7 @@ fn view_search_results(model: crate::Model) -> View {
         .map(|r| {
             let alias = r.alias.clone();
             let name = r.name.clone();
-            let open_alias = alias.clone();
+            let open_id = r.room_id.clone();
             view! {
                 div(class="field is-grouped") {
                     div(class="control is-expanded") {
@@ -364,7 +366,7 @@ fn view_search_results(model: crate::Model) -> View {
                         button(
                             class="button is-small is-link",
                             disabled=em.search_busy.get(),
-                            on:click=move |_| crate::update(model, crate::Msg::EventsMsg(Msg::OpenResult(open_alias.clone()))),
+                            on:click=move |_| crate::update(model, crate::Msg::EventsMsg(Msg::OpenResult(open_id.clone()))),
                         ) {
                             "Open"
                         }

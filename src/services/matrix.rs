@@ -58,7 +58,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::timing_event::TimingEvent;
 
-const SESSION_KEY: &str = "kt_sync_session";
+const SESSION_KEY: &str = "kt_sync_sessions";
+const ACTIVE_KEY: &str = "kt_sync_active";
 const STORE_NAME: &str = "khanatime_sync";
 const DEVICE_NAME: &str = "khanatime-wasm";
 
@@ -100,12 +101,19 @@ pub fn room() -> Option<Room> {
     ROOM.with(|r| r.borrow().clone())
 }
 
-// ----- session persistence (localStorage) -----
+// ----- session persistence (localStorage, keyed by homeserver) -----
+//
+// Multiple homeserver logins are kept so we never create a fresh session (or
+// worse, a fresh account) when one already exists.  `save_session` upserts by
+// homeserver and marks it active; `load_session_for(hs)` fetches one.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSession {
     pub homeserver: String,
     pub user_id: String,
+    /// Registration mode for this homeserver (informs the event invite).
+    #[serde(default)]
+    pub reg: crate::event::RegistrationMode,
     #[serde(flatten)]
     pub kind: StoredAuth,
 }
@@ -130,6 +138,8 @@ fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
 
+/// Store (or update) a session for `homeserver`, marking it active.  An
+/// existing entry's reg mode is preserved; a new one defaults to `sso`.
 pub fn save_session(client: &Client, homeserver: &str) {
     let Some(session) = client.session() else {
         return;
@@ -147,29 +157,111 @@ pub fn save_session(client: &Client, homeserver: &str) {
         },
         _ => return, // AuthSession is non-exhaustive; future variants
     };
-    let stored = StoredSession {
-        homeserver: homeserver.to_string(),
-        user_id,
-        kind,
-    };
+    let reg = read_sessions()
+        .into_iter()
+        .find(|s| s.homeserver == homeserver)
+        .map(|s| s.reg)
+        .unwrap_or_default();
+    let mut sessions = read_sessions();
+    if let Some(existing) = sessions.iter_mut().find(|s| s.homeserver == homeserver) {
+        existing.user_id = user_id;
+        existing.kind = kind;
+        existing.reg = reg;
+    } else {
+        sessions.push(StoredSession {
+            homeserver: homeserver.to_string(),
+            user_id,
+            reg,
+            kind,
+        });
+    }
+    write_sessions(&sessions);
+    set_active_hs(homeserver);
+}
+
+/// All stored sessions, one per homeserver.
+pub fn load_sessions() -> Vec<StoredSession> {
+    read_sessions()
+}
+
+/// The session for a specific homeserver, if any.
+pub fn load_session_for(homeserver: &str) -> Option<StoredSession> {
+    read_sessions()
+        .into_iter()
+        .find(|s| s.homeserver == homeserver)
+}
+
+/// The currently-active homeserver (most recently used), if any.
+pub fn active_hs() -> Option<String> {
+    active_hs_key()
+}
+
+/// Set the registration mode recorded for a homeserver's stored session.
+pub fn set_session_reg(homeserver: &str, reg: crate::event::RegistrationMode) {
+    let mut sessions = read_sessions();
+    if let Some(s) = sessions.iter_mut().find(|x| x.homeserver == homeserver) {
+        s.reg = reg;
+        write_sessions(&sessions);
+    }
+}
+
+/// Remove the stored session for `homeserver`.
+pub fn remove_session(homeserver: &str) {
+    let mut sessions = read_sessions();
+    let before = sessions.len();
+    sessions.retain(|s| s.homeserver != homeserver);
+    if sessions.len() != before {
+        write_sessions(&sessions);
+    }
+    if active_hs_key().as_deref() == Some(homeserver) {
+        clear_active_hs();
+    }
+}
+
+/// Remove the active session.
+pub fn clear_session() {
+    if let Some(hs) = active_hs_key() {
+        remove_session(&hs);
+    } else if let Some(first) = read_sessions().into_iter().next() {
+        remove_session(&first.homeserver);
+    }
+}
+
+/// Deactivate the active session *without* removing it: the stored credentials
+/// stay so a later Re-login can restore the session in one tap.  The active
+/// pointer is cleared, so auto-resume won't revive it on the next load.
+pub fn deactivate_session() {
+    clear_active_hs();
+}
+
+fn read_sessions() -> Vec<StoredSession> {
+    storage()
+        .and_then(|st| st.get_item(SESSION_KEY).ok().flatten())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_sessions(sessions: &[StoredSession]) {
     if let Some(st) = storage() {
-        if let Ok(json) = serde_json::to_string(&stored) {
+        if let Ok(json) = serde_json::to_string(sessions) {
             let _ = st.set_item(SESSION_KEY, &json);
         }
     }
 }
 
-pub fn load_session() -> Option<StoredSession> {
-    storage()?
-        .get_item(SESSION_KEY)
-        .ok()
-        .flatten()
-        .and_then(|s| serde_json::from_str(&s).ok())
+fn active_hs_key() -> Option<String> {
+    storage()?.get_item(ACTIVE_KEY).ok().flatten()
 }
 
-pub fn clear_session() {
+fn set_active_hs(homeserver: &str) {
     if let Some(st) = storage() {
-        let _ = st.remove_item(SESSION_KEY);
+        let _ = st.set_item(ACTIVE_KEY, homeserver);
+    }
+}
+
+fn clear_active_hs() {
+    if let Some(st) = storage() {
+        let _ = st.remove_item(ACTIVE_KEY);
     }
 }
 
@@ -711,11 +803,31 @@ async fn finalize_rooms(
 
 /// Publish the current event using the logged-in identity (the single account
 /// connected on the Home page).  Errors when no session is active.
+/// Publish the event to its configured homeserver — and only that homeserver.
+/// Uses the active client if it's for that homeserver, else a stored session
+/// for it, else an error (no implicit session/user creation).
 pub async fn publish_current_event(event: &crate::event::EventInfo) -> Result<EventRooms, String> {
-    let Some(client) = client() else {
-        return Err("Log in on the Home page first".to_string());
-    };
+    if event.homeserver.trim().is_empty() {
+        return Err("Pick a homeserver to publish to first.".to_string());
+    }
+    let client = ensure_client_for(&event.homeserver).await?;
     publish_event(&client, event).await
+}
+
+/// Return a client connected to `homeserver`: the active one if it matches, or
+/// a restored stored session for it.  Errors when there's no saved login.
+pub async fn ensure_client_for(homeserver: &str) -> Result<Client, String> {
+    if let Some(c) = client() {
+        if c.homeserver().as_str() == homeserver {
+            return Ok(c);
+        }
+    }
+    let stored = load_session_for(homeserver)
+        .ok_or_else(|| format!("No saved login for {homeserver} — log in first."))?;
+    let c = new_client(homeserver).await?;
+    restore_session(&c, &stored).await?;
+    set_client(Some(c.clone()));
+    Ok(c)
 }
 
 /// A published event found via the room-directory search.
@@ -771,15 +883,17 @@ pub async fn search_events(client: &Client, term: &str) -> Result<Vec<EventSearc
 /// Join a published event space and build the local [crate::event::EventInfo]
 /// from its `io.kt.event` state.  Entries/stages arrive later via the timing
 /// room's setup-manifest backfill.
+/// Join an event space by **room id** (no alias) and build the partial
+/// [`crate::event::EventInfo`] from its `io.kt.event` state.
 pub async fn open_published_event(
     client: &Client,
-    alias: &str,
+    space_id: &str,
 ) -> Result<crate::event::EventInfo, String> {
-    let parsed: ruma::OwnedRoomOrAliasId = alias
+    let rid: ruma::OwnedRoomId = space_id
         .parse()
-        .map_err(|e: ruma::IdParseError| e.to_string())?;
+        .map_err(|e: ruma::IdParseError| format!("bad space id: {e}"))?;
     let room = client
-        .join_room_by_id_or_alias(&parsed, &[])
+        .join_room_by_id(&rid)
         .await
         .map_err(|e| e.to_string())?;
     let meta = read_event_meta_content(client, &room)
@@ -814,7 +928,7 @@ pub async fn open_published_event(
         status: crate::event::EventStatus::Published,
         ..Default::default()
     };
-    ev.space_alias = Some(alias.to_string());
+    ev.space_id = Some(space_id.to_string());
     Ok(ev)
 }
 

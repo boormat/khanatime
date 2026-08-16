@@ -32,10 +32,17 @@ use wasm_bindgen::JsCast;
 /// Connection actions driven from the Home page.
 #[derive(Clone)]
 pub enum Msg {
-    Connect,
     /// Browser-based OAuth/SSO sign-in (passwordless matrix.org accounts).
     SsoLogin,
     Logout,
+    /// Restore a stored session for `homeserver` (one-tap re-login after a
+    /// soft logout).
+    Relogin(String),
+    /// Discard a stored session for `homeserver` entirely.
+    Forget(String),
+    /// Connect to a homeserver given only its URL: SSO when advertised, else
+    /// auto-register a fresh account on an open-registration server.
+    AddHomeserver(String),
 }
 
 pub fn update(model: Model, msg: Msg) {
@@ -47,21 +54,42 @@ pub fn update(model: Model, msg: Msg) {
 
 // ----- lifecycle (wasm) -----
 
-/// Resume a persisted Matrix session on app load (wasm only).
+/// Resume a persisted Matrix session on app load (wasm only).  Driven by the
+/// current event: resumes the session for the event's homeserver (the event is
+/// the key driver).  A soft logout clears the active pointer, so a deactivated
+/// session is never revived on a reload.
 #[cfg(target_arch = "wasm32")]
 pub fn resume_on_load(model: Model) {
     // Demo events are local-only: never connect or join a room for them.
     if model.app.event.with(|e| e.is_demo()) {
         return;
     }
-    let Some(stored) = crate::services::matrix::load_session() else {
+    let hs = model.app.event.with(|e| e.homeserver.clone());
+    if hs.is_empty() {
+        return; // no published homeserver on the event yet
+    }
+    // Only auto-resume the session that is still active (not soft-logged-out).
+    if crate::services::matrix::active_hs().as_deref() != Some(hs.as_str()) {
+        return;
+    }
+    let Some(stored) = crate::services::matrix::load_session_for(&hs) else {
         return;
     };
+    restore_and_connect(model, stored);
+}
+
+/// Build a client from a stored session, restore it, join the current event's
+/// timing room and start syncing.  Reused by [resume_on_load] and one-tap
+/// Re-login.
+#[cfg(target_arch = "wasm32")]
+fn restore_and_connect(model: Model, stored: crate::services::matrix::StoredSession) {
     model.app.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&stored.homeserver).await?;
             crate::services::matrix::restore_session(&client, &stored).await?;
+            // Re-persist (refresh tokens rotate on restore) and mark active.
+            crate::services::matrix::save_session(&client, &stored.homeserver);
             crate::services::matrix::set_client(Some(client.clone()));
             let room =
                 crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
@@ -185,7 +213,11 @@ pub fn relay_to_room(model: Model) {
     let pending: Vec<usize> = log
         .iter()
         .enumerate()
-        .filter(|(_, m)| !m.origin.is_empty() && m.origin != room_id)
+        .filter(|(_, m)| {
+            // Re-broadcast anything not yet confirmed in this room, except
+            // locally-adopted entries which are already there.
+            !m.origin.is_empty() && m.origin != room_id && m.origin != crate::log::ADOPT_ORIGIN
+        })
         .map(|(i, _)| i)
         .collect();
     if pending.is_empty() {
@@ -460,87 +492,158 @@ fn apply_parcel(model: Model, id: &str, parcel: &crate::services::qr::Parcel) {
 #[cfg(target_arch = "wasm32")]
 fn update_wasm(model: Model, msg: Msg) {
     match msg {
-        Msg::Connect => connect(model),
         Msg::SsoLogin => sso_login(model),
         Msg::Logout => logout(model),
+        Msg::Relogin(hs) => relogin(model, hs),
+        Msg::Forget(hs) => forget(model, hs),
+        Msg::AddHomeserver(hs) => add_homeserver(model, hs),
     }
 }
 
-/// True when `hs` is the local dev homeserver, which allows self-registration.
+// ----- join via invite link -----
+
+/// A fresh Matrix username for auto-registration on an event homeserver.
 #[cfg(target_arch = "wasm32")]
-fn is_dev_server(hs: &str) -> bool {
-    let host = hs
-        .strip_prefix("http://")
-        .or_else(|| hs.strip_prefix("https://"))
-        .and_then(|rest| rest.split('/').next())
-        .and_then(|rest| rest.split(':').next())
-        .unwrap_or("");
-    host == "localhost" || host == "127.0.0.1" || host == "::1"
+fn gen_join_username() -> String {
+    format!("kt{}", crate::ids::gen_short_id().to_lowercase())
 }
 
+/// Join an event from a scanned invite: connect (reusing a stored session, or
+/// registering / offering SSO per `reg`), adopt the event by room id, seed the
+/// setup locally and land on Results.
 #[cfg(target_arch = "wasm32")]
-fn connect(model: Model) {
-    let sm = model.screens.home;
-    let hs = sm.homeserver.get_clone();
-    let user = sm.username.get_clone();
-    let pass = sm.password.get_clone();
-    if user.trim().is_empty() || pass.is_empty() {
-        model.app.conn.set(ConnState::Error(
-            "Enter a username and password".to_string(),
-        ));
-        return;
-    }
-    let dev = is_dev_server(&hs);
-    sm.busy.set(true);
+pub fn join_via_link(model: Model, invite: crate::event::Invite) {
     model.app.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
-            let client = crate::services::matrix::new_client(&hs).await?;
-            if dev {
-                crate::services::matrix::register_or_login(&client, &user, &pass).await?;
-            } else {
-                crate::services::matrix::login(&client, &user, &pass).await?;
+            let client = crate::services::matrix::new_client(&invite.homeserver).await?;
+            // Sign in: reuse a stored session for this homeserver first — never
+            // create a session/account just to check.
+            match crate::services::matrix::load_session_for(&invite.homeserver) {
+                Some(stored) => {
+                    crate::services::matrix::restore_session(&client, &stored).await?;
+                }
+                None => match invite.reg {
+                    crate::event::RegistrationMode::Open => {
+                        // Event HS with open registration: auto-register a fresh
+                        // random account and store it forever (reused later).
+                        let reg = crate::event::RegistrationMode::Open;
+                        let mut ok = crate::services::matrix::register_or_login(
+                            &client,
+                            &gen_join_username(),
+                            &crate::ids::gen_short_id(),
+                        )
+                        .await
+                        .is_ok();
+                        if !ok {
+                            // Offer a fresh account on the rare collision.
+                            ok = crate::services::matrix::register_or_login(
+                                &client,
+                                &gen_join_username(),
+                                &crate::ids::gen_short_id(),
+                            )
+                            .await
+                            .is_ok();
+                        }
+                        if ok {
+                            crate::services::matrix::set_session_reg(&invite.homeserver, reg);
+                        } else {
+                            return Err("Couldn't create an account on this homeserver".to_string());
+                        }
+                    }
+                    crate::event::RegistrationMode::Sso => {
+                        // Public HS: never auto-register. Park the invite for
+                        // SSO sign-in on the Home page.
+                        model.app.pending_join.set(Some(invite.clone()));
+                        model.screens.home.homeserver.set(invite.homeserver.clone());
+                        return Err("sso-pending".to_string());
+                    }
+                },
             }
-            crate::services::matrix::save_session(&client, &hs);
+            crate::services::matrix::save_session(&client, &invite.homeserver);
             crate::services::matrix::set_client(Some(client.clone()));
-            let room =
-                crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
-                    .await;
-            crate::services::matrix::set_room(room.clone());
+
+            // Adopt the event by space room id (no alias), seed locally.
+            let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
+            crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
             crate::services::matrix::start_sync(client, sink_for(model));
-            if room.is_some() {
-                spawn_backfill(model);
-            }
-            Ok::<_, String>(room.map(|r| r.room_id().to_string()))
+            Ok::<_, String>(ev)
         }
         .await;
         match res {
-            Ok(room_id) => {
+            Ok(ev) => {
                 let user_id = crate::services::matrix::client()
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
-                    .unwrap_or_else(|| user.clone());
+                    .unwrap_or_default();
                 model.app.identity.set(user_id.clone());
                 model.app.conn.set(ConnState::LoggedIn(user_id));
-                model.app.room.set(room_id);
-                // Land on the Home dashboard (event status hub) once connected.
-                crate::update(model, crate::Msg::Show(crate::Screen::Home));
-                flush_pending(model);
+                crate::update(model, crate::Msg::SetEvent(ev.id));
+                crate::update(model, crate::Msg::Show(crate::Screen::Results));
             }
-            Err(e) => model.app.conn.set(ConnState::Error(e)),
+            Err(e) => {
+                if model.app.pending_join.with(|p| p.is_some()) {
+                    // SSO-pending: parked for the Home login form, not an error.
+                    model.app.conn.set(ConnState::Idle);
+                } else {
+                    model.app.conn.set(ConnState::Error(e));
+                }
+            }
         }
-        sm.busy.set(false);
     });
 }
 
+/// Soft logout: deactivate the active session locally, keeping the stored
+/// credentials so a one-tap Re-login can restore it.  The server session stays
+/// valid until Forget revokes it.
 #[cfg(target_arch = "wasm32")]
 fn logout(model: Model) {
+    crate::services::matrix::deactivate_session();
+    crate::services::matrix::set_client(None);
+    crate::services::matrix::set_room(None);
+    model.app.identity.set(String::new());
+    model.app.conn.set(ConnState::Idle);
+    model.app.room.set(None);
+    model.screens.chat.feed.set(Vec::new());
+    model
+        .screens
+        .chat
+        .expanded
+        .set(std::collections::HashSet::new());
+}
+
+/// One-tap re-login after a soft logout: restore the stored session for
+/// `homeserver` and connect exactly like [resume_on_load].
+#[cfg(target_arch = "wasm32")]
+fn relogin(model: Model, hs: String) {
+    let Some(stored) = crate::services::matrix::load_session_for(&hs) else {
+        model
+            .app
+            .conn
+            .set(ConnState::Error(format!("No stored session for {hs}")));
+        return;
+    };
+    restore_and_connect(model, stored);
+}
+
+/// Forget a stored session entirely.  The active session is revoked server-side
+/// (we hold a live client) and the app goes idle; an inactive session is simply
+/// dropped from storage.
+#[cfg(target_arch = "wasm32")]
+fn forget(model: Model, hs: String) {
+    let is_active = crate::services::matrix::active_hs().as_deref() == Some(hs.as_str());
+    if !is_active {
+        crate::services::matrix::remove_session(&hs);
+        return;
+    }
     let sm = model.screens.home;
     let Some(client) = crate::services::matrix::client() else {
+        crate::services::matrix::remove_session(&hs);
         model.app.conn.set(ConnState::Idle);
         return;
     };
     sm.busy.set(true);
     wasm_bindgen_futures::spawn_local(async move {
+        // Revokes the server session and clears the stored entry.
         let _ = crate::services::matrix::logout(&client).await;
         crate::services::matrix::set_client(None);
         crate::services::matrix::set_room(None);
@@ -557,22 +660,149 @@ fn logout(model: Model) {
     });
 }
 
-// ----- OAuth / SSO -----
-
-/// Probe the current homeserver for OIDC support and expose it on the Home
-/// form (toggles the SSO button).  Called when the homeserver field changes.
+/// Connect to a homeserver given only its URL.  Reuses a stored session when
+/// one exists; otherwise starts SSO when the server advertises it, or
+/// auto-registers a fresh account on an open-registration server (the local
+/// dev stack).  The user never types a username/password.
 #[cfg(target_arch = "wasm32")]
-pub fn probe_oidc(model: Model) {
+fn add_homeserver(model: Model, hs: String) {
     let sm = model.screens.home;
-    let hs = sm.homeserver.get_clone();
+    if hs.trim().is_empty() {
+        model
+            .app
+            .conn
+            .set(ConnState::Error("Enter a homeserver URL".to_string()));
+        return;
+    }
+    // A server we already have a session for is a one-tap re-login.
+    if crate::services::matrix::load_session_for(&hs).is_some() {
+        relogin(model, hs);
+        return;
+    }
+    sm.homeserver.set(hs.clone());
+    sm.busy.set(true);
+    model.app.conn.set(ConnState::Connecting);
+    // Open the tab synchronously from the click handler (popup blockers reject
+    // `window.open` after an await); it's pointed at the SSO URL when needed
+    // and closed when we auto-register instead.
+    let tab = match web_sys::window().map(|w| w.open()) {
+        Some(Ok(Some(tab))) => Some(tab),
+        _ => None,
+    };
+    enum Added {
+        Sso(String),
+        Room(Option<String>),
+    }
     wasm_bindgen_futures::spawn_local(async move {
-        let ok = match crate::services::matrix::new_client(&hs).await {
-            Ok(client) => crate::services::matrix::oidc_supported(&client).await,
-            Err(_) => false,
-        };
-        sm.sso.set(ok);
+        let res = async {
+            let client = crate::services::matrix::new_client(&hs).await?;
+            if crate::services::matrix::oidc_supported(&client).await {
+                let redirect_uri = crate::services::matrix::oauth_redirect_uri()?;
+                if redirect_uri.scheme() != "https"
+                    || matches!(
+                        redirect_uri.host_str(),
+                        Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+                    )
+                {
+                    return Err(
+                        "SSO sign-in only works from a real https address — matrix.org rejects http/localhost redirects. Test SSO on the deployed app, or use an open-registration dev server."
+                            .to_string(),
+                    );
+                }
+                let data = crate::services::matrix::oauth_client_data(&client, &redirect_uri).await?;
+                let auth = client
+                    .oauth()
+                    .login(redirect_uri, None, data, None)
+                    .build()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                crate::services::matrix::set_client(Some(client));
+                let state = auth.state.secret().to_string();
+                if let Some(tab) = &tab {
+                    let _ = tab.location().set_href(&auth.url.to_string());
+                }
+                Ok::<_, String>(Added::Sso(state))
+            } else {
+                // Open-registration server (the dev stack): auto-register a
+                // fresh account and keep it for reuse.
+                let reg = crate::event::RegistrationMode::Open;
+                let mut ok = crate::services::matrix::register_or_login(
+                    &client,
+                    &gen_join_username(),
+                    &crate::ids::gen_short_id(),
+                )
+                .await
+                .is_ok();
+                if !ok {
+                    ok = crate::services::matrix::register_or_login(
+                        &client,
+                        &gen_join_username(),
+                        &crate::ids::gen_short_id(),
+                    )
+                    .await
+                    .is_ok();
+                }
+                if !ok {
+                    return Err(
+                        "Couldn't create an account on this homeserver".to_string(),
+                    );
+                }
+                crate::services::matrix::set_session_reg(&hs, reg);
+                crate::services::matrix::save_session(&client, &hs);
+                crate::services::matrix::set_client(Some(client.clone()));
+                let room = crate::services::matrix::join_room_for_event(
+                    &client,
+                    &model.app.event.get_clone(),
+                )
+                .await;
+                crate::services::matrix::set_room(room.clone());
+                crate::services::matrix::start_sync(client, sink_for(model));
+                if room.is_some() {
+                    spawn_backfill(model);
+                }
+                Ok::<_, String>(Added::Room(room.map(|r| r.room_id().to_string())))
+            }
+        }
+        .await;
+        match res {
+            Ok(Added::Sso(state)) => {
+                model.app.conn.set(ConnState::SsoPending);
+                sm.busy.set(false);
+                sso_wait_for_callback(model, &state);
+            }
+            Ok(Added::Room(room_id)) => {
+                if let Some(tab) = &tab {
+                    let _ = tab.close();
+                }
+                let user_id = crate::services::matrix::client()
+                    .and_then(|c| c.user_id().map(|u| u.to_string()))
+                    .unwrap_or_default();
+                model.app.identity.set(user_id.clone());
+                model.app.conn.set(ConnState::LoggedIn(user_id));
+                model.app.room.set(room_id);
+                crate::update(model, crate::Msg::Show(crate::Screen::Home));
+                flush_pending(model);
+                // Resume a pending join if it targets this homeserver.
+                let pending = model.app.pending_join.get_clone();
+                if let Some(link) = &pending {
+                    if crate::services::matrix::load_session_for(&link.homeserver).is_some() {
+                        model.app.pending_join.set(None);
+                        crate::update(model, crate::Msg::Join(link.clone()));
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(tab) = &tab {
+                    let _ = tab.close();
+                }
+                model.app.conn.set(ConnState::Error(e));
+                sm.busy.set(false);
+            }
+        }
     });
 }
+
+// ----- OAuth / SSO -----
 
 /// Start the OAuth/SSO sign-in: build the authorization URL and open it in a
 /// new browser tab.  The tab finishes the login at the homeserver and is
@@ -713,10 +943,6 @@ fn sso_complete(model: Model, callback_url: String) {
         }
     });
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-#[allow(dead_code)]
-pub fn probe_oidc(_model: Model) {}
 
 // ----- merge sink -----
 

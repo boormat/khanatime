@@ -3,6 +3,7 @@ mod batch;
 mod event;
 mod ids;
 mod input;
+mod join;
 mod log;
 mod page;
 #[cfg(target_arch = "wasm32")]
@@ -44,9 +45,30 @@ fn main() {
         #[cfg(not(target_arch = "wasm32"))]
         let sso_callback = false;
         if !sso_callback {
-            app::show(model, initial_screen());
-            #[cfg(target_arch = "wasm32")]
-            sync::resume_on_load(model);
+            // A join link overrides the persisted session: consume the query,
+            // show Home (conn status visible) and start the join.
+            let joined = {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    if let Some(link) = join::from_location() {
+                        join::consume();
+                        app::show(model, Screen::Home);
+                        crate::update(model, Msg::Join(link));
+                        true
+                    } else {
+                        false
+                    }
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    false
+                }
+            };
+            if !joined {
+                app::show(model, initial_screen());
+                #[cfg(target_arch = "wasm32")]
+                sync::resume_on_load(model);
+            }
         } else {
             // OAuth/SSO callback tab: it posted the result to the initiating
             // tab over BroadcastChannel and is closing itself.
@@ -98,15 +120,17 @@ fn initial_screen() -> Screen {
     }
 }
 
-/// True when we already have a persisted Matrix session and a session event:
-/// most users just want to look at the standings, so land straight on Results.
+/// True when we already have a *currently active* Matrix session and a session
+/// event: most users just want to look at the standings, so land straight on
+/// Results.  A soft logout clears the active pointer, so a deactivated session
+/// lands on Home (the sign-in / accounts screen) instead.
 fn warm_start() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
-        let session = crate::services::matrix::load_session().is_some();
+        let active = crate::services::matrix::active_hs().is_some();
         let event = crate::event::session_event_name();
         let has_event = !event.is_empty();
-        session && has_event
+        active && has_event
     }
     #[cfg(not(target_arch = "wasm32"))]
     false

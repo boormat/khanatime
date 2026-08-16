@@ -127,6 +127,8 @@ pub struct AppState {
     pub scan_status: Signal<String>,
     /// Which export variant to produce (full event vs timing-only).
     pub parcel_mode: Signal<ParcelMode>,
+    /// A join invite waiting on login (public HS / SSO-only path).
+    pub pending_join: Signal<Option<crate::event::Invite>>,
     /// The animated QR sequence is paused on its current frame.
     pub parcel_qr_paused: Signal<bool>,
 }
@@ -181,6 +183,8 @@ pub enum Msg {
     QrClear,
     /// Choose the parcel export variant (full event vs timing-only).
     SetParcelMode(ParcelMode),
+    /// Join an event from a scanned invite link (connect + adopt).
+    Join(crate::event::Invite),
 }
 
 impl Model {
@@ -227,6 +231,7 @@ impl Model {
                 parcel_qr_index: create_signal(0),
                 parcel_qr_total: create_signal(0),
                 parcel_mode: create_signal(ParcelMode::default()),
+                pending_join: create_signal(None),
                 scan_active: create_signal(false),
                 scan_status: create_signal(String::new()),
                 parcel_qr_paused: create_signal(false),
@@ -316,6 +321,12 @@ pub fn update(model: Model, msg: Msg) {
         Msg::QrPauseToggle => crate::sync::toggle_qr_pause(model),
         Msg::QrClear => crate::sync::clear_qr(model),
         Msg::SetParcelMode(mode) => model.app.parcel_mode.set(mode),
+        Msg::Join(link) => {
+            #[cfg(target_arch = "wasm32")]
+            crate::sync::join_via_link(model, link);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = link;
+        }
     }
 }
 

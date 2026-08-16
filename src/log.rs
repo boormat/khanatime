@@ -28,6 +28,9 @@ const PENDING_PREFIX: &str = "pending:";
 
 /// `LogMsg.origin` value for messages handed off via a QR parcel (see `qr.rs`).
 pub const PARCEL_ORIGIN: &str = "parcel";
+/// `LogMsg.origin` for an event adopted from a published room: durable locally
+/// but already in the room, so `relay_to_room` never re-broadcasts it.
+pub const ADOPT_ORIGIN: &str = "adopt";
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -124,6 +127,22 @@ impl LogMsg {
             origin: PARCEL_ORIGIN.to_string(),
         }
     }
+
+    /// An event adopted from a published room: durable locally (so it replays
+    /// into a current event) but already present in the room, so it is never
+    /// re-broadcast by relay.
+    pub fn from_adopted(body: String, ts: i64, sender: String) -> Self {
+        Self {
+            mid: String::new(),
+            local_id: String::new(),
+            ts,
+            sender,
+            body,
+            raw: String::new(),
+            pending: false,
+            origin: ADOPT_ORIGIN.to_string(),
+        }
+    }
 }
 
 fn log_key(id: &str) -> String {
@@ -209,6 +228,20 @@ pub fn append_log(id: &str, msg: LogMsg) -> bool {
     log.push(msg);
     save_log(id, &log);
     true
+}
+
+/// Seed an adopted event's setup manifest into the durable log (not the
+/// outbox), so it replays into a current event without ever being re-broadcast
+/// to the room by relay.  Idempotent by content id.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm adopt sinks
+pub fn seed_setup_to_log(id: &str, setup_body: &str, sender: &str) -> bool {
+    if id.is_empty() || setup_body.is_empty() {
+        return false;
+    }
+    append_log(
+        id,
+        LogMsg::from_adopted(setup_body.to_string(), now_ms(), sender.to_string()),
+    )
 }
 
 /// True when `mid` already appears in `log`.

@@ -53,6 +53,13 @@ unlinted code.
 - Sign-in is username/password (+ local self-register) with an OIDC/SSO path
   for passwordless accounts (matrix.org/MAS) — see `docs/plan/matrix-login.md`
   before touching `sync.rs` connect or `services/matrix.rs` auth/session.
+- **Multiple homeserver sessions** are kept (`kt_sync_sessions` keyed by
+  homeserver, active pointer) so a join/publish never creates a session or
+  account when one already exists. Events store their publish `homeserver` +
+  `reg` (`RegistrationMode`: `open` auto-registers, `sso` never does);
+  `resume_on_load` is driven by the current event's homeserver. Join invites
+  carry `homeserver/event/sid/tid/reg` only (room ids, no aliases/fallbacks) —
+  see `docs/plan/qr-join.md`.
 
 ## Architecture
 
@@ -71,6 +78,7 @@ src/
 ├── ids.rs               # generated short ids (Crocker base32) + content_id(body)
 │                       #   dedup key: KT bodies -> embedded observation uid
 ├── input.rs             # keyboard/input helpers
+├── join.rs              # QR join-link arrival: parse location query + consume (wasm)
 ├── qr_scan.rs           # camera QR scanning for parcel import (wasm; BarcodeDetector)
 ├── log.rs              # per-event message log + pending outbox (localStorage);
 │                       #   LogMsg.origin tracks the publishing transport (room id /
@@ -153,8 +161,9 @@ src/
   homeservers with content-id merge + auto-relay, QR parcel handoff, and
   generated event/observation ids with `amend`/`void`) — plan and wire-format
   v2 in `docs/plan/multi-transport.md`; Phase 1 (ids + amend/void wire v2)
-  implementation in `docs/plan/identity-amendments.md`; scan-to-join bootstrap
-  in `docs/plan/qr-join.md`. Touch the wire format (`timing_event.rs`) and
+  implementation in `docs/plan/identity-amendments.md`; QR join links (scan to
+  connect + adopt a published event) are live — see `docs/plan/qr-join.md`.
+  Touch the wire format (`timing_event.rs`) and
   sync plumbing with that in mind. **Wire v2 is live** (event/observation
   uids, `amend`/`void` with `target`); no fallback for old v1 bodies — they
   fail parse and are dropped, so clear localStorage + room history once.

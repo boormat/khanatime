@@ -401,7 +401,7 @@ fn view_scan_modal(model: crate::Model) -> View {
 }
 
 /// Copy `text` to the clipboard (best effort).
-fn copy_text(text: &str) {
+pub fn copy_text(text: &str) {
     if let Some(nav) = web_sys::window().map(|w| w.navigator()) {
         let _ = nav.clipboard().write_text(text);
     }

@@ -38,6 +38,14 @@ pub enum Msg {
     /// Re-broadcast the event setup manifest to the already-existing timing
     /// room (after an amendment).
     SyncToRoom,
+    /// Set the event's publish homeserver.
+    SetHomeserver(String),
+    /// Set the event's registration mode.
+    SetReg(crate::event::RegistrationMode),
+    /// Open the join-QR modal.
+    ShowJoinQr,
+    /// Close the join-QR modal.
+    CloseJoinQr,
 }
 
 #[derive(Clone, Copy)]
@@ -67,6 +75,12 @@ pub struct Model {
     pub needs_sync: Signal<bool>,
     /// Batch-confirm modal content (the event diff) while open.
     pub confirm: Signal<Option<Vec<String>>>,
+    /// Homeserver text field (mirrors/edits the event's publish homeserver).
+    pub hs_input: Signal<String>,
+    /// Join-QR modal visibility + rendered content.
+    pub join_qr_visible: Signal<bool>,
+    pub join_qr_svg: Signal<String>,
+    pub join_url: Signal<String>,
 }
 
 pub fn init() -> Model {
@@ -91,6 +105,10 @@ pub fn init() -> Model {
         publish_status: create_signal(None),
         needs_sync: create_signal(false),
         confirm: create_signal(None),
+        hs_input: create_signal(String::new()),
+        join_qr_visible: create_signal(false),
+        join_qr_svg: create_signal(String::new()),
+        join_url: create_signal(String::new()),
     }
 }
 
@@ -219,7 +237,58 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .publish_status
                 .set(Some("Setup re-sent to room.".to_string()));
         }
+        Msg::SetHomeserver(hs) => {
+            model.app.event.update(|e| {
+                e.homeserver = hs.trim().to_string();
+            });
+        }
+        Msg::SetReg(reg) => {
+            model.app.event.update(|e| {
+                e.reg = reg;
+            });
+        }
+        Msg::ShowJoinQr => show_join_qr(model),
+        Msg::CloseJoinQr => model.screens.setup.join_qr_visible.set(false),
     }
+}
+
+/// Build the invite + join QR for the current event and open the modal.
+#[cfg(target_arch = "wasm32")]
+fn show_join_qr(model: crate::Model) {
+    let event = model.app.event.get_clone();
+    let Some(sid) = event.space_id.clone() else {
+        model.screens.setup.publish_status.set(Some(
+            "Publish the event first, then show the join QR.".to_string(),
+        ));
+        return;
+    };
+    let tid = event.timing_id.clone().unwrap_or_default();
+    let invite = crate::event::Invite {
+        homeserver: event.homeserver,
+        event: event.id,
+        sid,
+        tid,
+        reg: event.reg,
+    };
+    let app_base = {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let origin = window.location().origin().unwrap_or_default();
+        let path = window.location().pathname().unwrap_or_default();
+        format!("{origin}{path}")
+    };
+    let url = invite.url(&app_base);
+    let svg = crate::services::qr::qr_svg(&url, 320).unwrap_or_default();
+    model.screens.setup.join_url.set(url);
+    model.screens.setup.join_qr_svg.set(svg);
+    model.screens.setup.join_qr_visible.set(true);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+fn show_join_qr(model: crate::Model) {
+    model.screens.setup.join_qr_visible.set(false);
 }
 
 /// Build the staged event: committed event + edit-form fields (details,
@@ -323,6 +392,7 @@ fn load_details(model: crate::Model) {
     let e = model.app.event.get_clone();
     model.screens.setup.edit_club.set(e.sponsoring_club.clone());
     model.screens.setup.edit_year.set(e.year.clone());
+    model.screens.setup.hs_input.set(e.homeserver.clone());
     model
         .screens
         .setup
@@ -401,11 +471,6 @@ fn publish_wasm(model: crate::Model) {
     use crate::event::EventStatus;
 
     let em = model.screens.setup;
-    if crate::services::matrix::client().is_none() {
-        em.publish_status
-            .set(Some("Log in on the Home page first".to_string()));
-        return;
-    }
     let event = model.app.event.get_clone();
     if event.id.is_empty() {
         em.publish_status
@@ -1017,7 +1082,25 @@ fn view_publish(model: crate::Model) -> View {
                         }
                     })
                 }
+                div(class="control") {
+                    (move || {
+                        if is_published(model) {
+                            view! {
+                                button(
+                                    class="button is-small is-light",
+                                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::ShowJoinQr)),
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-qrcode") }
+                                    span { "Show join QR" }
+                                }
+                            }
+                        } else {
+                            view! {}
+                        }
+                    })
+                }
             }
+            (move || view_matrix_config(model))
             (move || match em.publish_status.get_clone() {
                 Some(s) => view! { p(class="help") { (s) } },
                 None => view! {
@@ -1026,6 +1109,203 @@ fn view_publish(model: crate::Model) -> View {
                     }
                 },
             })
+            (move || {
+                if model.screens.setup.join_qr_visible.get() {
+                    view_join_qr_modal(model)
+                } else {
+                    view! {}
+                }
+            })
+        }
+    }
+}
+
+/// Matrix/publish config: pick a logged-in homeserver (which also provides its
+/// reg mode) or type one, choose the reg mode, then publish.
+fn view_matrix_config(model: crate::Model) -> View {
+    use crate::event::RegistrationMode;
+    let reg = model.app.event.with(|e| e.reg);
+    let hs = model.app.event.with(|e| e.homeserver.clone());
+    let matrix_url = "https://matrix-client.matrix.org";
+
+    // Precompute the saved-homeserver picker (wasm-only: reads stored sessions).
+    let saved_picker: View = {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let sessions = crate::services::matrix::load_sessions();
+            if sessions.is_empty() {
+                view! {}
+            } else {
+                let options: Vec<View> = sessions
+                    .iter()
+                    .map(|s| {
+                        let disp = s.homeserver.clone();
+                        let val = disp.clone();
+                        view! { option(value=val) { (disp) } }
+                    })
+                    .collect();
+                view! {
+                    div(class="control") {
+                        select(
+                            class="select is-small",
+                            on:change=move |ev: web_sys::Event| {
+                                use wasm_bindgen::JsCast;
+                                let v = ev
+                                    .target()
+                                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                                    .map(|e| e.value())
+                                    .unwrap_or_default();
+                                if !v.is_empty() {
+                                    let reg = crate::services::matrix::load_session_for(&v)
+                                        .map(|s| s.reg)
+                                        .unwrap_or(RegistrationMode::Sso);
+                                    model.screens.setup.hs_input.set(v.clone());
+                                    crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(v)));
+                                    crate::update(model, crate::Msg::EventMsg(Msg::SetReg(reg)));
+                                }
+                            },
+                        ) {
+                            option(value="") { "Saved homeservers…" }
+                            (options)
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            view! {}
+        }
+    };
+
+    let open_class = if reg == RegistrationMode::Open {
+        "button is-small is-primary"
+    } else {
+        "button is-small"
+    };
+    let sso_class = if reg == RegistrationMode::Sso {
+        "button is-small is-primary"
+    } else {
+        "button is-small"
+    };
+    let matrix_btn = matrix_url.to_string();
+    view! {
+        div(class="field") {
+            label(class="label is-small") { "Publish to homeserver" }
+            div(class="field has-addons") {
+                div(class="control is-expanded") {
+                    input(
+                        class="input is-small",
+                        placeholder="https://matrix-client.matrix.org",
+                        bind:value=model.screens.setup.hs_input,
+                        on:input=move |_| {
+                            let v = model.screens.setup.hs_input.get_clone();
+                            crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(v)));
+                        },
+                    )
+                }
+                (saved_picker)
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        on:click=move |_| {
+                            model.screens.setup.hs_input.set(matrix_btn.clone());
+                            crate::update(model, crate::Msg::EventMsg(Msg::SetHomeserver(matrix_btn.clone())));
+                            crate::update(model, crate::Msg::EventMsg(Msg::SetReg(RegistrationMode::Sso)));
+                        },
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-id-badge") }
+                        span { "Use Matrix.org (SSO)" }
+                    }
+                }
+            }
+            div(class="field") {
+                label(class="label is-small") { "Registration mode" }
+                div(class="buttons has-addons") {
+                    button(
+                        class=open_class,
+                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SetReg(RegistrationMode::Open))),
+                    ) { "Auto-register (event HS)" }
+                    button(
+                        class=sso_class,
+                        on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::SetReg(RegistrationMode::Sso))),
+                    ) { "SSO only (public HS)" }
+                }
+                p(class="help") {
+                    "Auto-register: the device creates an account on sign-in. SSO: passwordless sign-in (matrix.org)."
+                }
+            }
+            p(class="help") { "Current: " (hs) }
+        }
+    }
+}
+
+/// The join-QR modal: QR, invite fields, URL copy, Element link, print.
+fn view_join_qr_modal(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let svg = em.join_qr_svg.get_clone();
+    let url = em.join_url.get_clone();
+    let (event, hs, reg, sid) = model.app.event.with(|e| {
+        (
+            e.id.clone(),
+            e.homeserver.clone(),
+            e.reg,
+            e.space_id.clone().unwrap_or_default(),
+        )
+    });
+    let element_link = format!("https://app.element.io/#/room/{sid}");
+    let reg_txt = match reg {
+        crate::event::RegistrationMode::Open => "open",
+        crate::event::RegistrationMode::Sso => "sso",
+    };
+    let url_c = url.clone();
+    let element_c = element_link.clone();
+    view! {
+        div(class="kt-modal") {
+            div(class="kt-modal-card") {
+                h3(class="title is-5") { "Join this event" }
+                div(class="kt-qr-box") {
+                    div(dangerously_set_inner_html=svg) {}
+                }
+                div(class="field") {
+                    label(class="label is-small") { "Invite fields" }
+                    p(class="help") {
+                        "Homeserver: " (hs) " · Event: " (event) " · Reg: " (reg_txt) " · Space: " (sid)
+                    }
+                }
+                div(class="field") {
+                    label(class="label is-small") { "Join URL" }
+                    div(class="control") {
+                        input(class="input is-small", readonly=true, value=url) {}
+                    }
+                    div(class="control") {
+                        button(
+                            class="button is-small is-light",
+                            on:click=move |_| crate::page::copy_text(&url_c),
+                        ) { span(class="icon is-small") { i(class="fa fa-copy") } span { "Copy URL" } }
+                        button(
+                            class="button is-small is-light",
+                            on:click=move |_| crate::page::copy_text(&element_c),
+                        ) { span(class="icon is-small") { i(class="fa fa-external-link") } span { "Copy Element link" } }
+                    }
+                }
+                div(class="field is-grouped is-grouped-centered") {
+                    div(class="control") {
+                        button(
+                            class="button is-small is-link",
+                            on:click=move |_| {
+                                if let Some(w) = web_sys::window() { let _ = w.print(); }
+                            },
+                        ) { span(class="icon is-small") { i(class="fa fa-print") } span { "Print" } }
+                    }
+                    div(class="control") {
+                        button(
+                            class="button is-small",
+                            on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::CloseJoinQr)),
+                        ) { span(class="icon is-small") { i(class="fa fa-times") } span { "Close" } }
+                    }
+                }
+            }
         }
     }
 }
