@@ -11,6 +11,7 @@ pub mod penalty;
 pub mod results;
 pub mod stage;
 pub mod start;
+pub mod stopwatch;
 
 use sycamore::prelude::*;
 
@@ -48,6 +49,7 @@ pub fn enqueue_run(model: crate::Model, run: &crate::event::RunRecord) {
         status: run.status.clone(),
         flags: run.flags,
         official_id: run.official_id.clone(),
+        comment: run.comment.clone(),
     };
     let sender = model.app.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
@@ -57,7 +59,13 @@ pub fn enqueue_run(model: crate::Model, run: &crate::event::RunRecord) {
 
 /// Enqueue a `finish` timing message for a stage/car/time (the command-line
 /// stopwatch page) to the current event's pending outbox.
-pub fn enqueue_ktime(model: crate::Model, test: u8, car: &str, time: &crate::event::KTime) {
+pub fn enqueue_ktime(
+    model: crate::Model,
+    test: u8,
+    car: &str,
+    time: &crate::event::KTime,
+    comment: Option<String>,
+) {
     let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
@@ -68,6 +76,7 @@ pub fn enqueue_ktime(model: crate::Model, test: u8, car: &str, time: &crate::eve
         .with(|runs| crate::event::next_run(runs, test, car));
     let mut te = crate::timing_event::TimingEvent::finish(&uid, test, car, run, time);
     te.official_id = Some(model.app.identity.get_clone());
+    te.comment = comment;
     let sender = model.app.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     // Mirror the finish into the local run log (results read runs, not the
@@ -113,6 +122,7 @@ pub fn enqueue_amend(
     car: &str,
     run: u8,
     time: &crate::event::KTime,
+    comment: Option<String>,
 ) {
     let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
@@ -120,6 +130,7 @@ pub fn enqueue_amend(
     }
     let mut te = crate::timing_event::TimingEvent::amend(&uid, target_uid, test, car, run, time);
     te.official_id = Some(model.app.identity.get_clone());
+    te.comment = comment;
     let sender = model.app.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     model.app.runs.update(|runs| {
@@ -131,6 +142,7 @@ pub fn enqueue_amend(
             r.status = te.status.clone();
             r.flags = te.flags;
             r.official_id = te.official_id.clone();
+            r.comment = te.comment.clone();
         }
     });
     crate::sync::flush_pending(model);
@@ -158,6 +170,75 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str, 
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
     crate::update(model, crate::Msg::Reload);
+}
+
+/// Shared timing log: all starts and finishes for a test, newest first, with
+/// void buttons.  Used by all timing screens.
+pub fn view_timing_log(model: crate::Model, test: u8) -> View {
+    use crate::event::{RunRecord, RUN_FINISH, RUN_START};
+    view! {
+        div(class="box") {
+            h3(class="title is-6") { "Log" }
+            (move || {
+                let mut runs: Vec<RunRecord> = model.app.runs.with(|runs| {
+                    runs.iter()
+                        .filter(|r| r.test == test && !r.voided)
+                        .filter(|r| r.r#type == RUN_START || r.r#type == RUN_FINISH)
+                        .cloned()
+                        .collect()
+                });
+                runs.sort_by_key(|r| std::cmp::Reverse(r.ts));
+                if runs.is_empty() {
+                    return view! { p(class="help") { "No timing observations yet." } };
+                }
+                let views: Vec<View> = runs
+                    .iter()
+                    .map(|r| {
+                        let uid = r.uid.clone();
+                        let icon = if r.r#type == RUN_START { "\u{25B6}" } else { "\u{25A0}" };
+                        let label = format!("{} #{} run {}", icon, r.car, r.run);
+                        let ts = fmt_log_ts(r.ts);
+                        let official_view: View = match &r.official_id {
+                            Some(o) if !o.is_empty() => {
+                                let text = format!("by {}", o);
+                                view! { span(class="has-text-grey-light ml-2") { (text) } }
+                            }
+                            _ => view! {},
+                        };
+                        let comment_view: View = match &r.comment {
+                            Some(c) if !c.is_empty() => {
+                                let text = format!("\"{}\"", c);
+                                view! { span(class="has-text-grey ml-2 is-size-7") { (text) } }
+                            }
+                            _ => view! {},
+                        };
+                        view! {
+                            div(class="level is-mobile") {
+                                div(class="level-left") {
+                                    span(class="has-text-weight-semibold") { (label) }
+                                    span(class="has-text-grey ml-2") { (ts) }
+                                    (official_view)
+                                    (comment_view)
+                                }
+                                div(class="level-right") {
+                                    button(
+                                        class="button is-small is-light is-danger",
+                                        on:click=move |_| crate::update(model, crate::Msg::VoidObservation(uid.clone())),
+                                    ) { span(class="icon is-small") { i(class="fa fa-xmark") } }
+                                }
+                            }
+                        }
+                    })
+                    .collect();
+                views.into()
+            })
+        }
+    }
+}
+
+fn fmt_log_ts(ms: i64) -> String {
+    let d = js_sys::Date::new(&js_sys::Number::from(ms as f64).into());
+    d.to_string().into()
 }
 
 /// Offline handoff box: export the current event's log as a QR parcel, scan or

@@ -23,6 +23,7 @@ pub enum Screen {
     Event,
     Entries,
     Chat,
+    Stopwatch,
 }
 
 impl Screen {
@@ -40,6 +41,7 @@ impl Screen {
             Screen::Event => "event",
             Screen::Entries => "entries",
             Screen::Chat => "chat",
+            Screen::Stopwatch => "stopwatch",
         }
     }
 
@@ -56,6 +58,7 @@ impl Screen {
             "event" => Screen::Event,
             "entries" => Screen::Entries,
             "chat" => Screen::Chat,
+            "stopwatch" => Screen::Stopwatch,
             _ => return None,
         })
     }
@@ -68,6 +71,7 @@ impl Screen {
                 | Screen::Stage
                 | Screen::Start
                 | Screen::Finish
+                | Screen::Stopwatch
                 | Screen::Event
                 | Screen::Entries
                 | Screen::Chat
@@ -143,6 +147,7 @@ pub struct Screens {
     pub stage: page::stage::StageModel,
     pub start: page::start::Model,
     pub finish: page::finish::Model,
+    pub stopwatch: page::stopwatch::Model,
     pub chat: page::chat::Model,
     pub results: page::results::Model,
     pub entries: page::entries::Model,
@@ -163,6 +168,7 @@ pub enum Msg {
     StageMsg(page::stage::StageMsg),
     StartMsg(page::start::Msg),
     FinishMsg(page::finish::Msg),
+    StopwatchMsg(page::stopwatch::Msg),
     EventMsg(page::event::Msg),
     EventsMsg(page::events::Msg),
     ResultMsg(page::results::Msg),
@@ -173,6 +179,8 @@ pub enum Msg {
     ImportParcel,
     /// Open the event a mismatched parcel belongs to and import it there.
     OpenParcelEvent,
+    /// Void a timing observation by uid (used by the shared timing log).
+    VoidObservation(String),
     /// Start the camera QR scanner.
     ScanStart,
     /// Stop the camera QR scanner.
@@ -255,6 +263,7 @@ impl Model {
                 stage: page::stage::init(),
                 start: page::start::init(),
                 finish: page::finish::init(),
+                stopwatch: page::stopwatch::init(),
                 chat: page::chat::init(),
                 results,
                 entries: page::entries::init(),
@@ -392,6 +401,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::StageMsg(msg) => page::stage::update(model, msg),
         Msg::StartMsg(msg) => page::start::update(model, msg),
         Msg::FinishMsg(msg) => page::finish::update(model, msg),
+        Msg::StopwatchMsg(msg) => page::stopwatch::update(model, msg),
         Msg::EventMsg(msg) => page::event::update(model, msg),
         Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => page::results::update(model, msg),
@@ -400,6 +410,28 @@ pub fn update(model: Model, msg: Msg) {
         Msg::ExportParcel => crate::sync::export_parcel(model),
         Msg::ImportParcel => crate::sync::import_parcel(model),
         Msg::OpenParcelEvent => crate::sync::open_parcel_event(model),
+        Msg::VoidObservation(uid) => {
+            // Determine the test from the run record, then delegate to enqueue_void.
+            let test = model.app.runs.with(|runs| {
+                runs.iter()
+                    .find(|r| r.uid == uid)
+                    .map(|r| r.test)
+                    .unwrap_or(1)
+            });
+            let car = model.app.runs.with(|runs| {
+                runs.iter()
+                    .find(|r| r.uid == uid)
+                    .map(|r| r.car.clone())
+                    .unwrap_or_default()
+            });
+            let run = model.app.runs.with(|runs| {
+                runs.iter()
+                    .find(|r| r.uid == uid)
+                    .map(|r| r.run)
+                    .unwrap_or(1)
+            });
+            crate::page::enqueue_void(model, &uid, test, &car, run);
+        }
         Msg::ScanStart => {
             #[cfg(target_arch = "wasm32")]
             crate::qr_scan::start_scan(model);
@@ -611,6 +643,7 @@ fn view_content(model: Model) -> View {
         Screen::Start,
         Screen::Finish,
         Screen::Stage,
+        Screen::Stopwatch,
         Screen::Results,
         Screen::Chat,
         Screen::Entries,
@@ -630,6 +663,7 @@ fn view_content(model: Model) -> View {
                 Screen::Stage => page::stage::view(model),
                 Screen::Start => page::start::view(model),
                 Screen::Finish => page::finish::view(model),
+                Screen::Stopwatch => page::stopwatch::view(model),
                 Screen::Results => page::results::view(model),
                 Screen::Event => page::event::view(model),
                 Screen::Entries => page::entries::view(model),
@@ -647,6 +681,7 @@ fn view_navbar(model: Model) -> View {
         Screen::Start,
         Screen::Finish,
         Screen::Stage,
+        Screen::Stopwatch,
         Screen::Results,
         Screen::Chat,
         Screen::Entries,
@@ -659,6 +694,7 @@ fn view_navbar(model: Model) -> View {
         (Screen::Start, "fa fa-flag"),
         (Screen::Finish, "fa fa-flag-checkered"),
         (Screen::Stage, "fa fa-stopwatch-20"),
+        (Screen::Stopwatch, "fa fa-stopwatch"),
         (Screen::Results, "fa fa-trophy"),
         (Screen::Entries, "fa fa-users"),
         (Screen::Chat, "fa fa-comments"),
@@ -709,6 +745,7 @@ mod tests {
             Screen::Event,
             Screen::Entries,
             Screen::Chat,
+            Screen::Stopwatch,
         ];
         for screen in all {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));

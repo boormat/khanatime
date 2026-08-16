@@ -698,6 +698,21 @@ fn view_header(model: crate::Model) -> View {
                     if model.app.event.with(|e| e.is_null()) {
                         view! {}
                     } else {
+                        view! {
+                            button(
+                                class="button is-small is-light",
+                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Stage)),
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-keyboard") }
+                                span { "Manual entry" }
+                            }
+                        }
+                    }
+                })
+                (move || {
+                    if model.app.event.with(|e| e.is_null()) {
+                        view! {}
+                    } else {
                         view_status_tag(model)
                     }
                 })

@@ -3,8 +3,8 @@ use sycamore::prelude::*;
 use crate::event::{next_run, RunRecord, RUN_START};
 use crate::page::pad;
 
-// Big-button start timing: pick a test, pick a car, press START.  Records a
-// `start` run (for pending-starts / run numbering) to the pending outbox.
+// Big-button start timing: pick a car, press START.  Records a `start` run
+// (for pending-starts / run numbering) to the pending outbox.
 
 #[derive(Clone)]
 pub enum Msg {
@@ -17,6 +17,7 @@ pub enum Msg {
 pub struct Model {
     pub test: Signal<u8>,
     pub car: Signal<String>,
+    pub comment: Signal<String>,
     pub feedback: Signal<Option<String>>,
 }
 
@@ -24,6 +25,7 @@ pub fn init() -> Model {
     Model {
         test: create_signal(1),
         car: create_signal(String::new()),
+        comment: create_signal(String::new()),
         feedback: create_signal(None),
     }
 }
@@ -37,17 +39,25 @@ pub fn update(model: crate::Model, msg: Msg) {
 }
 
 fn start_car(model: crate::Model) {
-    let car = model.screens.start.car.get_clone().trim().to_string();
+    let sm = model.screens.start;
+    let car = sm.car.get_clone().trim().to_string();
     if car.is_empty() {
-        model
-            .screens
-            .start
-            .feedback
-            .set(Some("Pick a car number".to_string()));
+        sm.feedback.set(Some("Pick a car number".to_string()));
         return;
     }
-    let test = model.screens.start.test.get();
+    if car == "?" && sm.comment.get_clone().trim().is_empty() {
+        sm.feedback
+            .set(Some("Comment is required for unknown cars".to_string()));
+        return;
+    }
+    let test = sm.test.get();
     let run = model.app.runs.with(|runs| next_run(runs, test, &car));
+    let comment = sm.comment.get_clone();
+    let comment_opt = if comment.trim().is_empty() {
+        None
+    } else {
+        Some(comment)
+    };
     let record_run = RunRecord {
         uid: String::new(), // stamped at enqueue
         r#type: RUN_START.to_string(),
@@ -60,24 +70,23 @@ fn start_car(model: crate::Model) {
         flags: None,
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
+        comment: comment_opt,
     };
     crate::page::enqueue_run(model, &record_run);
-    model.screens.start.feedback.set(None);
-    model.screens.start.car.set(String::new());
+    sm.feedback.set(None);
+    sm.car.set(String::new());
+    sm.comment.set(String::new());
 }
 
 /// Mark a car as a no-show for the test (a `dns` start + NOSHO score).
 fn mark_dns(model: crate::Model) {
-    let car = model.screens.start.car.get_clone().trim().to_string();
+    let sm = model.screens.start;
+    let car = sm.car.get_clone().trim().to_string();
     if car.is_empty() {
-        model
-            .screens
-            .start
-            .feedback
-            .set(Some("Pick a car number".to_string()));
+        sm.feedback.set(Some("Pick a car number".to_string()));
         return;
     }
-    let test = model.screens.start.test.get();
+    let test = sm.test.get();
     let run = model.app.runs.with(|runs| next_run(runs, test, &car));
     let record_run = RunRecord {
         uid: String::new(), // stamped at enqueue
@@ -91,6 +100,7 @@ fn mark_dns(model: crate::Model) {
         flags: None,
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
+        comment: None,
     };
     crate::page::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".
@@ -98,8 +108,9 @@ fn mark_dns(model: crate::Model) {
         crate::event::upsert_ktime(s, test, &car, crate::event::KTime::NOSHO);
     });
     crate::update(model, crate::Msg::Reload);
-    model.screens.start.feedback.set(None);
-    model.screens.start.car.set(String::new());
+    sm.feedback.set(None);
+    sm.car.set(String::new());
+    sm.comment.set(String::new());
 }
 
 pub fn view(model: crate::Model) -> View {
@@ -110,19 +121,18 @@ pub fn view(model: crate::Model) -> View {
             h1(class="title is-4") { "Start timing" }
             (pad::test_chips(count as u8, sm.test))
             div(class="box") {
-                h2(class="title is-5") { "Car" }
-                (pad::keypad(sm.car, 4))
-                div(class="mt-3") {
+                div(class="kt-car-chips") {
                     (move || {
                         let entries = model.app.event.with(|e| e.entries.clone());
                         pad::car_chips(entries, sm.car)
                     })
                 }
+                (view_comment_input(model))
                 (move || match sm.feedback.get_clone() {
                     Some(f) => view! { p(class="help is-danger") { (f) } },
                     None => view! {},
                 })
-                div(class="field is-grouped") {
+                div(class="field is-grouped mt-3") {
                     div(class="control is-expanded") {
                         button(
                             class="button is-success is-large is-fullwidth",
@@ -142,52 +152,25 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
-            (view_last_starts(model))
+            (crate::page::view_timing_log(model, sm.test.get()))
         }
     }
 }
 
-fn view_last_starts(model: crate::Model) -> View {
+fn view_comment_input(model: crate::Model) -> View {
+    let sm = model.screens.start;
     view! {
-        div(class="box") {
-            h2(class="title is-5") { "Recent starts" }
-            (move || {
-                let mut starts: Vec<RunRecord> = model.app.runs.with(|runs| {
-                    runs.iter()
-                        .filter(|r| r.r#type == RUN_START && r.status.as_deref() != Some("dns"))
-                        .cloned()
-                        .collect()
-                });
-                starts.sort_by_key(|r| std::cmp::Reverse(r.ts));
-                starts.truncate(5);
-                if starts.is_empty() {
-                    return view! { p(class="help") { "No starts yet." } };
+        (move || {
+            if sm.car.get_clone().trim() == "?" {
+                view! {
+                    div(class="field mt-3") {
+                        label(class="label is-size-7") { "Comment (required)" }
+                        input(class="input", r#type="text", placeholder="e.g. blue sedan, maybe #12", bind:value=sm.comment)
+                    }
                 }
-                let views: Vec<View> = starts
-                    .iter()
-                    .map(|r| {
-                        let label = format!("T{} #{} run {}", r.test, r.car, r.run);
-                        let ts = fmt_ts(r.ts);
-                        view! {
-                            div(class="level") {
-                                div(class="level-left") {
-                                    span(class="has-text-weight-semibold") { (label) }
-                                }
-                                div(class="level-right") {
-                                    span(class="has-text-grey") { (ts) }
-                                }
-                            }
-                        }
-                    })
-                    .collect();
-                let views: View = views.into();
-                views
-            })
-        }
+            } else {
+                view! {}
+            }
+        })
     }
-}
-
-fn fmt_ts(ms: i64) -> String {
-    let d = js_sys::Date::new(&js_sys::Number::from(ms as f64).into());
-    d.to_string().into()
 }

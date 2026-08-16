@@ -139,6 +139,7 @@ fn patch_target(
     r.status = te.status.clone();
     r.flags = te.flags;
     r.official_id = te.official_id.clone();
+    r.comment = te.comment.clone();
     if r.r#type == crate::event::RUN_FINISH {
         let kt = crate::event::finish_to_ktime(r);
         crate::event::upsert_ktime(scores, te.test, &te.car, kt);
@@ -200,6 +201,7 @@ mod tests {
             status: Some("clean".into()),
             flags: Some(0),
             official_id: None,
+            comment: None,
         }
     }
 
@@ -423,6 +425,7 @@ mod tests {
             status: Some("clean".into()),
             flags: Some(0),
             official_id: None,
+            comment: None,
         }
     }
 

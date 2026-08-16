@@ -117,6 +117,13 @@
   margin-top: 0.25rem;
 }
 
+// Car chips: cap height so they don't push action buttons off screen on narrow
+// devices; scroll when the list overflows.
+.kt-car-chips {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
 // Full-screen overlays for the QR exporter and the camera scanner.
 .kt-modal {
   position: fixed;

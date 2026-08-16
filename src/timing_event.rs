@@ -30,6 +30,8 @@ pub struct TimingEvent {
     pub flags: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub official_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 impl TimingEvent {
@@ -63,6 +65,7 @@ impl TimingEvent {
             status: None,
             flags: None,
             official_id: None,
+            comment: None,
         }
     }
 
@@ -170,6 +173,7 @@ mod tests {
             status: None,
             flags: None,
             official_id: None,
+            comment: None,
         }
     }
 

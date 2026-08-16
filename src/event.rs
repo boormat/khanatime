@@ -40,6 +40,8 @@ pub struct RunRecord {
     pub flags: Option<u8>,
     #[serde(default)]
     pub official_id: Option<String>,
+    #[serde(default)]
+    pub comment: Option<String>,
     /// Derived (replay) state: the observation was `void`ed.  Never on the wire.
     #[serde(skip)]
     pub voided: bool,
@@ -1796,6 +1798,11 @@ pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
     out
 }
 
+/// Whether `car` has an unfinished (pending) start for `test`.
+pub fn pending_for_car(runs: &[RunRecord], test: u8, car: &str) -> bool {
+    pending_starts(runs, test).iter().any(|r| r.car == car)
+}
+
 /// Elapsed time between a start and its finish, in deciseconds.
 pub fn elapsed_ds(start_ts: i64, finish_ts: i64) -> u16 {
     let diff = finish_ts - start_ts;
@@ -1836,6 +1843,7 @@ pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
         status: te.status.clone(),
         flags: te.flags,
         official_id: te.official_id.clone(),
+        comment: te.comment.clone(),
         voided: false,
     }
 }
@@ -2110,6 +2118,18 @@ mod tests {
     }
 
     #[test]
+    fn pending_for_car_true_when_unfinished() {
+        let runs = vec![
+            run("start", 1, "7", 1, 100),
+            run("start", 1, "8", 1, 200),
+            run("finish", 1, "8", 1, 300),
+        ];
+        assert!(pending_for_car(&runs, 1, "7"));
+        assert!(!pending_for_car(&runs, 1, "8"));
+        assert!(!pending_for_car(&runs, 2, "7"));
+    }
+
+    #[test]
     fn elapsed_ds_rounds() {
         assert_eq!(elapsed_ds(0, 0), 0);
         assert_eq!(elapsed_ds(1000, 1000 + 12350), 124); // 12.35s -> 124ds
@@ -2161,6 +2181,7 @@ mod tests {
             status: Some("clean".into()),
             flags: Some(1),
             official_id: Some("u".into()),
+            comment: None,
         };
         let r = record_from_timing(&te);
         assert_eq!(r.uid, "ABCDEFGHJK");

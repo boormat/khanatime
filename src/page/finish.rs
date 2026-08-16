@@ -5,7 +5,7 @@ use crate::event::{
 };
 use crate::page::{pad, penalty};
 
-// Big-button finish timing: pending starts (tap to select), a car/time keypad,
+// Big-button finish timing: pending starts (tap to select), car chips,
 // penalty chips, and a big FINISH button.  Pairs with the pending start when
 // one exists; otherwise the elapsed time is typed in.
 
@@ -27,6 +27,7 @@ pub enum Msg {
 pub struct Model {
     pub test: Signal<u8>,
     pub car: Signal<String>,
+    pub comment: Signal<String>,
     pub time: Signal<String>,
     pub mode: Signal<Mode>,
     pub penalty: penalty::PenaltyModel,
@@ -37,6 +38,7 @@ pub fn init() -> Model {
     Model {
         test: create_signal(1),
         car: create_signal(String::new()),
+        comment: create_signal(String::new()),
         time: create_signal(String::new()),
         mode: create_signal(Mode::Car),
         penalty: penalty::init(),
@@ -67,18 +69,18 @@ fn select_pending(model: crate::Model, r: RunRecord) {
     sm.test.set(r.test);
     sm.car.set(r.car.clone());
     sm.mode.set(Mode::Car);
-    // Fill the keypad with the elapsed hundredths so it can be tweaked.
+    // Fill the time with the elapsed so it can be tweaked.
     sm.time
-        .set((elapsed_ds(r.ts, js_sys::Date::now() as i64) * 10).to_string());
+        .set((elapsed_ds(r.ts, js_sys::Date::now() as i64) as f32 / 10.0).to_string());
     sm.feedback.set(None);
 }
 
-/// Keypad digits are hundredths of a second: "4525" -> 45.25s.
+/// Parse a decimal-seconds string to deciseconds: "45.25" -> 452.
 fn time_to_ds(s: &str) -> u16 {
     s.trim()
-        .parse::<u32>()
+        .parse::<f32>()
         .ok()
-        .map(|v| ((v + 5) / 10) as u16)
+        .map(|v| (v * 10.0).round() as u16)
         .unwrap_or(0)
 }
 
@@ -88,6 +90,11 @@ fn do_finish(model: crate::Model) {
     let car = sm.car.get_clone().trim().to_string();
     if car.is_empty() {
         sm.feedback.set(Some("Pick a car number".to_string()));
+        return;
+    }
+    if car == "?" && sm.comment.get_clone().trim().is_empty() {
+        sm.feedback
+            .set(Some("Comment is required for unknown cars".to_string()));
         return;
     }
     let now = js_sys::Date::now() as i64;
@@ -101,6 +108,12 @@ fn do_finish(model: crate::Model) {
         Some(s) => s.run,
         None => model.app.runs.with(|runs| next_run(runs, test, &car)),
     };
+    let comment = sm.comment.get_clone();
+    let comment_opt = if comment.trim().is_empty() {
+        None
+    } else {
+        Some(comment)
+    };
     let finish = RunRecord {
         uid: String::new(), // stamped at enqueue
         r#type: RUN_FINISH.to_string(),
@@ -113,6 +126,7 @@ fn do_finish(model: crate::Model) {
         flags: Some(sm.penalty.flags.get()),
         official_id: Some(model.app.identity.get_clone()),
         voided: false,
+        comment: comment_opt,
     };
 
     model.app.scores.update(|s| {
@@ -123,6 +137,7 @@ fn do_finish(model: crate::Model) {
     crate::update(model, crate::Msg::Reload);
     sm.car.set(String::new());
     sm.time.set(String::new());
+    sm.comment.set(String::new());
     sm.feedback.set(None);
     penalty::clear(sm.penalty);
 }
@@ -160,14 +175,12 @@ pub fn view(model: crate::Model) -> View {
                     let is_time = sm.mode.get() == Mode::Time;
                     if is_time {
                         view! {
-                            h3(class="title is-6") { "Elapsed time (seconds, e.g. 4525 = 45.25s)" }
-                            (pad::keypad(sm.time, 4))
+                            h3(class="title is-6") { "Elapsed time (seconds)" }
+                            input(class="input", r#type="text", placeholder="e.g. 45.25", bind:value=sm.time)
                         }
                     } else {
                         view! {
-                            h3(class="title is-6") { "Car" }
-                            (pad::keypad(sm.car, 4))
-                            div(class="mt-3") {
+                            div(class="kt-car-chips mt-2") {
                                 (move || {
                                     let entries = model.app.event.with(|e| e.entries.clone());
                                     pad::car_chips(entries, sm.car)
@@ -176,6 +189,7 @@ pub fn view(model: crate::Model) -> View {
                         }
                     }
                 })
+                (view_comment_input(model))
                 (view_selected(model))
                 (move || match sm.feedback.get_clone() {
                     Some(f) => view! { p(class="help is-danger") { (f) } },
@@ -185,7 +199,7 @@ pub fn view(model: crate::Model) -> View {
                     let time_ds = resolved_time_ds(model);
                     penalty::view(model, sm.penalty, time_ds)
                 })
-                div(class="field") {
+                div(class="field mt-3") {
                     div(class="control") {
                         button(
                             class="button is-danger is-large is-fullwidth",
@@ -197,6 +211,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
+            (crate::page::view_timing_log(model, sm.test.get()))
         }
     }
 }
@@ -209,6 +224,24 @@ fn resolved_time_ds(model: crate::Model) -> u16 {
     match find_pending(model, test, &car) {
         Some(start) => elapsed_ds(start.ts, js_sys::Date::now() as i64),
         None => time_to_ds(&sm.time.get_clone()),
+    }
+}
+
+fn view_comment_input(model: crate::Model) -> View {
+    let sm = model.screens.finish;
+    view! {
+        (move || {
+            if sm.car.get_clone().trim() == "?" {
+                view! {
+                    div(class="field mt-3") {
+                        label(class="label is-size-7") { "Comment (required)" }
+                        input(class="input", r#type="text", placeholder="e.g. blue sedan, maybe #12", bind:value=sm.comment)
+                    }
+                }
+            } else {
+                view! {}
+            }
+        })
     }
 }
 

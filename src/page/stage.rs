@@ -57,7 +57,7 @@ pub fn init() -> StageModel {
 /// Send the entered time to the current event's pending outbox (the durable
 /// record until it's flushed to the timing room).
 fn broadcast_time(model: Model, car: &str, stage: u8, time: &KTime) {
-    crate::page::enqueue_ktime(model, stage, car, time);
+    crate::page::enqueue_ktime(model, stage, car, time, None);
 }
 
 pub fn update(model: Model, msg: StageMsg) {
@@ -101,10 +101,11 @@ fn clear_cmd(model: Model) {
 pub fn view(model: Model) -> View {
     view! {
         div {
-            h1 {
+            h1(class="title is-4") { "Manual entry" }
+            h2 {
                 (move || {
                     format!(
-                        "Event: {} Stage:{}",
+                        "Event: {}  Stage:{}",
                         model.app.event.with(|e| e.name.clone()),
                         model.screens.stage.stage.get()
                     )
@@ -113,6 +114,10 @@ pub fn view(model: Model) -> View {
             (move || view_list(model))
             (move || view_preview(model))
             (input_box_wrap(model))
+            (move || {
+                let test = model.screens.stage.stage.get();
+                crate::page::view_timing_log(model, test)
+            })
         }
     }
 }
