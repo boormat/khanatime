@@ -4,6 +4,15 @@
 @import "fontawesome/scss/fontawesome.scss";
 @import "fontawesome/scss/solid.scss";
 
+// Home Accounts box: separate stored sessions with a thin divider.
+.kt-session-row {
+  padding: 0.5rem 0;
+
+  & + & {
+    border-top: 1px solid $grey-lighter;
+  }
+}
+
 // Chat transaction-log viewer: a single scrollable monospace text box.
 .kt-log {
   font-family: monospace;

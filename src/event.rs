@@ -1410,6 +1410,17 @@ impl Invite {
     pub fn url(&self, app_base: &str) -> String {
         format!("{app_base}?{}", self.to_query())
     }
+
+    /// Parse a pasted join link — an absolute URL (`https://host/app?…`) or a
+    /// bare query string (`homeserver=…&event=…`) — into an [Invite].  Fields
+    /// may be empty; the caller validates completeness.
+    pub fn from_url(s: &str) -> Option<Invite> {
+        let query = match s.rfind('?') {
+            Some(i) => &s[i + 1..],
+            None => s,
+        };
+        Invite::from_query(query)
+    }
 }
 
 fn reg_str(mode: RegistrationMode) -> &'static str {
@@ -1840,6 +1851,22 @@ mod tests {
         // Unknown reg -> sso.
         let q = "homeserver=http://h&event=e&sid=!a&tid=!b&reg=warp";
         assert_eq!(Invite::from_query(q).unwrap().reg, RegistrationMode::Sso);
+    }
+
+    #[test]
+    fn invite_from_url_accepts_absolute_and_bare_query() {
+        let inv = Invite {
+            homeserver: "https://matrix.org".into(),
+            event: "ev1".into(),
+            sid: "!space:matrix.org".into(),
+            tid: "!timing:matrix.org".into(),
+            reg: RegistrationMode::Sso,
+        };
+        let absolute = format!("https://host/app?{}", inv.to_query());
+        assert_eq!(Invite::from_url(&absolute).unwrap(), inv);
+        assert_eq!(Invite::from_url(&inv.to_query()).unwrap(), inv);
+        // Missing event id fails to parse.
+        assert!(Invite::from_url("homeserver=https://matrix.org&sid=!a&tid=!b").is_none());
     }
 
     #[test]

@@ -185,6 +185,8 @@ pub enum Msg {
     SetParcelMode(ParcelMode),
     /// Join an event from a scanned invite link (connect + adopt).
     Join(crate::event::Invite),
+    /// Join an event from a pasted invite URL (parsed on the Home page).
+    JoinUrl,
 }
 
 impl Model {
@@ -326,6 +328,28 @@ pub fn update(model: Model, msg: Msg) {
             crate::sync::join_via_link(model, link);
             #[cfg(not(target_arch = "wasm32"))]
             let _ = link;
+        }
+        Msg::JoinUrl => {
+            let text = model.screens.home.join_url.get_clone();
+            let complete = crate::event::Invite::from_url(&text).filter(|inv| {
+                !inv.homeserver.is_empty()
+                    && !inv.event.is_empty()
+                    && !inv.sid.is_empty()
+                    && !inv.tid.is_empty()
+            });
+            match complete {
+                Some(inv) => {
+                    model.screens.home.join_msg.set(String::new());
+                    crate::update(model, Msg::Join(inv));
+                }
+                None => {
+                    model
+                        .screens
+                        .home
+                        .join_msg
+                        .set("That doesn't look like a valid join link.".to_string());
+                }
+            }
         }
     }
 }

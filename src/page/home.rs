@@ -17,6 +17,12 @@ pub struct Model {
     pub busy: Signal<bool>,
     /// The "add a custom homeserver" URL popup is open.
     pub show_add_hs: Signal<bool>,
+    /// Pasted join-link URL on the pick-event box.
+    pub join_url: Signal<String>,
+    /// Feedback line for a pasted join link.
+    pub join_msg: Signal<String>,
+    /// Homeserver awaiting a Forget confirmation ("are you sure" modal).
+    pub forget_target: Signal<Option<String>>,
 }
 
 pub fn init() -> Model {
@@ -24,6 +30,9 @@ pub fn init() -> Model {
         homeserver: create_signal("http://localhost:8008".to_string()),
         busy: create_signal(false),
         show_add_hs: create_signal(false),
+        join_url: create_signal(String::new()),
+        join_msg: create_signal(String::new()),
+        forget_target: create_signal(None),
     }
 }
 
@@ -57,8 +66,8 @@ fn view_dashboard(model: crate::Model) -> View {
                 h1(class="title") { "Khana Time Tracker" }
             }
         }
-        (move || view_event_card(model))
         (move || view_sessions(model))
+        (move || view_event_card(model))
         (move || view_actions(model))
         (move || view_comms(model))
         (move || view_status_summary(model))
@@ -112,14 +121,15 @@ fn view_event_card(model: crate::Model) -> View {
     }
 }
 
-/// Accounts block: every stored session (homeserver + user), the active one
-/// marked and offering Logout, and logged-out ones offering one-tap Re-login
-/// or Forget.  The login entry point lives here too — one-click Matrix.org SSO
-/// or a custom-homeserver form that stays hidden until needed.
+/// Accounts block: every stored session (homeserver + user), each with
+/// Logout/Login/Forget enabled for its state, plus the relevant login entry
+/// (pending join, or Matrix.org SSO) and add-custom-homeserver.  Rendered
+/// identically whether logged in or not.
 #[cfg(target_arch = "wasm32")]
 fn view_sessions(model: crate::Model) -> View {
     view! {
         (move || {
+            let sm = model.screens.home;
             let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
             let sessions = crate::services::matrix::load_sessions();
             let rows: Vec<View> = sessions
@@ -130,61 +140,56 @@ fn view_sessions(model: crate::Model) -> View {
                             == Some(s.homeserver.as_str());
                     let hs = s.homeserver.clone();
                     let user = s.user_id.clone();
-                    let badge = match &s.kind {
-                        crate::services::matrix::StoredAuth::OAuth { .. } => "SSO",
-                        crate::services::matrix::StoredAuth::Matrix { .. } => "Password",
-                    };
-                    let controls = if is_active {
-                        view! {
-                            span(class="tag is-success is-light") { "active" }
+                    // Logout for the active session only; Login only while
+                    // nothing else is signed in; Forget only when signed out.
+                    let login_hs = hs.clone();
+                    let forget_hs = hs.clone();
+                    let controls = view! {
+                        div(class="buttons has-addons is-small") {
                             button(
                                 class="button is-small is-light",
+                                disabled=!is_active,
                                 on:click=move |_| {
                                     crate::update(
                                         model,
                                         crate::Msg::Conn(crate::sync::Msg::Logout),
                                     )
                                 },
-                            ) {
-                                "Logout"
-                            }
-                        }
-                    } else {
-                        let relogin_hs = hs.clone();
-                        let forget_hs = hs.clone();
-                        view! {
+                            ) { "Logout" }
                             button(
                                 class="button is-small is-link",
+                                disabled=logged_in,
                                 on:click=move |_| {
                                     crate::update(
                                         model,
-                                        crate::Msg::Conn(crate::sync::Msg::Relogin(relogin_hs.clone())),
+                                        crate::Msg::Conn(crate::sync::Msg::Relogin(login_hs.clone())),
                                     )
                                 },
-                            ) {
-                                "Re-login"
-                            }
+                            ) { "Login" }
                             button(
                                 class="button is-small is-danger is-outlined",
+                                disabled=is_active,
                                 on:click=move |_| {
-                                    crate::update(
-                                        model,
-                                        crate::Msg::Conn(crate::sync::Msg::Forget(forget_hs.clone())),
-                                    )
+                                    sm.forget_target.set(Some(forget_hs.clone()));
                                 },
-                            ) {
-                                "Forget"
-                            }
+                            ) { "Forget" }
                         }
                     };
                     view! {
-                        div(class="level") {
+                        div(class="kt-session-row level is-mobile") {
                             div(class="level-left") {
                                 div(class="level-item") {
-                                    span(class="icon has-text-success") { i(class="fa fa-user-circle") }
-                                    span(class="has-text-weight-medium") { (user) }
-                                    span(class="tag is-light") { (badge) }
-                                    span(class="has-text-grey is-size-7") { (hs) }
+                                    div {
+                                        div(class="is-flex is-align-items-center") {
+                                            span(class="has-text-weight-medium") { (user) }
+                                            (if is_active {
+                                                view! { span(class="tag is-success is-light is-small ml-2") { "active" } }
+                                            } else {
+                                                view! {}
+                                            })
+                                        }
+                                        div(class="has-text-grey is-size-7") { (hs) }
+                                    }
                                 }
                             }
                             div(class="level-right") {
@@ -194,19 +199,22 @@ fn view_sessions(model: crate::Model) -> View {
                     }
                 })
                 .collect();
-            let login = if logged_in {
-                view! {}
+            let empty = if sessions.is_empty() {
+                view! { p(class="help") { "No saved accounts yet." } }
             } else {
-                view_login(model)
+                view! {}
             };
+            let conn = model.app.conn.get_clone();
             view! {
                 div(class="box") {
-                    h2(class="title is-5") {
-                        "Accounts"
-                        span(class="tag is-light is-pulled-right") { "Matrix" }
-                    }
+                    h2(class="title is-5") { "Accounts" }
+                    (empty)
                     (rows)
-                    (login)
+                    div(class="kt-session-row") {
+                        div { (status_html(conn.clone())) }
+                    }
+                    (view_account_footer(model))
+                    (view_forget_modal(model))
                 }
             }
         })
@@ -524,14 +532,14 @@ fn view_status_summary(model: crate::Model) -> View {
     }
 }
 
-/// Login entry point inside the Accounts box: one-click Matrix.org SSO (only
-/// when matrix.org isn't already a stored session) plus an always-visible
+/// Footer of the Accounts box, shown identically whether logged in or not:
+/// the relevant login entry (a pending join takes priority, else Matrix.org
+/// SSO while that homeserver isn't stored) plus an always-visible
 /// "Add custom homeserver" button that opens a URL-only popup.
 #[cfg(target_arch = "wasm32")]
-fn view_login(model: crate::Model) -> View {
+fn view_account_footer(model: crate::Model) -> View {
     let sm = model.screens.home;
     let pending = model.app.pending_join.get_clone();
-    let pending_hs = pending.as_ref().map(|i| i.homeserver.clone());
     let pending_view = if let Some(inv) = &pending {
         let name = inv.event.clone();
         view! {
@@ -548,8 +556,8 @@ fn view_login(model: crate::Model) -> View {
     let has_matrix_org = crate::services::matrix::load_sessions()
         .iter()
         .any(|s| s.homeserver == "https://matrix.org");
-    let primary = if let Some(hs) = &pending_hs {
-        let join_hs = hs.clone();
+    let primary = if let Some(inv) = &pending {
+        let join_hs = inv.homeserver.clone();
         view! {
             div(class="control") {
                 button(
@@ -576,8 +584,8 @@ fn view_login(model: crate::Model) -> View {
                         crate::update(model, crate::Msg::Conn(crate::sync::Msg::SsoLogin));
                     },
                 ) {
-                    span(class="icon is-small") { i(class="fa fa-id-badge") }
-                    span { "Login with Matrix.org" }
+                    span(class="icon is-small") { i(class="fa fa-user-plus") }
+                    span { "Login to Matrix.org" }
                 }
             }
         }
@@ -602,21 +610,57 @@ fn view_login(model: crate::Model) -> View {
                 }
             }
         }
-        (move || {
-            let state = model.app.conn.get_clone();
-            view! {
-                div {
-                    (if sm.show_add_hs.get() {
-                        view_add_hs_modal(model)
-                    } else {
-                        view! {}
-                    })
-                    div { (status_html(state.clone())) }
-                }
-            }
+        (if sm.show_add_hs.get() {
+            view_add_hs_modal(model)
+        } else {
+            view! {}
         })
         p(class="help") {
             "matrix.org accounts are passwordless (SSO). The localhost dev server registers a new account for you."
+        }
+    }
+}
+
+/// "Are you sure?" modal before forgetting a stored session.
+#[cfg(target_arch = "wasm32")]
+fn view_forget_modal(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    let Some(hs) = sm.forget_target.get_clone() else {
+        return view! {};
+    };
+    let hs_display = hs.clone();
+    let hs_confirm = hs.clone();
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background")
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { "Forget this account?" }
+                    button(class="delete", on:click=move |_| sm.forget_target.set(None))
+                }
+                section(class="modal-card-body") {
+                    p { "Remove the stored session for:" }
+                    p(class="has-text-weight-medium") { (hs_display) }
+                    p(class="help") {
+                        "Forgetting the active account also signs it out server-side."
+                    }
+                }
+                footer(class="modal-card-foot") {
+                    button(
+                        class="button is-danger",
+                        on:click=move |_| {
+                            sm.forget_target.set(None);
+                            crate::update(
+                                model,
+                                crate::Msg::Conn(crate::sync::Msg::Forget(hs_confirm.clone())),
+                            );
+                        },
+                    ) { "Forget" }
+                    button(class="button", on:click=move |_| sm.forget_target.set(None)) {
+                        "Cancel"
+                    }
+                }
+            }
         }
     }
 }
@@ -702,6 +746,64 @@ fn view_pick_events(model: crate::Model) -> View {
                     }
                 }
             }
+            (view_join_by_url(model))
+        }
+    }
+}
+
+/// Paste a join link to go straight to an event.  QR scanning is a placeholder
+/// until camera invite-scanning lands.
+fn view_join_by_url(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    view! {
+        div(class="mt-3") {
+            p(class="help") {
+                "Or join from an invite link — paste it below."
+            }
+            div(class="field has-addons") {
+                div(class="control is-expanded") {
+                    input(
+                        class="input",
+                        placeholder="Paste an invite link…",
+                        bind:value=sm.join_url,
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            if ev.key_code() == 13 {
+                                crate::update(model, crate::Msg::JoinUrl);
+                            }
+                        },
+                    )
+                }
+                div(class="control") {
+                    button(
+                        class="button is-link",
+                        disabled=sm.busy.get(),
+                        on:click=move |_| crate::update(model, crate::Msg::JoinUrl),
+                    ) {
+                        "Join"
+                    }
+                }
+                div(class="control") {
+                    button(
+                        class="button is-light",
+                        disabled=sm.busy.get(),
+                        on:click=move |_| {
+                            sm.join_msg
+                                .set("QR scanning is coming soon — paste the link instead.".into());
+                        },
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-qrcode") }
+                        span { "Scan QR" }
+                    }
+                }
+            }
+            (move || {
+                let msg = sm.join_msg.get_clone();
+                if msg.is_empty() {
+                    view! {}
+                } else {
+                    view! { p(class="help is-danger") { (msg) } }
+                }
+            })
         }
     }
 }

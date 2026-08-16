@@ -411,6 +411,25 @@ Milestone order; check items off as done.
   (fmt + clippy + tests + wasm build). Note: a second agent edits code/docs
   concurrently (see `docs/plan/layout-navigation.md` gotchas).
 
+### Home accounts + join-by-link (`src/page/home.rs`, `src/sync.rs`)
+- [x] Accounts box rework: sessions rendered identically logged in/out, each
+  with per-state controls (Logout only active, Login only while signed out,
+  Forget only signed out); Forget is a confirm modal (`forget_target`);
+  connection status folded into the box; `kt-session-row` divider style.
+- [x] Join from a pasted invite link: `Msg::JoinUrl` + `Invite::from_url`
+  (accepts an absolute URL or a bare `homeserver=…&…` query) + paste box on the
+  pick-event area (Enter or Join button; invalid → inline error). QR-scan button
+  is a placeholder until camera invite-scanning lands.
+- [x] SSO unified: shared `sso_begin` (matrix.org login, add-custom-homeserver,
+  and join-invite paths all identical); `join_via_link` drives SSO directly for
+  a public `reg=sso` homeserver with no stored account — tab opened
+  synchronously, popup blocked → invite parked + Home "sign in to join".
+- [x] `sso_complete` resumes a parked join on its homeserver instead of the
+  plain Home connect (tail of `connect()` untouched).
+- [ ] Uncommitted — working tree `src/app.rs`, `src/event.rs`,
+  `src/page/home.rs`, `src/sync.rs`, `styles/app.scss` pending; gate green
+  (fmt + clippy + tests + wasm build) before commit.
+
 ---
 
 ## Open questions

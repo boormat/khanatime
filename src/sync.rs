@@ -514,6 +514,32 @@ fn gen_join_username() -> String {
 #[cfg(target_arch = "wasm32")]
 pub fn join_via_link(model: Model, invite: crate::event::Invite) {
     model.app.conn.set(ConnState::Connecting);
+    // Public (SSO-reg) homeserver with no stored account: drive the OAuth
+    // sign-in directly instead of parking silently.  The invite is kept as the
+    // resume target so [sso_complete] can finish the join once signed in.  The
+    // tab is opened synchronously (popup blockers reject `window.open` after
+    // an await); if it's blocked we fall back to the Home "sign in to join"
+    // prompt, which retries from a real click.
+    let needs_sso = crate::services::matrix::load_session_for(&invite.homeserver).is_none()
+        && invite.reg == crate::event::RegistrationMode::Sso;
+    if needs_sso {
+        model.app.pending_join.set(Some(invite.clone()));
+        model.screens.home.homeserver.set(invite.homeserver.clone());
+        let sm = model.screens.home;
+        sm.busy.set(true);
+        let tab = match web_sys::window().map(|w| w.open()) {
+            Some(Ok(Some(tab))) => Some(tab),
+            _ => {
+                // Popup blocked: leave the invite parked; the Accounts box
+                // "Sign in to join" button starts SSO from a real gesture.
+                model.app.conn.set(ConnState::Idle);
+                sm.busy.set(false);
+                return;
+            }
+        };
+        sso_begin(model, &invite.homeserver, tab.as_ref());
+        return;
+    }
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&invite.homeserver).await?;
@@ -551,12 +577,11 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
                             return Err("Couldn't create an account on this homeserver".to_string());
                         }
                     }
+                    // Reaching here with Sso means a session appeared since the
+                    // sync check above (e.g. completed while this ran) — bail to
+                    // the join flow rather than registering.
                     crate::event::RegistrationMode::Sso => {
-                        // Public HS: never auto-register. Park the invite for
-                        // SSO sign-in on the Home page.
-                        model.app.pending_join.set(Some(invite.clone()));
-                        model.screens.home.homeserver.set(invite.homeserver.clone());
-                        return Err("sso-pending".to_string());
+                        return Err("SSO sign-in is still pending — retry the join".to_string());
                     }
                 },
             }
@@ -690,38 +715,14 @@ fn add_homeserver(model: Model, hs: String) {
         _ => None,
     };
     enum Added {
-        Sso(String),
+        Sso,
         Room(Option<String>),
     }
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&hs).await?;
             if crate::services::matrix::oidc_supported(&client).await {
-                let redirect_uri = crate::services::matrix::oauth_redirect_uri()?;
-                if redirect_uri.scheme() != "https"
-                    || matches!(
-                        redirect_uri.host_str(),
-                        Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
-                    )
-                {
-                    return Err(
-                        "SSO sign-in only works from a real https address — matrix.org rejects http/localhost redirects. Test SSO on the deployed app, or use an open-registration dev server."
-                            .to_string(),
-                    );
-                }
-                let data = crate::services::matrix::oauth_client_data(&client, &redirect_uri).await?;
-                let auth = client
-                    .oauth()
-                    .login(redirect_uri, None, data, None)
-                    .build()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                crate::services::matrix::set_client(Some(client));
-                let state = auth.state.secret().to_string();
-                if let Some(tab) = &tab {
-                    let _ = tab.location().set_href(&auth.url.to_string());
-                }
-                Ok::<_, String>(Added::Sso(state))
+                Ok::<_, String>(Added::Sso)
             } else {
                 // Open-registration server (the dev stack): auto-register a
                 // fresh account and keep it for reuse.
@@ -743,9 +744,7 @@ fn add_homeserver(model: Model, hs: String) {
                     .is_ok();
                 }
                 if !ok {
-                    return Err(
-                        "Couldn't create an account on this homeserver".to_string(),
-                    );
+                    return Err("Couldn't create an account on this homeserver".to_string());
                 }
                 crate::services::matrix::set_session_reg(&hs, reg);
                 crate::services::matrix::save_session(&client, &hs);
@@ -765,11 +764,7 @@ fn add_homeserver(model: Model, hs: String) {
         }
         .await;
         match res {
-            Ok(Added::Sso(state)) => {
-                model.app.conn.set(ConnState::SsoPending);
-                sm.busy.set(false);
-                sso_wait_for_callback(model, &state);
-            }
+            Ok(Added::Sso) => sso_begin(model, &hs, tab.as_ref()),
             Ok(Added::Room(room_id)) => {
                 if let Some(tab) = &tab {
                     let _ = tab.close();
@@ -804,29 +799,15 @@ fn add_homeserver(model: Model, hs: String) {
 
 // ----- OAuth / SSO -----
 
-/// Start the OAuth/SSO sign-in: build the authorization URL and open it in a
-/// new browser tab.  The tab finishes the login at the homeserver and is
-/// redirected back to this app with `?code&state`; [sso_wait_for_callback]
-/// picks that up over a BroadcastChannel named by the state token.
+/// Start the OAuth/SSO sign-in for `hs`: build the authorization URL, point
+/// `tab` at it, set `SsoPending` and wait for the callback.  Shared by the
+/// matrix.org login button, add-custom-homeserver and join-invite paths, so
+/// every SSO entry point behaves identically.
 #[cfg(target_arch = "wasm32")]
-fn sso_login(model: Model) {
+fn sso_begin(model: Model, hs: &str, tab: Option<&web_sys::Window>) {
     let sm = model.screens.home;
-    let hs = sm.homeserver.get_clone();
-    sm.busy.set(true);
-    model.app.conn.set(ConnState::Connecting);
-    // Open the tab synchronously from the click handler — popup blockers
-    // reject `window.open` after an await.  Its URL is set once the
-    // authorization URL is built (a few network round trips later).
-    let tab = match web_sys::window().map(|w| w.open()) {
-        Some(Ok(Some(tab))) => tab,
-        _ => {
-            model.app.conn.set(ConnState::Error(
-                "couldn't open the sign-in tab — allow popups for this site".to_string(),
-            ));
-            sm.busy.set(false);
-            return;
-        }
-    };
+    let hs = hs.to_string();
+    let tab = tab.map(|t| t.clone());
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&hs).await?;
@@ -859,14 +840,16 @@ fn sso_login(model: Model) {
                 .build()
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok::<_, String>((client, auth))
+            crate::services::matrix::set_client(Some(client));
+            Ok::<_, String>(auth)
         }
         .await;
         match res {
-            Ok((client, auth)) => {
-                crate::services::matrix::set_client(Some(client));
+            Ok(auth) => {
                 let state = auth.state.secret().to_string();
-                let _ = tab.location().set_href(&auth.url.to_string());
+                if let Some(tab) = &tab {
+                    let _ = tab.location().set_href(&auth.url.to_string());
+                }
                 model.app.conn.set(ConnState::SsoPending);
                 // Not blocking: the user is in the sign-in tab now; if it never
                 // completes they can retry with the password path.
@@ -879,6 +862,28 @@ fn sso_login(model: Model) {
             }
         }
     });
+}
+
+/// Start the OAuth/SSO sign-in for the homeserver in the Home model.  The tab
+/// must be opened synchronously from the click handler (popup blockers reject
+/// `window.open` after an await).
+#[cfg(target_arch = "wasm32")]
+fn sso_login(model: Model) {
+    let sm = model.screens.home;
+    let hs = sm.homeserver.get_clone();
+    sm.busy.set(true);
+    model.app.conn.set(ConnState::Connecting);
+    let tab = match web_sys::window().map(|w| w.open()) {
+        Some(Ok(Some(tab))) => Some(tab),
+        _ => {
+            model.app.conn.set(ConnState::Error(
+                "couldn't open the sign-in tab — allow popups for this site".to_string(),
+            ));
+            sm.busy.set(false);
+            return;
+        }
+    };
+    sso_begin(model, &hs, tab.as_ref());
 }
 
 // Keeps the BroadcastChannel (and its message listener) alive for the SSO
@@ -936,6 +941,16 @@ fn sso_complete(model: Model, callback_url: String) {
                 model.app.identity.set(user_id.clone());
                 model.app.conn.set(ConnState::LoggedIn(user_id));
                 model.app.room.set(room_id);
+                // Resume a parked join (SSO invite) now that we're signed in on
+                // its homeserver, instead of the plain Home connect.
+                let pending = model.app.pending_join.get_clone();
+                if let Some(link) = &pending {
+                    if crate::services::matrix::load_session_for(&link.homeserver).is_some() {
+                        model.app.pending_join.set(None);
+                        crate::update(model, crate::Msg::Join(link.clone()));
+                        return;
+                    }
+                }
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
                 flush_pending(model);
             }
