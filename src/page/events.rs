@@ -1,7 +1,6 @@
 use sycamore::prelude::*;
 
 use crate::app::ConnState;
-use crate::event::DEMO_EVENT_ID;
 
 // Events hub: pick how to get an event open.
 //
@@ -40,28 +39,15 @@ pub fn init() -> Model {
 
 #[derive(Clone)]
 pub enum Msg {
-    LoadDemo,
-    ResetDemo,
     Search,
     OpenResult(String),
     ScanQr,
     EnterRoomId,
     PlanNew,
-    OpenSaved(String),
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
     match msg {
-        Msg::LoadDemo => {
-            crate::event::ensure_demo();
-            crate::update(model, crate::Msg::SetEvent(DEMO_EVENT_ID.to_string()));
-            crate::update(model, crate::Msg::Show(crate::Screen::Home));
-        }
-        Msg::ResetDemo => {
-            crate::event::reset_demo();
-            crate::update(model, crate::Msg::SetEvent(DEMO_EVENT_ID.to_string()));
-            crate::update(model, crate::Msg::Show(crate::Screen::Home));
-        }
         Msg::Search => {
             #[cfg(target_arch = "wasm32")]
             search(model);
@@ -89,10 +75,6 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::PlanNew => {
             model.screens.setup.show_create.set(true);
             crate::update(model, crate::Msg::Show(crate::Screen::Event));
-        }
-        Msg::OpenSaved(id) => {
-            crate::update(model, crate::Msg::SetEvent(id));
-            crate::update(model, crate::Msg::Show(crate::Screen::Home));
         }
     }
 }
@@ -171,11 +153,9 @@ pub fn view(model: crate::Model) -> View {
             h1(class="title") { "Events" }
             p(class="help") { "Choose how to get an event open." }
             (view_current(model))
-            (view_demo(model))
             (view_published(model))
             (view_plan(model))
             (crate::page::view_handoff(model))
-            (view_saved(model))
             (view_feedback(model))
         }
     }
@@ -220,47 +200,6 @@ fn view_current(model: crate::Model) -> View {
                         on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Event)),
                     ) {
                         "Event admin"
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Load / reset the local training demo event.
-fn view_demo(model: crate::Model) -> View {
-    let current_is_demo = model.app.event.with(|e| e.is_demo());
-    view! {
-        div(class="box") {
-            h2(class="title is-5") {
-                "Demo event"
-                span(class="tag is-warning is-pulled-right") { "Local only" }
-            }
-            p(class="help") {
-                "A sample event for training officials how to time. It lives on this device only and is never published or synced."
-            }
-            div(class="field is-grouped") {
-                (if current_is_demo {
-                    view! {
-                        div(class="control") {
-                            button(
-                                class="button is-danger is-light",
-                                on:click=move |_| crate::update(model, crate::Msg::EventsMsg(Msg::ResetDemo)),
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-rotate-left") }
-                                span { "Reset demo" }
-                            }
-                        }
-                    }
-                } else {
-                    view! {}
-                })
-                div(class="control") {
-                    button(
-                        class="button is-primary",
-                        on:click=move |_| crate::update(model, crate::Msg::EventsMsg(Msg::LoadDemo)),
-                    ) {
-                        (if current_is_demo { "Reopen demo" } else { "Load demo event" })
                     }
                 }
             }
@@ -397,59 +336,6 @@ fn view_plan(model: crate::Model) -> View {
                     }
                 }
             }
-        }
-    }
-}
-
-/// Events already saved on this device.
-fn view_saved(model: crate::Model) -> View {
-    let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
-    ids.sort();
-    ids.retain(|id| id != DEMO_EVENT_ID);
-    if ids.is_empty() {
-        return view! {};
-    }
-    let current = model.app.event.with(|e| e.id.clone());
-    let rows: Vec<View> = ids
-        .iter()
-        .map(|id| {
-            let id = id.clone();
-            let e = crate::event::load_event(&id);
-            let name = if e.name.is_empty() {
-                id.clone()
-            } else {
-                e.name.clone()
-            };
-            let status = e.status.to_string();
-            let is_current = id == current;
-            let open_id = id.clone();
-            view! {
-                div(class="field is-grouped") {
-                    div(class="control is-expanded") {
-                        p(class="has-text-weight-medium") {
-                            (name)
-                            span(class="tag is-light is-pulled-right") { (status) }
-                        }
-                    }
-                    div(class="control") {
-                        button(
-                            class=format!(
-                                "button is-small {}",
-                                if is_current { "is-primary" } else { "is-link" }
-                            ),
-                            on:click=move |_| crate::update(model, crate::Msg::EventsMsg(Msg::OpenSaved(open_id.clone()))),
-                        ) {
-                            (if is_current { "Current" } else { "Open" })
-                        }
-                    }
-                }
-            }
-        })
-        .collect();
-    view! {
-        div(class="box") {
-            h2(class="title is-5") { "Saved on this device" }
-            (rows)
         }
     }
 }

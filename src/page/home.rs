@@ -25,6 +25,10 @@ pub struct Model {
     pub forget_target: Signal<Option<String>>,
     /// The Accounts box is collapsed to a one-line summary.
     pub collapsed: Signal<bool>,
+    /// A saved event awaiting a Delete confirmation ("are you sure" modal).
+    pub delete_target: Signal<Option<String>>,
+    /// Bumped after the local event list changes so the picker re-renders.
+    pub refresh: Signal<u8>,
 }
 
 pub fn init() -> Model {
@@ -36,27 +40,38 @@ pub fn init() -> Model {
         join_msg: create_signal(String::new()),
         forget_target: create_signal(None),
         collapsed: create_signal(false),
+        delete_target: create_signal(None),
+        refresh: create_signal(0),
     }
 }
 
 pub fn view(model: crate::Model) -> View {
     view! {
         (move || {
-            if matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_)) {
-                view_dashboard(model)
+            // No event open: show the picker-style home regardless of whether
+            // the device is online/offline or an account is connected.
+            if model.app.event.with(|e| e.is_null()) {
+                view_no_event(model)
             } else {
-                view! {
-                    section(class="hero is-small") {
-                        div(class="hero-body") {
-                            h1(class="title") { "Khana Time" }
-                            p(class="subtitle")
-                        }
-                    }
-                    (view_sessions(model))
-                    (view_pick_events(model))
-                }
+                view_dashboard(model)
             }
         })
+    }
+}
+
+/// The home screen when no event is open.  Same whether online or offline:
+/// accounts, demo + saved events, join-by-link, and phone (parcel) sync.
+fn view_no_event(model: crate::Model) -> View {
+    view! {
+        section(class="hero is-small") {
+            div(class="hero-body") {
+                h1(class="title") { "Khana Time" }
+            }
+        }
+        (move || view_sessions(model))
+        (move || view_open_events(model))
+        (move || view_join_by_url(model))
+        (move || view_phone_sync(model))
     }
 }
 
@@ -105,7 +120,7 @@ fn view_event_card(model: crate::Model) -> View {
                     div(class="level-item") {
                         button(
                             class="button is-small is-link is-outlined",
-                            on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
+                            on:click=move |_| crate::update(model, crate::Msg::ClearEvent),
                         ) {
                             "Change event"
                         }
@@ -259,7 +274,7 @@ fn view_sessions(model: crate::Model) -> View {
 fn view_account_summary(model: crate::Model) -> View {
     let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
     let sess = logged_in
-        .then(|| crate::services::matrix::active_hs())
+        .then(crate::services::matrix::active_hs)
         .flatten()
         .and_then(|hs| crate::services::matrix::load_session_for(&hs));
     let Some(sess) = sess else {
@@ -276,16 +291,13 @@ fn view_account_summary(model: crate::Model) -> View {
 }
 
 /// Homeserver as `host[:port]` for a badge (strips scheme and trailing slash).
-#[cfg(target_arch = "wasm32")]
 fn hs_host_port(hs: &str) -> String {
-    let Ok(url) = url::Url::parse(hs) else {
-        return hs.to_string();
-    };
-    let host = url.host_str().unwrap_or_default();
-    match url.port() {
-        Some(p) => format!("{host}:{p}"),
-        None => host.to_string(),
-    }
+    let s = hs
+        .strip_prefix("https://")
+        .or_else(|| hs.strip_prefix("http://"))
+        .unwrap_or(hs);
+    let end = s.find(['/', '?']).unwrap_or(s.len());
+    s[..end].to_string()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -675,6 +687,14 @@ fn view_account_footer(model: crate::Model) -> View {
                 }
             }
         }
+        (if sm.show_add_hs.get() {
+            view_add_hs_modal(model)
+        } else {
+            view! {}
+        })
+        p(class="help") {
+            "matrix.org accounts are passwordless (SSO). The localhost dev server registers a new account for you."
+        }
     }
 }
 
@@ -782,40 +802,231 @@ fn status_html(state: ConnState) -> View {
 }
 
 /// Picker entry point: opens the Events screen (demo / published / new / saved).
-fn view_pick_events(model: crate::Model) -> View {
+/// Demo event (always shown) + every other event saved on this device, each
+/// with Open and a destructive action (Reset for the demo, Delete for the
+/// rest).  Published events show their homeserver and the recent one a tag.
+fn view_open_events(model: crate::Model) -> View {
+    // Subscribe to the refresh signal so the list re-renders after a local
+    // event is deleted/reset (list_events() reads storage, not a signal).
+    let sm = model.screens.home;
+    let _ = sm.refresh.get();
+    let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
+    ids.retain(|id| id != crate::event::DEMO_EVENT_ID);
+    ids.sort();
+    let recent = crate::event::session_recent_event();
+    let mut rows: Vec<View> = vec![view_event_row(
+        model,
+        crate::event::DEMO_EVENT_ID.to_string(),
+        "Khanatime Demo".to_string(),
+        None,
+        None,
+        true,
+        crate::event::DEMO_EVENT_ID == recent,
+    )];
+    for id in ids {
+        let e = crate::event::load_event(&id);
+        let name = if e.name.is_empty() {
+            id.clone()
+        } else {
+            e.name.clone()
+        };
+        let hs_tag = if e.is_published() {
+            Some(hs_host_port(&e.homeserver))
+        } else {
+            None
+        };
+        let is_recent = id == recent;
+        rows.push(view_event_row(
+            model,
+            id,
+            name,
+            hs_tag,
+            Some(e.status.to_string()),
+            false,
+            is_recent,
+        ));
+    }
+    let body = if rows.is_empty() {
+        view! { p(class="help") { "No events on this device yet." } }
+    } else {
+        view! { div(class="mt-2") { (rows) } }
+    };
     view! {
         div(class="box") {
             h2(class="title is-5") {
-                "2. Pick an event"
-                span(class="tag is-light is-pulled-right") { "Events" }
+                "Events"
+                span(class="tag is-light is-pulled-right") { "Device" }
             }
             p(class="help") {
-                "Load the demo event, search for a published event on Matrix, or plan a new one."
+                "Open the demo for training, or an event saved on this device."
             }
-            div(class="field") {
-                div(class="control") {
-                    button(
-                        class="button is-link",
-                        on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
-                    ) {
-                        span(class="icon is-small") { i(class="fa fa-folder-open") }
-                        span { "Open event picker" }
-                    }
-                }
-            }
-            (view_join_by_url(model))
+            (body)
+            (view_delete_modal(model))
         }
     }
 }
 
-/// Paste a join link to go straight to an event.  QR scanning is a placeholder
-/// until camera invite-scanning lands.
+/// One row in the event list: name + tags (Recent / Demo / homeserver /
+/// status), an Open button (demo creates-if-required), and a destructive
+/// action (Reset for the demo, Delete otherwise).
+fn view_event_row(
+    model: crate::Model,
+    id: String,
+    name: String,
+    hs_tag: Option<String>,
+    status: Option<String>,
+    is_demo: bool,
+    is_recent: bool,
+) -> View {
+    let sm = model.screens.home;
+    let open_id = id.clone();
+    let del_id = id.clone();
+    let mut tags: Vec<View> = vec![];
+    if is_recent {
+        tags.push(view! { span(class="tag is-success is-light") { "Recent" } });
+    }
+    if is_demo {
+        tags.push(view! { span(class="tag is-warning is-light") { "Demo" } });
+    } else if let Some(hs) = hs_tag {
+        tags.push(view! { span(class="tag is-link is-light") { (hs) } });
+    } else if let Some(st) = status {
+        tags.push(view! { span(class="tag is-light") { (st) } });
+    }
+    let tags_view = if tags.is_empty() {
+        view! {}
+    } else {
+        view! { div(class="tags is-pulled-right") { (tags) } }
+    };
+    view! {
+        div(class="field is-grouped") {
+            div(class="control is-expanded") {
+                p(class="has-text-weight-medium") {
+                    (name)
+                    (tags_view)
+                }
+            }
+            div(class="control") {
+                button(
+                    class="button is-small is-link",
+                    on:click=move |_| {
+                        if is_demo {
+                            crate::update(model, crate::Msg::LoadDemo);
+                        } else {
+                            crate::update(model, crate::Msg::OpenSaved(open_id.clone()));
+                        }
+                    },
+                ) {
+                    "Open"
+                }
+            }
+            div(class="control") {
+                (if is_demo {
+                    view! {
+                        button(
+                            class="button is-small is-danger is-outlined",
+                            on:click=move |_| crate::update(model, crate::Msg::ResetDemo),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-rotate-left") }
+                            span { "Reset" }
+                        }
+                    }
+                } else {
+                    view! {
+                        button(
+                            class="button is-small is-danger is-outlined",
+                            on:click=move |_| sm.delete_target.set(Some(del_id.clone())),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-trash") }
+                            span { "Delete" }
+                        }
+                    }
+                })
+            }
+        }
+    }
+}
+
+/// Import an event from another phone as a QR parcel (no network).
+fn view_phone_sync(model: crate::Model) -> View {
+    view! {
+        div(class="box") {
+            h2(class="title is-5") {
+                "Phone sync"
+                span(class="tag is-light is-pulled-right") { "QR parcel" }
+            }
+            p(class="help") {
+                "Import an event carried from another phone by scanning its QR parcel — no network needed."
+            }
+            div(class="field") {
+                div(class="control") {
+                    button(
+                        class="button is-warning",
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
+                    ) {
+                        span(class="icon") { i(class="fa fa-camera") }
+                        span { "Phone sync (QR)" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// "Are you sure?" modal before deleting a saved event.
+fn view_delete_modal(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    let Some(id) = sm.delete_target.get_clone() else {
+        return view! {};
+    };
+    let e = crate::event::load_event(&id);
+    let name = if e.name.is_empty() {
+        id.clone()
+    } else {
+        e.name.clone()
+    };
+    let del_id = id.clone();
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background")
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { "Delete this event?" }
+                    button(class="delete", on:click=move |_| sm.delete_target.set(None))
+                }
+                section(class="modal-card-body") {
+                    p { "This removes the saved event:" }
+                    p(class="has-text-weight-medium") { (name) }
+                    p(class="help") { "Its data is removed from this device only." }
+                }
+                footer(class="modal-card-foot") {
+                    button(
+                        class="button is-danger",
+                        on:click=move |_| {
+                            sm.delete_target.set(None);
+                            crate::update(model, crate::Msg::DeleteEvent(del_id.clone()));
+                        },
+                    ) { "Delete" }
+                    button(class="button", on:click=move |_| sm.delete_target.set(None)) {
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Paste a join link to go straight to an event, read it from the clipboard,
+/// or scan its invite QR code.
 fn view_join_by_url(model: crate::Model) -> View {
     let sm = model.screens.home;
     view! {
-        div(class="mt-3") {
+        div(class="box") {
+            h2(class="title is-5") {
+                "Join an event"
+                span(class="tag is-light is-pulled-right") { "Invite link" }
+            }
             p(class="help") {
-                "Or join from an invite link — paste it below."
+                "Paste an invite link to go straight to an event, or scan its QR code."
             }
             div(class="field has-addons") {
                 div(class="control is-expanded") {
@@ -839,17 +1050,26 @@ fn view_join_by_url(model: crate::Model) -> View {
                         "Join"
                     }
                 }
+            }
+            div(class="field is-grouped") {
                 div(class="control") {
                     button(
-                        class="button is-light",
+                        class="button is-small is-light",
                         disabled=sm.busy.get(),
-                        on:click=move |_| {
-                            sm.join_msg
-                                .set("QR scanning is coming soon — paste the link instead.".into());
-                        },
+                        on:click=move |_| copy_from_clipboard(model),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-clipboard") }
+                        span { "Paste from clipboard" }
+                    }
+                }
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        disabled=sm.busy.get(),
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
                     ) {
                         span(class="icon is-small") { i(class="fa fa-qrcode") }
-                        span { "Scan QR" }
+                        span { "Scan invite QR" }
                     }
                 }
             }
@@ -863,6 +1083,43 @@ fn view_join_by_url(model: crate::Model) -> View {
             })
         }
     }
+}
+
+/// Read the clipboard into the join-link field (handy on phones).
+#[cfg(target_arch = "wasm32")]
+fn copy_from_clipboard(model: crate::Model) {
+    let sm = model.screens.home;
+    let Some(clip) = web_sys::window().map(|w| w.navigator().clipboard()) else {
+        sm.join_msg
+            .set("Clipboard is unavailable in this browser.".into());
+        return;
+    };
+    let promise = clip.read_text();
+    wasm_bindgen_futures::spawn_local(async move {
+        match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(v) => {
+                let text = v.as_string().unwrap_or_default();
+                if text.is_empty() {
+                    sm.join_msg.set("Clipboard is empty.".into());
+                } else {
+                    sm.join_url.set(text);
+                    sm.join_msg.set(String::new());
+                }
+            }
+            Err(_) => sm
+                .join_msg
+                .set("Couldn't read the clipboard — paste manually.".into()),
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_from_clipboard(model: crate::Model) {
+    model
+        .screens
+        .home
+        .join_msg
+        .set("Clipboard is not available.".into());
 }
 
 #[cfg(test)]

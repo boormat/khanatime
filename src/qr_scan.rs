@@ -201,7 +201,7 @@ fn spawn_detect_loop(
         };
         // Throttled heartbeat, surfaced on the scan status line (phones have
         // no console) so the camera state is visible while scanning.
-        if tick.get() % 30 == 0 {
+        if tick.get().is_multiple_of(30) {
             model.app.scan_status.set(format!(
                 "Camera: ready={} paused={} bound={} — point at the QR.",
                 video.ready_state(),
@@ -243,9 +243,22 @@ fn spawn_detect_loop(
     id
 }
 
-/// Accumulate a decoded string: a chunked frame joins the session (and triggers
-/// import once complete); a whole parcel imports directly.
+/// Accumulate a decoded string: an invite link joins the event directly; a
+/// chunked frame joins the session (and triggers import once complete); a
+/// whole parcel imports directly.
 fn handle_scan_string(model: Model, text: &str) {
+    let complete_invite = crate::event::Invite::from_url(text).filter(|inv| {
+        !inv.homeserver.is_empty()
+            && !inv.event.is_empty()
+            && !inv.sid.is_empty()
+            && !inv.tid.is_empty()
+    });
+    if let Some(inv) = complete_invite {
+        model.app.scan_active.set(false);
+        stop_scan();
+        crate::update(model, crate::Msg::Join(inv));
+        return;
+    }
     if let Ok(frame) = crate::services::qr::unpack_frame(text) {
         let complete = SCAN.with(|sc| {
             let mut b = sc.borrow_mut();

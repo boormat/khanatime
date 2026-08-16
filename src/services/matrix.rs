@@ -385,9 +385,9 @@ pub async fn finish_oauth_login(client: &Client, callback_url: &str) -> Result<(
     if let Some(id) = client.oauth().client_id() {
         let redirect = oauth_redirect_uri()?;
         save_oauth_client_id(
-            &client.homeserver().to_string(),
+            client.homeserver().as_ref(),
             &id.to_string(),
-            &redirect.to_string(),
+            redirect.as_ref(),
         );
     }
     Ok(())

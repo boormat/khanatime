@@ -187,6 +187,16 @@ pub enum Msg {
     Join(crate::event::Invite),
     /// Join an event from a pasted invite URL (parsed on the Home page).
     JoinUrl,
+    /// Create and open the local demo event.
+    LoadDemo,
+    /// Reset the demo event to its pristine template and open it.
+    ResetDemo,
+    /// Open an event saved on this device.
+    OpenSaved(String),
+    /// Delete a saved event from local storage (confirm is the caller's job).
+    DeleteEvent(String),
+    /// Close the current event and return to the no-event picker.
+    ClearEvent,
 }
 
 impl Model {
@@ -271,6 +281,86 @@ pub fn update(model: Model, msg: Msg) {
     match msg {
         Msg::Show(screen) => show(model, screen),
 
+        Msg::LoadDemo => {
+            crate::event::ensure_demo();
+            crate::update(
+                model,
+                Msg::SetEvent(crate::event::DEMO_EVENT_ID.to_string()),
+            );
+            crate::update(model, Msg::Show(Screen::Home));
+        }
+        Msg::ResetDemo => {
+            crate::event::reset_demo();
+            model
+                .screens
+                .home
+                .refresh
+                .set(model.screens.home.refresh.get() + 1);
+            crate::update(
+                model,
+                Msg::SetEvent(crate::event::DEMO_EVENT_ID.to_string()),
+            );
+            crate::update(model, Msg::Show(Screen::Home));
+        }
+        Msg::OpenSaved(id) => {
+            let e = crate::event::load_event(&id);
+            // A published event connects like an invite (reuse account /
+            // auto-register / SSO per its registration mode).
+            if let Some(inv) = e.invite() {
+                crate::update(model, Msg::Join(inv));
+            } else {
+                crate::update(model, Msg::SetEvent(id));
+                crate::update(model, Msg::Show(Screen::Home));
+            }
+        }
+        Msg::ClearEvent => {
+            let current = model.app.event.with(|e| e.id.clone());
+            crate::event::session_set_recent(&current);
+            crate::event::session_clear_event();
+            model.app.event.set(EventInfo {
+                id: String::new(),
+                name: String::new(),
+                stages: vec![],
+                classes: vec![],
+                entries: vec![],
+                ..EventInfo::default()
+            });
+            model.app.scores.set(Vec::new());
+            model.app.runs.set(Vec::new());
+            model.screens.chat.feed.set(Vec::new());
+            model.app.room.set(None);
+            #[cfg(target_arch = "wasm32")]
+            crate::services::matrix::set_room(None);
+            crate::update(model, Msg::Show(Screen::Home));
+        }
+        Msg::DeleteEvent(id) => {
+            crate::log::remove_event_log(&id);
+            if model.app.event.with(|e| e.id == id) {
+                crate::event::session_clear_event();
+                model.app.event.set(EventInfo {
+                    id: String::new(),
+                    name: String::new(),
+                    stages: vec![],
+                    classes: vec![],
+                    entries: vec![],
+                    ..EventInfo::default()
+                });
+                model.app.scores.set(Vec::new());
+                model.app.runs.set(Vec::new());
+                model.screens.chat.feed.set(Vec::new());
+                model.app.room.set(None);
+                model.app.conn.set(crate::app::ConnState::Idle);
+                #[cfg(target_arch = "wasm32")]
+                crate::services::matrix::set_room(None);
+            }
+            model
+                .screens
+                .home
+                .refresh
+                .set(model.screens.home.refresh.get() + 1);
+            crate::app::refresh_feed(model);
+        }
+
         Msg::SetEvent(name) => {
             let (event, scores, runs) = crate::replay::replay(
                 &crate::log::load_log(&name),
@@ -280,6 +370,7 @@ pub fn update(model: Model, msg: Msg) {
             model.app.scores.set(scores);
             model.app.runs.set(runs);
             crate::event::session_set_event(&name);
+            crate::event::session_set_recent(&name);
             model.screens.chat.expanded.set(Default::default());
             // Fresh event: reset any staged entry edits.
             model.screens.entries.staged.set(Vec::new());

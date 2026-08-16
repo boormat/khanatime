@@ -512,6 +512,27 @@ impl EventInfo {
         self.id.starts_with("demo-")
     }
 
+    /// True when the event was published to a Matrix room (has the room ids +
+    /// homeserver needed to re-join it).
+    pub fn is_published(&self) -> bool {
+        !self.homeserver.is_empty() && self.space_id.is_some() && self.timing_id.is_some()
+    }
+
+    /// The invite a published event joins by — enough to connect to its
+    /// homeserver and adopt the event by room id, exactly like a scanned link.
+    pub fn invite(&self) -> Option<Invite> {
+        if !self.is_published() {
+            return None;
+        }
+        Some(Invite {
+            homeserver: self.homeserver.clone(),
+            event: self.id.clone(),
+            sid: self.space_id.clone().unwrap_or_default(),
+            tid: self.timing_id.clone().unwrap_or_default(),
+            reg: self.reg,
+        })
+    }
+
     pub fn add_class(&mut self, class: &String) {
         if self.classes.contains(class) {
             return;
@@ -1473,6 +1494,7 @@ pub fn merge_setup(local: &mut EventInfo, incoming: &EventInfo) -> bool {
 }
 
 const EVENT_SESSION: &str = "event";
+const EVENT_RECENT: &str = "event_recent";
 
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
@@ -1746,6 +1768,30 @@ pub fn session_event_name() -> String {
 pub fn session_set_event(key: &str) {
     if let Some(st) = session_storage() {
         let _ = st.set_item(EVENT_SESSION, key);
+    }
+}
+
+/// Clear the current-event session pointer (used when the open event is
+/// deleted), leaving the app back in the "no event" mode.
+pub fn session_clear_event() {
+    if let Some(st) = session_storage() {
+        let _ = st.remove_item(EVENT_SESSION);
+    }
+}
+
+/// The id of the most recently opened event (for the picker's "Recent" tag).
+pub fn session_recent_event() -> String {
+    session_storage()
+        .and_then(|st| st.get_item(EVENT_RECENT).ok().flatten())
+        .unwrap_or_default()
+}
+
+/// Record `key` as the most recently opened event.
+pub fn session_set_recent(key: &str) {
+    if !key.is_empty() {
+        if let Some(st) = session_storage() {
+            let _ = st.set_item(EVENT_RECENT, key);
+        }
     }
 }
 

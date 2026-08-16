@@ -807,7 +807,7 @@ fn add_homeserver(model: Model, hs: String) {
 fn sso_begin(model: Model, hs: &str, tab: Option<&web_sys::Window>) {
     let sm = model.screens.home;
     let hs = hs.to_string();
-    let tab = tab.map(|t| t.clone());
+    let tab = tab.cloned();
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&hs).await?;
@@ -848,7 +848,7 @@ fn sso_begin(model: Model, hs: &str, tab: Option<&web_sys::Window>) {
             Ok(auth) => {
                 let state = auth.state.secret().to_string();
                 if let Some(tab) = &tab {
-                    let _ = tab.location().set_href(&auth.url.to_string());
+                    let _ = tab.location().set_href(auth.url.as_ref());
                 }
                 model.app.conn.set(ConnState::SsoPending);
                 // Not blocking: the user is in the sign-in tab now; if it never
@@ -921,7 +921,7 @@ fn sso_complete(model: Model, callback_url: String) {
                 return Err("sign-in session lost — try again".to_string());
             };
             crate::services::matrix::finish_oauth_login(&client, &callback_url).await?;
-            crate::services::matrix::save_session(&client, &client.homeserver().to_string());
+            crate::services::matrix::save_session(&client, client.homeserver().as_ref());
             let room =
                 crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
                     .await;
