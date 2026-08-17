@@ -1094,30 +1094,6 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         return;
     }
 
-    // Per-entry state message: upsert (or tombstone) in the local event, the
-    // same way replay would.  Guarded by event uid like setup.
-    if msg
-        .body
-        .starts_with(crate::timing_event::TimingEvent::ENTRY_PREFIX)
-    {
-        if let Some(entry_msg) = crate::event::from_entry_body(&msg.body) {
-            model.khana.event.update(|e| {
-                if e.uid.is_empty() {
-                    e.uid = entry_msg.event_id.clone();
-                }
-                if entry_msg.event_id == e.uid {
-                    if entry_msg.delete {
-                        e.remove_entry(&entry_msg.entry.car);
-                    } else {
-                        e.upsert_entry(entry_msg.entry);
-                    }
-                }
-            });
-            crate::update(model, crate::Msg::Reload);
-        }
-        return;
-    }
-
     let Some(te) = msg.timing else {
         return; // plain chat / results-snapshot messages: log-only
     };

@@ -208,74 +208,15 @@ pub enum RegistrationMode {
     Open,
 }
 
-/// Lifecycle of an entry in the event.
-///
-///   Draft -> Submitted -> Accepted -> Confirmed (paid) -> Started
-///                    \-> Reserve (hold; promoted to Accepted when space opens)
-///   Withdrawn can happen at any point.
-#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum EntryStatus {
-    /// On the entry list but not yet submitted.
-    Draft,
-    /// Entry submitted; being processed by the organisers.
-    #[default]
-    Submitted,
-    /// Processed and OK, awaiting payment to finalise.
-    Accepted,
-    /// Hold state when the event is full; promoted to Accepted when space opens.
-    Reserve,
-    /// Entry fee paid / entry confirmed.
-    Confirmed,
-    /// Competing (has started).
-    Started,
-    /// Withdrawn from the event entirely.
-    Withdrawn,
-}
-
-impl EntryStatus {
-    /// The serialized (lowercase, single-word) form used for storage and form values.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EntryStatus::Draft => "draft",
-            EntryStatus::Submitted => "submitted",
-            EntryStatus::Accepted => "accepted",
-            EntryStatus::Reserve => "reserve",
-            EntryStatus::Confirmed => "confirmed",
-            EntryStatus::Started => "started",
-            EntryStatus::Withdrawn => "withdrawn",
-        }
-    }
-}
-
-impl std::fmt::Display for EntryStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            EntryStatus::Draft => "draft entry",
-            EntryStatus::Submitted => "entry submitted",
-            EntryStatus::Accepted => "accepted",
-            EntryStatus::Reserve => "reserve",
-            EntryStatus::Confirmed => "confirmed",
-            EntryStatus::Started => "started",
-            EntryStatus::Withdrawn => "withdrawn",
-        };
-        write!(f, "{s}")
-    }
-}
-
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Entry {
     /// Assigned car number — "" until the timekeeper assigns one at
     /// close-entries.  Text, digits-first, uppercase (see
     /// [normalize_car_number]); timing data keys on this string.
     pub car: String,
-    /// The car number the entrant nominated.  A preference only: may be
-    /// blank, and duplicates are fine (the timekeeper resolves collisions).
-    #[serde(default)]
-    pub preferred_car: String,
     pub name: String, // name
     #[serde(default)]
-    pub vehicle: String, // description
+    pub vehicle: Option<String>,
     /// Car description shown to officials at timing (rego, model notes, etc.).
     #[serde(default)]
     pub description: Option<String>,
@@ -283,31 +224,11 @@ pub struct Entry {
     /// entrant/timekeeper types).  Entries whose names match (see
     /// [shared_car_key]) share a physical car.  Informational only.
     #[serde(default)]
-    pub shared_car: Option<String>,
+    pub shared: Option<String>,
     #[serde(default)]
     pub classes: Vec<String>, // Classes. Count be an ID. meh
     #[serde(default)]
-    pub licence: Option<String>,
-    #[serde(default)]
     pub passenger: Option<String>,
-    #[serde(default)]
-    pub status: EntryStatus,
-    /// Matrix user id of the person who entered themselves (empty for
-    /// official-added entries).
-    #[serde(default)]
-    pub owner: Option<String>,
-}
-
-/// Wire format of a per-entry state message (`khanatime_entry:<json>`).
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-pub struct EntryMsg {
-    pub event_id: String,
-    pub ts: i64,
-    /// Full entry snapshot (last-writer-wins per car).
-    pub entry: Entry,
-    /// Tombstone: remove the entry from the event.
-    #[serde(default)]
-    pub delete: bool,
 }
 
 /// A person attached to the event (organiser, official).
@@ -632,63 +553,11 @@ impl EventInfo {
         self.entries.iter().collect()
     }
 
-    /// Set the lifecycle status of an entry by car number.
-    pub fn set_entry_status(&mut self, car: &str, status: EntryStatus) -> bool {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.car == car) {
-            e.status = status;
-            true
-        } else {
-            false
-        }
-    }
-
     // delete an entry by car number
     pub fn remove_entry(&mut self, car: &str) -> bool {
         let before = self.entries.len();
         self.entries.retain(|e| e.car != car);
         before != self.entries.len()
-    }
-
-    /// Insert or replace an entry (keyed by car number).
-    /// Returns true when the entry was new.
-    pub fn upsert_entry(&mut self, entry: Entry) -> bool {
-        // Find existing entry with same car.  If multiple exist (collision),
-        // prefer the one with the same owner for replacement.
-        let pos = self
-            .entries
-            .iter()
-            .position(|e| e.car == entry.car)
-            .map(|i| {
-                // If there's a collision (multiple same-car entries), prefer
-                // the one whose owner matches, or fall back to first.
-                if self.entries.iter().skip(i + 1).any(|e| e.car == entry.car) {
-                    self.entries[i..]
-                        .iter()
-                        .position(|e| e.car == entry.car && e.owner == entry.owner)
-                        .map(|j| i + j)
-                        .unwrap_or(i)
-                } else {
-                    i
-                }
-            });
-        match pos {
-            Some(i) => {
-                let collision = self.entries[i].owner.is_some()
-                    && entry.owner.is_some()
-                    && self.entries[i].owner != entry.owner;
-                if collision {
-                    self.entries.push(entry);
-                    true
-                } else {
-                    self.entries[i] = entry;
-                    false
-                }
-            }
-            None => {
-                self.entries.push(entry);
-                true
-            }
-        }
     }
 }
 
@@ -699,48 +568,20 @@ pub fn entry_sort_key(_e: &Entry) -> (bool, u32, u32) {
     (false, 0, 0)
 }
 
-/// Encode an entry state message body (`khanatime_entry:<json>`).
-#[allow(dead_code)]
-pub fn entry_body(event_id: &str, entry: &Entry, delete: bool) -> String {
-    let msg = EntryMsg {
-        event_id: event_id.to_string(),
-        ts: crate::log::now_ms(),
-        entry: entry.clone(),
-        delete,
-    };
-    format!(
-        "{}{}",
-        crate::timing_event::TimingEvent::ENTRY_PREFIX,
-        serde_json::to_string(&msg).expect("entry msg serializes")
-    )
-}
-
-/// Decode an entry state message body.  Returns None for other prefixes.
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
-pub fn from_entry_body(body: &str) -> Option<EntryMsg> {
-    let json = body.strip_prefix(crate::timing_event::TimingEvent::ENTRY_PREFIX)?;
-    serde_json::from_str(json).ok()
-}
-
 impl Entry {
     pub fn new(car: &str, name: &str) -> Self {
-        let vehicle = Default::default();
         let classes = ["Outright"];
         let classes = classes.map(String::from).into();
         let car = car.to_string();
         let name = name.to_string();
         Self {
-            preferred_car: String::new(),
-            vehicle,
+            vehicle: None,
             description: None,
-            shared_car: None,
+            shared: None,
             classes,
             car,
             name,
-            licence: None,
             passenger: None,
-            status: EntryStatus::Submitted,
-            owner: None,
         }
     }
 }
@@ -818,17 +659,6 @@ pub fn next_free_number(used: &std::collections::HashSet<String>) -> String {
     f.to_string()
 }
 
-/// Suggest an assigned car number: the entrant's preferred number when it's
-/// valid and free, else the smallest free pure number.
-#[allow(dead_code)]
-pub fn suggest_car_number(used: &std::collections::HashSet<String>, preferred: &str) -> String {
-    if !preferred.is_empty() && validate_car_number(preferred).is_ok() && !used.contains(preferred)
-    {
-        return preferred.to_string();
-    }
-    next_free_number(used)
-}
-
 /// Compare two car numbers for natural sort order: leading numeric run as u32
 /// (so 2 < 10), then trailing suffix.  Unknown "?" sorts last.
 pub fn cmp_car_number(a: &str, b: &str) -> Ordering {
@@ -872,7 +702,7 @@ pub fn shared_car_key(name: &str) -> String {
 pub fn shared_groups(entries: &[Entry]) -> Vec<(String, Vec<&Entry>)> {
     let mut groups: IndexMap<String, (String, Vec<&Entry>)> = IndexMap::new();
     for e in entries {
-        let Some(name) = e.shared_car.as_deref() else {
+        let Some(name) = e.shared.as_deref() else {
             continue;
         };
         let key = shared_car_key(name);
@@ -1157,7 +987,6 @@ pub fn create_outright_view(event: &EventInfo, runs: &[RunRecord]) -> ResultView
         rv.rows = event
             .sorted_entries()
             .into_iter()
-            .filter(|e| is_active_entry(e))
             .map(|e| {
                 (
                     e.car.clone(),
@@ -1279,18 +1108,10 @@ pub fn calc_cumulative_positions(rv: &mut ResultView) {
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
     let mut v: Vec<&Entry> = entries
         .iter()
-        .filter(|e| e.classes.iter().any(|c| c == class) && is_active_entry(e))
+        .filter(|e| e.classes.iter().any(|c| c == class))
         .collect();
     v.sort_by_key(|e| entry_sort_key(e));
     v
-}
-
-/// Entries that count in the results: withdrawn / draft / reserve are out.
-pub fn is_active_entry(e: &Entry) -> bool {
-    !matches!(
-        e.status,
-        EntryStatus::Withdrawn | EntryStatus::Draft | EntryStatus::Reserve
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1679,7 +1500,7 @@ pub fn demo_event() -> EventInfo {
     // Erin and Gail share Erin's MX-5 (a typed shared-car name).
     for car in ["5", "12"] {
         if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
-            entry.shared_car = Some("Erin's MX-5".to_string());
+            entry.shared = Some("Erin's MX-5".to_string());
         }
     }
     ev.ensure_uid();
@@ -2335,20 +2156,6 @@ mod tests {
     }
 
     #[test]
-    fn results_exclude_withdrawn_entries() {
-        let mut e1 = Entry::new("1", "Alice");
-        e1.status = EntryStatus::Started;
-        let mut e2 = Entry::new("2", "Bob");
-        e2.status = EntryStatus::Withdrawn;
-        let mut e3 = Entry::new("3", "Carol");
-        e3.status = EntryStatus::Reserve;
-        let entries = vec![e1, e2, e3];
-        let found = find_entries_in_class(&entries, "Outright");
-        let cars: Vec<&str> = found.iter().map(|e| e.car.as_str()).collect();
-        assert_eq!(cars, vec!["1"]);
-    }
-
-    #[test]
     fn outright_view_includes_every_active_entry() {
         // Entry without the "Outright" tag must still be in the overall view.
         let mut ev = EventInfo {
@@ -2361,12 +2168,11 @@ mod tests {
         a.classes = vec!["Female".into()];
         let mut b = Entry::new("2", "Bob");
         b.classes = vec!["Junior".into()];
-        let mut w = Entry::new("3", "Wendy");
-        w.status = EntryStatus::Withdrawn;
+        let w = Entry::new("3", "Wendy");
         ev.entries = vec![a, b, w];
         let rv = create_outright_view(&ev, &[]);
         let nos: Vec<String> = rv.rows.keys().cloned().collect();
-        assert_eq!(nos, vec!["1".to_string(), "2".to_string()]);
+        assert_eq!(nos, vec!["1".to_string(), "2".to_string(), "3".to_string()]);
     }
 
     #[test]
@@ -2567,56 +2373,6 @@ mod tests {
         assert_eq!(back.stage(1).name, "Creek");
         assert_eq!(back.stage(1).runs_total, 3);
         assert_eq!(back.stage(1).timing, TimingStyle::Rally);
-    }
-
-    #[test]
-    fn entry_default_status_is_submitted() {
-        let e = Entry::new("7", "Alice");
-        assert_eq!(e.status, EntryStatus::Submitted);
-        assert_eq!(e.status.to_string(), "entry submitted");
-        assert_eq!(e.status.as_str(), "submitted");
-    }
-
-    #[test]
-    fn entry_status_roundtrip_via_json() {
-        for (s, value) in [
-            (EntryStatus::Draft, "draft"),
-            (EntryStatus::Submitted, "submitted"),
-            (EntryStatus::Accepted, "accepted"),
-            (EntryStatus::Reserve, "reserve"),
-            (EntryStatus::Confirmed, "confirmed"),
-            (EntryStatus::Started, "started"),
-            (EntryStatus::Withdrawn, "withdrawn"),
-        ] {
-            let e = Entry {
-                car: "7".into(),
-                name: "Alice".into(),
-                status: s.clone(),
-                ..Default::default()
-            };
-            let json = serde_json::to_string(&e).unwrap();
-            assert!(json.contains(&format!("\"status\":\"{value}\"")), "{json}");
-            let back: Entry = serde_json::from_str(&json).unwrap();
-            assert_eq!(back.status, s);
-        }
-
-        // Legacy entries (no status field) read as the default (submitted).
-        let legacy = r#"{"car":"8","name":"Bob","classes":["Outright"]}"#;
-        let back: Entry = serde_json::from_str(legacy).unwrap();
-        assert_eq!(back.status, EntryStatus::Submitted);
-    }
-
-    #[test]
-    fn set_entry_status_updates_by_entry_no() {
-        let mut ev = EventInfo::default();
-        ev.add_entry("7", "Alice");
-        ev.add_entry("8", "Bob");
-        let (a, b) = (ev.entries[0].car.clone(), ev.entries[1].car.clone());
-        assert!(ev.set_entry_status(&a, EntryStatus::Accepted));
-        assert!(ev.set_entry_status(&b, EntryStatus::Withdrawn));
-        assert!(!ev.set_entry_status("99", EntryStatus::Draft));
-        assert_eq!(ev.find_entry(&a).unwrap().status, EntryStatus::Accepted);
-        assert_eq!(ev.find_entry(&b).unwrap().status, EntryStatus::Withdrawn);
     }
 
     #[test]
@@ -2836,69 +2592,6 @@ mod tests {
     }
 
     #[test]
-    fn entry_msg_roundtrip() {
-        let mut entry = Entry::new("7", "Alice");
-        entry.owner = Some("@alice:localhost".into());
-        entry.status = EntryStatus::Submitted;
-        let body = entry_body("kt-2026-x", &entry, false);
-        let parsed = from_entry_body(&body).expect("decodes");
-        assert_eq!(parsed.event_id, "kt-2026-x");
-        assert_eq!(parsed.entry, entry);
-        assert!(!parsed.delete);
-        assert!(parsed.ts > 0);
-        assert!(from_entry_body("khanatime_setup:{}").is_none());
-        assert!(from_entry_body("KT {}").is_none());
-    }
-
-    #[test]
-    fn entry_msg_tombstone() {
-        let entry = Entry::new("9", "Dan");
-        let body = entry_body("kt-2026-x", &entry, true);
-        let parsed = from_entry_body(&body).expect("decodes");
-        assert!(parsed.delete);
-    }
-
-    #[test]
-    fn upsert_entry_replaces_by_entry_no() {
-        let mut ev = EventInfo {
-            id: "kt-2026-x".into(),
-            ..Default::default()
-        };
-        ev.add_entry("7", "Alice");
-        let mut changed = Entry::new("7", "Alice");
-        changed.status = EntryStatus::Confirmed;
-        changed.owner = Some("@alice:localhost".into());
-        assert!(!ev.upsert_entry(changed.clone()));
-        assert_eq!(ev.entries.len(), 1);
-        assert_eq!(ev.entries[0].status, EntryStatus::Confirmed);
-        assert_eq!(ev.entries[0].owner.as_deref(), Some("@alice:localhost"));
-        assert!(ev.upsert_entry(Entry::new("8", "Bob")));
-        assert_eq!(ev.entries.len(), 2);
-    }
-
-    #[test]
-    fn upsert_entry_assigns_numbers_and_survives_collisions() {
-        let mut ev = EventInfo::default();
-        ev.add_entry("7", "Alice");
-        // New entry with a new car -> gets added.
-        assert!(ev.upsert_entry(Entry::new("8", "Bob")));
-        assert_eq!(ev.entries.len(), 2);
-        // Concurrent offline creation on another device claimed the same
-        // car with a different owner: collision, both kept.
-        let mut incoming = Entry::new("8", "Carol");
-        incoming.owner = Some("@carol:localhost".into());
-        ev.entries[1].owner = Some("@bob:localhost".into());
-        assert!(ev.upsert_entry(incoming));
-        assert_eq!(ev.entries.len(), 3);
-        assert!(ev.find_entry_by_car("8").is_some());
-        // Same owner re-sending is a normal replace.
-        let mut resend = Entry::new("8", "Carol");
-        resend.owner = Some("@carol:localhost".into());
-        assert!(!ev.upsert_entry(resend));
-        assert_eq!(ev.entries.len(), 3);
-    }
-
-    #[test]
     fn sorted_entries_orders_explicit_then_arrival() {
         let mut ev = EventInfo::default();
         ev.add_entry("1", "Alice");
@@ -2919,12 +2612,6 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(names, vec!["Carol", "Bob", "Alice"]);
-    }
-
-    #[test]
-    fn entry_default_owner_is_none() {
-        let entry = Entry::new("7", "Alice");
-        assert_eq!(entry.owner, None);
     }
 
     #[test]
@@ -2958,27 +2645,13 @@ mod tests {
     }
 
     #[test]
-    fn suggest_car_number_prefers_when_free() {
-        let used: HashSet<String> = ["1", "2", "7A"].iter().map(|s| s.to_string()).collect();
-        // Preferred number free -> verbatim.
-        assert_eq!(suggest_car_number(&used, "42"), "42");
-        // Preferred taken -> next free.
-        assert_eq!(suggest_car_number(&used, "2"), "3");
-        // Invalid or blank preferred -> next free.
-        assert_eq!(suggest_car_number(&used, ""), "3");
-        assert_eq!(suggest_car_number(&used, "A9"), "3");
-        // Case/space-normalised preference is respected by callers; here raw.
-        assert_eq!(suggest_car_number(&used, "7a"), "3");
-    }
-
-    #[test]
     fn shared_groups_require_two_members() {
         let mut e1 = Entry::new("1", "Alice");
-        e1.shared_car = Some("ABC123".to_string());
+        e1.shared = Some("ABC123".to_string());
         let mut e2 = Entry::new("2", "Bob");
-        e2.shared_car = Some("abc123".to_string()); // same as e1 after case normalisation
+        e2.shared = Some("abc123".to_string()); // same as e1 after case normalisation
         let mut e3 = Entry::new("3", "Carol");
-        e3.shared_car = Some("Own car".to_string());
+        e3.shared = Some("Own car".to_string());
         let entries = vec![e1, e2.clone(), e3.clone()];
         let groups = shared_groups(&entries);
         assert_eq!(groups.len(), 1);
@@ -3041,27 +2714,6 @@ mod tests {
     }
 
     #[test]
-    fn suggest_car_number_numeric_equivalence_input() {
-        let mut used: HashSet<String> = ["007", "7X"].iter().map(|s| s.to_string()).collect();
-        // "7" is string-wise free even though "007" is taken.
-        assert_eq!(suggest_car_number(&used, "7"), "7");
-        used.insert("7".into());
-        assert_eq!(suggest_car_number(&used, "7"), "1");
-        // "007" taken → preferred "8" free → verbatim.
-        assert_eq!(suggest_car_number(&used, "8"), "8");
-    }
-
-    #[test]
-    fn suggest_car_number_exhaustion_does_not_loop() {
-        // Block numbers 1..=100 so next_free must go beyond or hit the
-        // MAX_SUGGESTED_NUMBER guard.  We can't exhaust the full pool in a
-        // test, but we can verify the bounded loop doesn't hang.
-        let mut used: HashSet<String> = (1..=100u32).map(|n| n.to_string()).collect();
-        used.insert("101".into());
-        assert_eq!(suggest_car_number(&used, ""), "102");
-    }
-
-    #[test]
     fn entry_diff_car_assignment_and_clearing() {
         use crate::batch::{entry_diff, EditOp};
         // With car as PK, assigning a car to an empty-car entry is a new entry.
@@ -3089,10 +2741,9 @@ mod tests {
         // Withdrawn entries with shared names are still grouped (visible for
         // historical reference).
         let mut e1 = Entry::new("1", "Alice");
-        e1.shared_car = Some("Team Car".into());
+        e1.shared = Some("Team Car".into());
         let mut e2 = Entry::new("2", "Bob");
-        e2.shared_car = Some("Team Car".into());
-        e2.status = EntryStatus::Withdrawn;
+        e2.shared = Some("Team Car".into());
         let items = vec![e1, e2];
         let groups = shared_groups(&items);
         assert_eq!(groups.len(), 1);
@@ -3100,77 +2751,12 @@ mod tests {
 
         // Whitespace-only name is treated as None (skipped).
         let mut e3 = Entry::new("3", "Carol");
-        e3.shared_car = Some("   ".into());
+        e3.shared = Some("   ".into());
         assert!(shared_groups(&[e3]).is_empty());
 
         // All None -> empty groups.
         let e4 = Entry::new("4", "Dan");
         assert!(shared_groups(&[e4]).is_empty());
-    }
-
-    #[test]
-    fn close_entries_integration() {
-        // Simulate entries awaiting close-entries:
-        //   Alice: active, no preferred
-        //   Bob: active, preferred 7
-        //   Carol: draft (no number needed)
-        let mut alice = Entry::new("", "Alice");
-        alice.status = EntryStatus::Submitted;
-        let mut bob = Entry::new("", "Bob");
-        bob.preferred_car = "7".into();
-        bob.status = EntryStatus::Submitted;
-        let mut carol = Entry::new("", "Carol");
-        carol.status = EntryStatus::Draft; // not active
-
-        let entries = vec![alice, bob, carol];
-        let mut sorted = entries.clone();
-        sorted.sort_by_key(entry_sort_key);
-
-        let committed_cars: HashSet<String> = entries
-            .iter()
-            .map(|e| e.car.clone())
-            .filter(|c| !c.is_empty())
-            .collect();
-        let mut used = committed_cars;
-        let mut staged: Vec<Entry> = vec![];
-
-        for (idx, e) in sorted.iter_mut().enumerate() {
-            let active = matches!(
-                e.status,
-                EntryStatus::Submitted
-                    | EntryStatus::Accepted
-                    | EntryStatus::Confirmed
-                    | EntryStatus::Started
-            );
-            if !active {
-                continue;
-            }
-            let mut changed = false;
-            if e.car.is_empty() {
-                let suggest = suggest_car_number(&used, &e.preferred_car);
-                e.car = suggest.clone();
-                used.insert(suggest);
-                changed = true;
-            }
-            let _ = idx;
-            if changed {
-                staged.push(e.clone());
-            }
-        }
-
-        assert_eq!(
-            staged.len(),
-            2,
-            "Alice + Bob get numbers, Carol draft skipped"
-        );
-        // Alice has no preferred -> next free number (1, since "1" not used).
-        let alice_result = staged.iter().find(|e| e.car == "1").unwrap();
-        assert_eq!(alice_result.car, "1");
-        // Bob preferred "7" and "7" is free -> gets it.
-        let bob_result = staged.iter().find(|e| e.car == "7").unwrap();
-        assert_eq!(bob_result.car, "7");
-        // Carol unchanged.
-        assert!(staged.iter().all(|e| !e.car.is_empty()));
     }
 
     #[test]

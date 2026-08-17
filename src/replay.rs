@@ -46,23 +46,6 @@ fn apply(
         }
         return;
     }
-    if body.starts_with(TimingEvent::ENTRY_PREFIX) {
-        if let Some(msg) = crate::event::from_entry_body(body) {
-            // Like setup: a fresh device adopts the message's event uid; once
-            // an event is adopted, other events' entry messages are skipped.
-            if ev.uid.is_empty() {
-                ev.uid = msg.event_id.clone();
-            }
-            if msg.event_id == ev.uid {
-                if msg.delete {
-                    ev.remove_entry(&msg.entry.car);
-                } else {
-                    ev.upsert_entry(msg.entry);
-                }
-            }
-        }
-        return;
-    }
     let Some(te) = TimingEvent::from_body(body) else {
         return; // plain chat / results snapshot: no state
     };
@@ -170,7 +153,7 @@ fn retry_corrections(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Entry, EntryStatus, EventStatus, KTime, KTimeTime};
+    use crate::event::{EventStatus, KTime, KTimeTime};
     use crate::log::LogMsg;
 
     fn setup_body(ev: &EventInfo) -> String {
@@ -336,58 +319,6 @@ mod tests {
         let pending = vec![pend(100, setup_body(&ev))];
         let (out, _, _) = replay(&[], &pending);
         assert_eq!(out.id, "kt-2026-demo");
-        assert_eq!(out.entries.len(), 1);
-        assert_eq!(out.entries[0].status, EntryStatus::Submitted);
-    }
-
-    fn entry_msg(event_id: &str, entry: &crate::event::Entry, delete: bool) -> String {
-        crate::event::entry_body(event_id, entry, delete)
-    }
-
-    #[test]
-    fn entry_upsert_and_tombstone() {
-        let mut ev = base_event();
-        ev.add_entry("7", "Alice");
-        ev.add_entry("9", "Dan");
-        let mut confirmed = ev.entries.iter().find(|e| e.car == "7").unwrap().clone();
-        confirmed.status = EntryStatus::Confirmed;
-        // Tombstone uses car as the key for remove_entry.
-        let tombstone = Entry::new("9", "Dan");
-        let log = vec![
-            room(100, setup_body(&ev)),
-            room(200, entry_msg("ev-uid-demo", &confirmed, false)),
-            room(300, entry_msg("ev-uid-demo", &tombstone, true)),
-        ];
-        let (out, _, _) = replay(&log, &[]);
-        assert_eq!(out.entries.len(), 1);
-        assert_eq!(out.entries[0].status, EntryStatus::Confirmed);
-        assert!(out.entries.iter().all(|e| e.car != "9"));
-    }
-
-    #[test]
-    fn entry_other_event_skipped() {
-        let mut ev = base_event();
-        ev.add_entry("7", "Alice");
-        let log = vec![
-            room(100, setup_body(&ev)),
-            room(
-                200,
-                entry_msg("ev-uid-other", &Entry::new("42", "Stranger"), false),
-            ),
-        ];
-        let (out, _, _) = replay(&log, &[]);
-        assert_eq!(out.uid, "ev-uid-demo");
-        assert_eq!(out.entries.len(), 1);
-    }
-
-    #[test]
-    fn entry_seeds_fresh_event() {
-        let log = vec![room(
-            100,
-            entry_msg("ev-uid-fresh", &Entry::new("7", "Alice"), false),
-        )];
-        let (out, _, _) = replay(&log, &[]);
-        assert_eq!(out.uid, "ev-uid-fresh");
         assert_eq!(out.entries.len(), 1);
     }
 

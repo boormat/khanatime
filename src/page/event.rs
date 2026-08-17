@@ -301,13 +301,7 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::DeleteEntry(car) => {
             model.screens.setup.edit_event.update(|e| {
                 if let Some(ref mut ev) = e {
-                    if is_published(model) {
-                        if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
-                            entry.status = crate::event::EntryStatus::Withdrawn;
-                        }
-                    } else {
-                        ev.entries.retain(|e| e.car != car);
-                    }
+                    ev.entries.retain(|e| e.car != car);
                 }
             });
         }
@@ -328,15 +322,17 @@ fn serialize_entry_for_edit(entry: &crate::event::Entry) -> String {
         parts.push(entry.classes.join(" "));
     }
     // Vehicle (double-space separated)
-    if !entry.vehicle.is_empty() {
-        parts.push(entry.vehicle.clone());
+    if let Some(ref v) = entry.vehicle {
+        if !v.is_empty() {
+            parts.push(v.clone());
+        }
     }
     // Description (double-space separated)
     if let Some(ref d) = entry.description {
         parts.push(d.clone());
     }
     // Shared (double-space separated)
-    if let Some(ref s) = entry.shared_car {
+    if let Some(ref s) = entry.shared {
         parts.push(s.clone());
     }
     parts.join("  ")
@@ -464,9 +460,6 @@ fn copy_as_new(model: crate::Model) {
     e.timing_id = None;
     e.timing_alias = None;
     // Entrants + tests are copied; entrant state is reset for the fresh event.
-    for entry in e.entries.iter_mut() {
-        entry.status = crate::event::EntryStatus::Submitted;
-    }
     em.pre_create.set(Some(src.id.clone()));
     switch_to_draft(model, e);
     em.feedback.set(format!(
@@ -1272,10 +1265,16 @@ fn view_quick_add(model: crate::Model) -> View {
                                 }
 
                                 // Vehicle (always show)
-                                if !entry.vehicle.is_empty() {
-                                    let v = format!("Vehicle: {}", entry.vehicle);
-                                    let cls = if cf == 2 { "tag is-link" } else { "tag is-light" };
-                                    tags.push(view! { span(class=cls) { (v) } });
+                                if let Some(ref v) = entry.vehicle {
+                                    if !v.is_empty() {
+                                        let v_text = format!("Vehicle: {v}");
+                                        let cls = if cf == 2 { "tag is-link" } else { "tag is-light" };
+                                        tags.push(view! { span(class=cls) { (v_text) } });
+                                    } else if cf == 2 {
+                                        tags.push(view! { span(class="tag is-link") { "Vehicle: ?" } });
+                                    } else if cf > 2 {
+                                        tags.push(view! { span(class="tag is-light") { "Vehicle: ?" } });
+                                    }
                                 } else if cf == 2 {
                                     tags.push(view! { span(class="tag is-link") { "Vehicle: ?" } });
                                 } else if cf > 2 {
@@ -1303,7 +1302,7 @@ fn view_quick_add(model: crate::Model) -> View {
                                 }
 
                                 // Shared car group (always show)
-                                if let Some(ref s) = entry.shared_car {
+                                if let Some(ref s) = entry.shared {
                                     let s_text = format!("Shared: {s}");
                                     let cls = if cf == 4 { "tag is-link" } else { "tag is-light" };
                                     tags.push(view! { span(class=cls) { (s_text) } });
@@ -1415,9 +1414,9 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
             let car = e.car.clone();
             let name = e.name.clone();
             let classes = e.classes.clone();
-            let vehicle = e.vehicle.clone();
+            let vehicle = e.vehicle.clone().unwrap_or_default();
             let desc = e.description.clone().unwrap_or_default();
-            let shared = e.shared_car.clone().unwrap_or_default();
+            let shared = e.shared.clone().unwrap_or_default();
 
             // Car tag
             let car_tag_text = car.clone();
@@ -2406,7 +2405,7 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
     };
 
     // Shared: no default, just empty
-    let shared_car = if shared_raw.is_empty() {
+    let shared = if shared_raw.is_empty() {
         None
     } else {
         Some(shared_raw)
@@ -2423,16 +2422,16 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
     Ok(QuickParse {
         entry: crate::event::Entry {
             car,
-            preferred_car: String::new(),
             name,
-            vehicle,
+            vehicle: if vehicle.is_empty() {
+                None
+            } else {
+                Some(vehicle)
+            },
             description,
-            shared_car,
+            shared,
             classes: field0_classes,
-            licence: None,
             passenger: None,
-            status: crate::event::EntryStatus::Submitted,
-            owner: None,
         },
         cursor_field,
         defaulted,
@@ -2457,7 +2456,7 @@ mod tests {
         };
         // Add an existing entry for shared-car lookup tests.
         let mut existing = crate::event::Entry::new("99", "Existing Driver");
-        existing.shared_car = Some("My Shared Car".into());
+        existing.shared = Some("My Shared Car".into());
         e.entries.push(existing);
         e
     }
@@ -2521,8 +2520,8 @@ mod tests {
         assert_eq!(qp.entry.car, "123");
         assert_eq!(qp.entry.name, "John Smith");
         assert_eq!(qp.entry.classes, vec!["Outright"]);
-        assert!(qp.entry.vehicle.is_empty());
-        assert!(qp.entry.shared_car.is_none());
+        assert!(qp.entry.vehicle.is_none());
+        assert!(qp.entry.shared.is_none());
         assert_eq!(qp.cursor_field, 1); // cursor on classes
     }
 
@@ -2537,9 +2536,9 @@ mod tests {
         assert_eq!(qp.entry.car, "7B");
         assert_eq!(qp.entry.name, "Alice Wang");
         assert_eq!(qp.entry.classes, vec!["Outright", "Junior"]);
-        assert_eq!(qp.entry.vehicle, "Toyota GR Yaris");
+        assert_eq!(qp.entry.vehicle.as_deref(), Some("Toyota GR Yaris"));
         assert_eq!(qp.entry.description.as_deref(), Some("Rego ABC"));
-        assert_eq!(qp.entry.shared_car.as_deref(), Some("Shared"));
+        assert_eq!(qp.entry.shared.as_deref(), Some("Shared"));
     }
 
     #[test]
@@ -2592,14 +2591,14 @@ mod tests {
     fn parse_vehicle_formatting() {
         let ev = test_event();
         let qp = parse_quick_entry("1 x  Outright  mazda rx8", &ev).unwrap();
-        assert_eq!(qp.entry.vehicle, "Mazda RX8");
+        assert_eq!(qp.entry.vehicle.as_deref(), Some("Mazda RX8"));
     }
 
     #[test]
     fn parse_vehicle_autocapitalise_disabled() {
         let ev = test_event();
         let qp = parse_quick_entry("1 x  Outright  toyota gr_ yaris", &ev).unwrap();
-        assert_eq!(qp.entry.vehicle, "Toyota gr Yaris");
+        assert_eq!(qp.entry.vehicle.as_deref(), Some("Toyota gr Yaris"));
     }
 
     #[test]
@@ -2607,7 +2606,7 @@ mod tests {
         let ev = test_event();
         let qp = parse_quick_entry("1 x  Outright  car  Rego  Group", &ev).unwrap();
         assert_eq!(qp.entry.description.as_deref(), Some("Rego"));
-        assert_eq!(qp.entry.shared_car.as_deref(), Some("Group"));
+        assert_eq!(qp.entry.shared.as_deref(), Some("Group"));
     }
 
     #[test]
@@ -2672,8 +2671,8 @@ mod tests {
         assert_eq!(qp.entry.car, "5");
         assert_eq!(qp.entry.name, "Bob");
         assert_eq!(qp.entry.classes, vec!["Female"]);
-        assert!(qp.entry.vehicle.is_empty());
-        assert!(qp.entry.shared_car.is_none());
+        assert!(qp.entry.vehicle.is_none());
+        assert!(qp.entry.shared.is_none());
     }
 
     #[test]
@@ -2735,6 +2734,6 @@ mod tests {
         let ev = test_event();
         let qp = parse_quick_entry("123 john  o  wrx   b", &ev).unwrap();
         assert_eq!(qp.cursor_field, 4); // shared
-        assert_eq!(qp.entry.shared_car.as_deref(), Some("b"));
+        assert_eq!(qp.entry.shared.as_deref(), Some("b"));
     }
 }

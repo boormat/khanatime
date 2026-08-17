@@ -85,29 +85,6 @@ pub fn enqueue_ktime(
     crate::app::refresh_feed(model);
 }
 
-/// Enqueue an entry state message (upsert or tombstone) for the current event,
-/// apply it to the local event immediately, and flush + refresh.
-#[allow(dead_code)]
-pub fn enqueue_entry(model: crate::Model, entry: &crate::event::Entry, delete: bool) {
-    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
-    if id.is_empty() || uid.is_empty() {
-        return;
-    }
-    let body = crate::event::entry_body(&uid, entry, delete);
-    let sender = model.sync.identity.get_clone();
-    crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(body, sender));
-    model.khana.event.update(|e| {
-        if delete {
-            e.remove_entry(&entry.car);
-        } else {
-            e.upsert_entry(entry.clone());
-        }
-    });
-    crate::sync::flush_pending(model);
-    crate::app::refresh_feed(model);
-    crate::update(model, crate::Msg::Reload);
-}
-
 #[allow(dead_code)] // wired by the amend/void UI (Phase 1 backend)
 /// Correct an existing observation by `target_uid`: enqueue an `amend` message
 /// and patch the local run record in place (the original stays in the log).

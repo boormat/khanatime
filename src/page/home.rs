@@ -3,9 +3,7 @@ use std::collections::{HashMap, HashSet};
 use sycamore::prelude::*;
 
 use crate::app::ConnState;
-use crate::event::{
-    Entry, EntryStatus, EventInfo, KTime, RunRecord, ScoreData, ROLE_COMPETITOR, RUN_FINISH,
-};
+use crate::event::{EventInfo, KTime, RunRecord, ScoreData, ROLE_COMPETITOR, RUN_FINISH};
 
 // Home / dashboard: sign-in, event picker, quick actions and a live summary of
 // event status.  With no event selected it shows just the picker / sign-in bits.
@@ -381,29 +379,9 @@ struct StageProgress {
 }
 
 /// (total, active competitors, withdrawn, draft, reserve) entry counts.
-fn entry_counts(event: &EventInfo) -> (usize, usize, usize, usize, usize) {
-    let mut total = 0;
-    let mut active = 0;
-    let mut withdrawn = 0;
-    let mut draft = 0;
-    let mut reserve = 0;
-    for e in &event.entries {
-        total += 1;
-        match e.status {
-            EntryStatus::Withdrawn => withdrawn += 1,
-            EntryStatus::Draft => draft += 1,
-            EntryStatus::Reserve => reserve += 1,
-            _ => active += 1,
-        }
-    }
-    (total, active, withdrawn, draft, reserve)
-}
-
-fn is_active(e: &Entry) -> bool {
-    !matches!(
-        e.status,
-        EntryStatus::Withdrawn | EntryStatus::Draft | EntryStatus::Reserve
-    )
+fn entry_counts(event: &EventInfo) -> (usize, usize) {
+    let total = event.entries.len();
+    (total, total)
 }
 
 /// Per-stage progress for active entries:
@@ -415,12 +393,7 @@ fn stage_progress(
     scores: &[ScoreData],
     runs: &[RunRecord],
 ) -> Vec<StageProgress> {
-    let active_cars: HashSet<&str> = event
-        .entries
-        .iter()
-        .filter(|e| is_active(e))
-        .map(|e| e.car.as_str())
-        .collect();
+    let active_cars: HashSet<&str> = event.entries.iter().map(|e| e.car.as_str()).collect();
 
     let mut completed: HashMap<u8, usize> = HashMap::new();
     for s in scores {
@@ -475,17 +448,9 @@ fn view_status_summary(model: crate::Model) -> View {
     let scores = model.khana.scores.get_clone();
     let runs = model.khana.runs.get_clone();
 
-    let (total, active, withdrawn, draft, reserve) = entry_counts(&event);
+    let (total, active) = entry_counts(&event);
     let stages = stage_progress(&event, &scores, &runs);
-    let unassigned = event
-        .entries
-        .iter()
-        .filter(|e| {
-            crate::event::is_active_entry(e)
-                && e.car.is_empty()
-                && e.status != crate::event::EntryStatus::Reserve
-        })
-        .count();
+    let unassigned = event.entries.iter().filter(|e| e.car.is_empty()).count();
     // Pre-compute owned shared-car info (groups borrows event.entries which
     // goes out of scope before the view! macro, which needs 'static data).
     let shared_box: View = {
@@ -567,27 +532,7 @@ fn view_status_summary(model: crate::Model) -> View {
                     span(class="tag") { "Competitors" }
                     span(class="tag is-success") { (active.to_string()) }
                 } }
-                div(class="control") { span(class="tags has-addons") {
-                    span(class="tag") { "Withdrawn" }
-                    span(class="tag is-danger") { (withdrawn.to_string()) }
-                } }
-                (if draft > 0 {
-                    view! { div(class="control") { span(class="tags has-addons") {
-                        span(class="tag") { "Draft" }
-                        span(class="tag is-light") { (draft.to_string()) }
-                    } } }
-                } else {
-                    view! {}
-                })
-                (if reserve > 0 {
-                    view! { div(class="control") { span(class="tags has-addons") {
-                        span(class="tag") { "Reserve" }
-                        span(class="tag is-warning") { (reserve.to_string()) }
-                    } } }
-                } else {
-                    view! {}
-                })
-                (if unassigned > 0 {
+                            (if unassigned > 0 {
                     view! { div(class="control") { span(class="tags has-addons") {
                         span(class="tag") { "Awaiting #" }
                         span(class="tag is-danger") { (unassigned.to_string()) }
@@ -1142,7 +1087,7 @@ fn copy_from_clipboard(model: crate::Model) {
 
 #[cfg(test)]
 mod tests {
-    use crate::event::{EntryStatus, EventInfo, KTime, RunRecord, ScoreData, RUN_FINISH};
+    use crate::event::{EventInfo, KTime, RunRecord, ScoreData, RUN_FINISH};
 
     fn sample_scores() -> Vec<ScoreData> {
         serde_json::from_str(
@@ -1188,18 +1133,14 @@ mod tests {
             timing: TimingStyle::Stopwatch,
         };
         ev.stages = vec![stage(1), stage(2)];
-        let mut e1 = crate::event::Entry::new("1", "Alice");
-        e1.status = EntryStatus::Started;
-        let mut e2 = crate::event::Entry::new("2", "Bob");
-        e2.status = EntryStatus::Submitted;
-        let mut e3 = crate::event::Entry::new("3", "Carol");
-        e3.status = EntryStatus::Withdrawn;
-        let mut e4 = crate::event::Entry::new("4", "Dan");
-        e4.status = EntryStatus::Reserve;
+        let e1 = crate::event::Entry::new("1", "Alice");
+        let e2 = crate::event::Entry::new("2", "Bob");
+        let e3 = crate::event::Entry::new("3", "Carol");
+        let e4 = crate::event::Entry::new("4", "Dan");
         ev.entries = vec![e1, e2, e3, e4];
 
         let counts = super::entry_counts(&ev);
-        assert_eq!(counts, (4, 2, 1, 0, 1));
+        assert_eq!(counts, (4, 4));
 
         let p = super::stage_progress(&ev, &sample_scores(), &sample_runs());
         assert_eq!(p.len(), 2);

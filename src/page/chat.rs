@@ -212,8 +212,6 @@ fn line_summary(e: &FeedEntry) -> String {
         format!("[setup: {name}]")
     } else if e.body.starts_with(TimingEvent::RESULT_PREFIX) {
         "[result]".to_string()
-    } else if e.body.starts_with(TimingEvent::ENTRY_PREFIX) {
-        "[entry]".to_string()
     } else {
         e.body.clone()
     };
@@ -233,14 +231,9 @@ fn pretty_json(raw: &str) -> String {
 /// `KT `/`khanatime_*:` prefix and pretty-prints the JSON payload, falling
 /// back to the body text when it doesn't parse.
 fn pretty_body(body: &str) -> String {
-    let prefix = [
-        "KT ",
-        TimingEvent::SETUP_PREFIX,
-        TimingEvent::RESULT_PREFIX,
-        TimingEvent::ENTRY_PREFIX,
-    ]
-    .into_iter()
-    .find(|p| body.starts_with(p));
+    let prefix = ["KT ", TimingEvent::SETUP_PREFIX, TimingEvent::RESULT_PREFIX]
+        .into_iter()
+        .find(|p| body.starts_with(p));
     let json = prefix.map(|p| &body[p.len()..]).unwrap_or(body);
     pretty_json(json)
 }
@@ -283,11 +276,7 @@ mod tests {
 
     #[test]
     fn pretty_body_strips_khanatime_prefixes() {
-        for p in [
-            TimingEvent::SETUP_PREFIX,
-            TimingEvent::RESULT_PREFIX,
-            TimingEvent::ENTRY_PREFIX,
-        ] {
+        for p in [TimingEvent::SETUP_PREFIX, TimingEvent::RESULT_PREFIX] {
             let out = pretty_body(&format!("{p}{{\"a\":1}}"));
             assert!(out.contains("\"a\": 1"), "prefix {p}: {out}");
         }
