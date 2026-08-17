@@ -88,7 +88,7 @@ pub struct Entry {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub shared_car: Option<String>,
+    pub shared: Option<String>,
     #[serde(default)]
     pub order: u32,
     #[serde(default)]
@@ -184,7 +184,7 @@ pub fn entry_sort_key(e: &Entry) -> (bool, u32, u32) {
 pub fn shared_entry_nos(entries: &[Entry]) -> HashSet<u32> {
     let mut map: std::collections::HashMap<&str, Vec<u32>> = std::collections::HashMap::new();
     for e in entries {
-        if let Some(sh) = &e.shared_car {
+        if let Some(sh) = &e.shared {
             let key = sh.trim();
             if !key.is_empty() {
                 map.entry(key).or_default().push(e.entry_no);

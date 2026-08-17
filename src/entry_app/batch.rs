@@ -83,10 +83,10 @@ pub fn entry_diff(ops: &[EditOp], current: &[Entry]) -> Vec<String> {
                             existing.order, entry.order
                         ));
                     }
-                    if existing.shared_car != entry.shared_car {
+                    if existing.shared != entry.shared {
                         changes.push(format!(
                             "shared: {:?} \u{2192} {:?}",
-                            existing.shared_car, entry.shared_car
+                            existing.shared, entry.shared
                         ));
                     }
                     if !changes.is_empty() {

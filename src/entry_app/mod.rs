@@ -1,5 +1,4 @@
 pub mod batch;
-pub mod export;
 pub mod sync;
 pub mod types;
 
@@ -110,7 +109,7 @@ pub fn update(model: crate::Model, msg: Msg) {
         }
         Msg::SetShared { entry_no, shared } => staged_set(model, entry_no, |e| {
             let s = shared.trim();
-            e.shared_car = if s.is_empty() {
+            e.shared = if s.is_empty() {
                 None
             } else {
                 Some(s.to_string())
@@ -339,7 +338,7 @@ fn competitor_submit(model: crate::Model) {
             e.name = name;
             e.preferred_car = preferred;
             e.vehicle = vehicle;
-            e.shared_car = shared;
+            e.shared = shared;
             e
         }
         None => Entry {
@@ -347,7 +346,7 @@ fn competitor_submit(model: crate::Model) {
             preferred_car: preferred,
             name,
             vehicle,
-            shared_car: shared,
+            shared,
             owner: Some(identity),
             ..Entry::new("", "")
         },
@@ -405,7 +404,7 @@ pub fn view(model: crate::Model) -> View {
     let names: Vec<String> = {
         let mut seen: Vec<String> = vec![];
         for e in effective_entries(model) {
-            if let Some(n) = &e.shared_car {
+            if let Some(n) = &e.shared {
                 let trimmed = n.trim();
                 if !trimmed.is_empty() && !seen.iter().any(|x| x == trimmed) {
                     seen.push(trimmed.to_string());
@@ -496,20 +495,20 @@ fn view_entry(
     classes: &[String],
     admin: bool,
     identity: &str,
-    shared: &HashSet<u32>,
+    shared_nos: &HashSet<u32>,
 ) -> View {
     let entry_no = entry.entry_no;
     let car = entry.car.clone();
     let preferred = entry.preferred_car.clone();
     let vehicle = entry.vehicle.clone();
-    let shared_car = entry.shared_car.clone();
+    let shared = entry.shared.clone();
     let name = entry.name.clone();
     let status = entry.status.clone();
     let entry_classes = entry.classes.clone();
     let mine = !identity.is_empty() && entry.owner.as_deref() == Some(identity);
     let published = is_published(model);
     let status_value = status.as_str().to_string();
-    let is_shared = shared.contains(&entry_no);
+    let is_shared = shared_nos.contains(&entry_no);
 
     let status_options: Vec<View> = if admin {
         ENTRY_STATUSES
@@ -592,7 +591,7 @@ fn view_entry(
     };
 
     let shared_badge: View = {
-        let shared_cl = shared_car.clone();
+        let shared_cl = shared.clone();
         match &shared_cl {
             Some(sh) => {
                 let sh = sh.clone();
@@ -637,7 +636,7 @@ fn view_entry(
     let admin_fields: View = {
         let car_val = car.clone();
         let vehicle_val = vehicle.clone();
-        let shared_val = shared_car.clone().unwrap_or_default();
+        let shared_val = shared.clone().unwrap_or_default();
         if admin {
             view! {
                 div(class="field is-grouped is-grouped-multiline") {

@@ -1,5 +1,4 @@
-// Structure for in memory storage of event
-// probably will do serialisation for long term storage
+//! Core domain model: event, entries, stages, scoring, car-number logic.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -210,9 +209,8 @@ pub enum RegistrationMode {
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Entry {
-    /// Assigned car number — "" until the timekeeper assigns one at
-    /// close-entries.  Text, digits-first, uppercase (see
-    /// [normalize_car_number]); timing data keys on this string.
+    /// Assigned car number — "" until assigned.  Text, digits-first,
+    /// uppercase (see [normalize_car_number]); timing data keys on this string.
     pub car: String,
     pub name: String, // name
     #[serde(default)]
@@ -543,11 +541,6 @@ impl EventInfo {
         self.entries.iter().find(|e| e.car == car)
     }
 
-    /// Find an entry by its assigned car number (alias).
-    pub fn find_entry_by_car(&self, car: &str) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.car == car)
-    }
-
     /// Entries in vector order (the entries vector IS the running order).
     pub fn sorted_entries(&self) -> Vec<&Entry> {
         self.entries.iter().collect()
@@ -559,13 +552,6 @@ impl EventInfo {
         self.entries.retain(|e| e.car != car);
         before != self.entries.len()
     }
-}
-
-/// Sort key for running/display order (entries vector IS the running order).
-pub fn entry_sort_key(_e: &Entry) -> (bool, u32, u32) {
-    // Entries are now ordered by their position in the vector, so this
-    // function is a no-op placeholder.  The caller should use vector index.
-    (false, 0, 0)
 }
 
 impl Entry {
@@ -590,7 +576,7 @@ impl Entry {
 // Car numbers.  Text, not integers: "007", "0", "00A" and "000" are all
 // distinct.  Canonical form: no whitespace, uppercase, digits then optional
 // letters (`^[0-9]+[A-Z]*$`).  The assigned number is what officials type at
-// timing, so scores/runs key on it; the entry's identity is `entry_no`.
+// timing, so scores/runs key on it; the entry's identity is the car string.
 // ---------------------------------------------------------------------------
 
 pub const CAR_NUMBER_MAX: usize = 8;
@@ -642,7 +628,7 @@ pub const MAX_SUGGESTED_NUMBER: u32 = 65_535;
 /// number is never recycled within an event.
 ///
 /// When the pool up to [MAX_SUGGESTED_NUMBER] is exhausted, falls back to
-/// `next_entry_no + MAX_SUGGESTED_NUMBER` (never fails).
+/// `MAX_SUGGESTED_NUMBER + 1 + number_of_used_entries` (never fails).
 pub fn next_free_number(used: &std::collections::HashSet<String>) -> String {
     let nums: std::collections::HashSet<u32> = used.iter().filter_map(|c| c.parse().ok()).collect();
     for n in 1..=MAX_SUGGESTED_NUMBER {
@@ -683,7 +669,7 @@ fn num_car_key(car: &str) -> (u32, &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared cars.  `shared_car` is a typed name (rego, owner, description);
+// Shared cars.  `shared` is a typed name (rego, owner, description);
 // entries whose names match share a physical car.  Informational only — it
 // never affects numbering or timing, so it can change at any time.
 // ---------------------------------------------------------------------------
@@ -720,13 +706,10 @@ pub fn shared_groups(entries: &[Entry]) -> Vec<(String, Vec<&Entry>)> {
             .1
             .push(e);
     }
-    let mut out: Vec<(String, Vec<&Entry>)> = groups
+    let out: Vec<(String, Vec<&Entry>)> = groups
         .into_values()
         .filter(|(_, members)| members.len() >= 2)
         .collect();
-    for (_, members) in out.iter_mut() {
-        members.sort_by_key(|e| entry_sort_key(e));
-    }
     out
 }
 
@@ -1106,12 +1089,10 @@ pub fn calc_cumulative_positions(rv: &mut ResultView) {
 
 // get entries  in class
 pub fn find_entries_in_class<'a>(entries: &'a [Entry], class: &str) -> Vec<&'a Entry> {
-    let mut v: Vec<&Entry> = entries
+    entries
         .iter()
         .filter(|e| e.classes.iter().any(|c| c == class))
-        .collect();
-    v.sort_by_key(|e| entry_sort_key(e));
-    v
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,7 +1212,7 @@ pub fn is_matrix_org_homeserver(homeserver: &str) -> bool {
 /// Default Element Web origin for `homeserver` (used when the event has no
 /// explicit `element_link`): app.element.io for Matrix, else the local Element
 /// dev instance.  Empty for an unknown/blank homeserver.
-#[allow(dead_code)]
+#[allow(dead_code)] // used from page/event.rs (wasm build)
 pub fn element_link_default(homeserver: &str) -> String {
     let hs = homeserver.trim();
     if hs.is_empty() {
@@ -1400,7 +1381,6 @@ fn reg_from_str(s: &str) -> Option<RegistrationMode> {
 
 /// Insert or overwrite a time for a stage+car in deciseconds.
 /// (Wasm-only callers: the sync sink. Kept here for the native build.)
-#[allow(dead_code)]
 pub fn upsert_ktime(scores: &mut Vec<ScoreData>, stage: u8, car: &str, time: KTime) {
     if let Some(s) = scores.iter_mut().find(|s| s.stage == stage && s.car == car) {
         s.time = time;

@@ -1385,21 +1385,10 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
     };
 
     let entries = if editing {
-        em.edit_event.with(|e| {
-            e.as_ref()
-                .map(|e| {
-                    let mut entries = e.entries.clone();
-                    entries.sort_by_key(crate::event::entry_sort_key);
-                    entries
-                })
-                .unwrap_or_default()
-        })
+        em.edit_event
+            .with(|e| e.as_ref().map(|e| e.entries.clone()).unwrap_or_default())
     } else {
-        model.khana.event.with(|e| {
-            let mut entries = e.entries.clone();
-            entries.sort_by_key(crate::event::entry_sort_key);
-            entries
-        })
+        model.khana.event.with(|e| e.entries.clone())
     };
 
     if entries.is_empty() {
@@ -2602,7 +2591,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_description_and_shared_car() {
+    fn parse_description_and_shared() {
         let ev = test_event();
         let qp = parse_quick_entry("1 x  Outright  car  Rego  Group", &ev).unwrap();
         assert_eq!(qp.entry.description.as_deref(), Some("Rego"));

@@ -274,7 +274,6 @@ fn cmp_rows(a: &ResultRow, b: &ResultRow, key: SortKey, dir: SortDir) -> Orderin
         _ => c,
     };
     c.then_with(|| cmp_car(a, b))
-        .then_with(|| entry_sort_key(&a.entry).cmp(&entry_sort_key(&b.entry)))
 }
 
 /// Car numbers compare by their leading digit run (so 2 < 10), then the rest.
