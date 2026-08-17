@@ -410,9 +410,9 @@ fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
     model.app.parcel_open_event.set(None);
     crate::app::refresh_feed(model);
     let em = model.screens.setup;
+    em.edit_event.set(Some(ev));
     em.editing.set(true);
     em.edit_base.set(None);
-    em.edit_event.set(Some(ev));
 }
 
 /// Create a fresh draft and open it for editing.  The id is a random unique
@@ -694,7 +694,7 @@ fn invite_view_data(event: &crate::event::EventInfo) -> Option<(String, String, 
 }
 
 /// Header line: event id (edit mode) or name + id (view mode), with the
-/// lifecycle status tag.  No action buttons up here — they live at the bottom.
+/// lifecycle status tag.  Action buttons live at the top of the event box.
 fn view_header(model: crate::Model) -> View {
     view! {
         div(class="level") {
@@ -816,6 +816,7 @@ fn view_details(model: crate::Model) -> View {
     let editing = em.editing.get();
     view! {
         div(class="box") {
+            (view_action_bar(model))
             (move || {
                 let name = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default()))
@@ -1023,7 +1024,6 @@ fn view_details(model: crate::Model) -> View {
                     view! { p(class="help is-success") { (msg) } }
                 }
             })
-            (view_action_bar(model))
         }
     }
 }
@@ -1369,17 +1369,6 @@ fn view_entrants_section(model: crate::Model) -> View {
                     div(class="mt-2") {
                         (view_quick_add(model))
                         (move || view_entrant_list_readonly(model))
-                        div(class="field") {
-                            div(class="control") {
-                                button(
-                                    class="button is-small is-link",
-                                    on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Entries)),
-                                ) {
-                                    span(class="icon is-small") { i(class="fa fa-users") }
-                                    span { "Manage entries" }
-                                }
-                            }
-                        }
                     }
                 }
             })
@@ -1441,8 +1430,8 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                 view! { span(class="tag is-black") { (car) } }
             };
 
-            // Class checkboxes (if editing)
-            let class_checks: Vec<View> = if editing {
+            // Class checkboxes (if editing) or class tags (if viewing)
+            let class_display: Vec<View> = if editing {
                 event_classes
                     .iter()
                     .map(|cl| {
@@ -1464,7 +1453,13 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                     })
                     .collect()
             } else {
-                vec![]
+                classes
+                    .iter()
+                    .map(|cl| {
+                        let cl = cl.clone();
+                        view! { span(class="tag is-info is-light mr-1") { (cl) } }
+                    })
+                    .collect()
             };
 
             // Delete button (if editing)
@@ -1505,15 +1500,20 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                         div(class="control") { (name_click) }
                     }
                     div(class="field is-grouped is-grouped-multiline is-vcentered") {
-                        (class_checks)
+                        (class_display)
                     }
                     (if !vehicle.is_empty() || !desc.is_empty() || !shared.is_empty() {
-                        let info = format!("{}{}{}",
-                            if vehicle.is_empty() { String::new() } else { format!("{} ", vehicle) },
-                            if desc.is_empty() { String::new() } else { format!("{} ", desc) },
-                            if shared.is_empty() { String::new() } else { shared.clone() },
-                        );
-                        view! { p(class="help") { (info) } }
+                        let mut parts: Vec<String> = vec![];
+                        if !vehicle.is_empty() {
+                            parts.push(format!("Vehicle: {}", vehicle));
+                        }
+                        if !desc.is_empty() {
+                            parts.push(format!("Desc: {}", desc));
+                        }
+                        if !shared.is_empty() {
+                            parts.push(format!("Shared: {}", shared));
+                        }
+                        view! { p(class="help") { (parts.join("  ")) } }
                     } else {
                         view! {}
                     })
