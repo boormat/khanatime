@@ -1804,20 +1804,59 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
     let em = model.screens.setup;
     let editing = em.editing.get();
     let published = is_published(model);
+    let is_demo = model.khana.event.with(|e| e.is_demo());
+    let locked = published || is_demo;
     #[cfg(target_arch = "wasm32")]
     {
         let sessions = crate::services::matrix::load_sessions();
+
+        // When not editable (locked or not editing), show a static display
+        // instead of toggle buttons.
+        if locked || !editing {
+            let current_hs = model.khana.event.with(|e| e.homeserver.clone());
+            let locked_reason = if is_demo {
+                "Demo events are local-only and cannot be published."
+            } else if published {
+                "Homeserver cannot be changed after publishing."
+            } else {
+                "Enter Edit mode to change the homeserver."
+            };
+            return if current_hs.is_empty() {
+                view! {
+                    div(class="field") {
+                        label(class="label is-small") { "Publish to homeserver" }
+                        p(class="help") {
+                            "No homeserver selected. " (locked_reason)
+                        }
+                    }
+                }
+            } else {
+                let label = crate::page::home::hs_host_port(&current_hs);
+                view! {
+                    div(class="field") {
+                        label(class="label is-small") { "Publish to homeserver" }
+                        div(class="control") {
+                            input(
+                                class="input is-small",
+                                disabled=true,
+                                value=label,
+                                title=locked_reason,
+                            )
+                        }
+                        p(class="help") { (locked_reason) }
+                    }
+                }
+            };
+        }
+
+        // Editable: show tag-style toggle buttons.
         let buttons: Vec<View> = sessions
             .into_iter()
             .map(|s| {
                 view! {
                     (move || {
                         let hs = s.homeserver.clone();
-                        let current_hs = if editing {
-                            untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default()))
-                        } else {
-                            model.khana.event.with(|e| e.homeserver.clone())
-                        };
+                        let current_hs = em.edit_event.with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default());
                         let on = current_hs == hs;
                         let label = crate::page::home::hs_host_port(&hs);
                         view! {
@@ -1826,7 +1865,6 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                                     "button is-small kt-hs-tag {}",
                                     if on { "is-primary is-selected" } else { "is-light" }
                                 ),
-                                disabled=!editing || published,
                                 title=if on {
                                     "Selected — click to go offline (no homeserver)"
                                 } else {
@@ -1861,14 +1899,9 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                 }
             })
             .collect();
-        let current_hs = if editing {
-            untrack(|| {
-                em.edit_event
-                    .with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default())
-            })
-        } else {
-            model.khana.event.with(|e| e.homeserver.clone())
-        };
+        let current_hs = em
+            .edit_event
+            .with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default());
         view! {
             div(class="field") {
                 label(class="label is-small") { "From your logins" }
@@ -1891,7 +1924,7 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (model, editing, published);
+        let _ = (model, editing, published, locked, is_demo);
         view! {}
     }
 }
