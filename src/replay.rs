@@ -55,7 +55,7 @@ fn apply(
             }
             if msg.event_id == ev.uid {
                 if msg.delete {
-                    ev.remove_entry(msg.entry.entry_no);
+                    ev.remove_entry(&msg.entry.car);
                 } else {
                     ev.upsert_entry(msg.entry);
                 }
@@ -351,9 +351,8 @@ mod tests {
         ev.add_entry("9", "Dan");
         let mut confirmed = ev.entries.iter().find(|e| e.car == "7").unwrap().clone();
         confirmed.status = EntryStatus::Confirmed;
-        // Tombstone must carry the correct entry_no so remove_entry finds it.
-        let mut tombstone = Entry::new("9", "Dan");
-        tombstone.entry_no = ev.entries.iter().find(|e| e.car == "9").unwrap().entry_no;
+        // Tombstone uses car as the key for remove_entry.
+        let tombstone = Entry::new("9", "Dan");
         let log = vec![
             room(100, setup_body(&ev)),
             room(200, entry_msg("ev-uid-demo", &confirmed, false)),

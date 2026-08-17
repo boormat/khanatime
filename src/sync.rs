@@ -1107,7 +1107,7 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
                 }
                 if entry_msg.event_id == e.uid {
                     if entry_msg.delete {
-                        e.remove_entry(entry_msg.entry.entry_no);
+                        e.remove_entry(&entry_msg.entry.car);
                     } else {
                         e.upsert_entry(entry_msg.entry);
                     }

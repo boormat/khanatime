@@ -98,7 +98,7 @@ pub fn enqueue_entry(model: crate::Model, entry: &crate::event::Entry, delete: b
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(body, sender));
     model.khana.event.update(|e| {
         if delete {
-            e.remove_entry(entry.entry_no);
+            e.remove_entry(&entry.car);
         } else {
             e.upsert_entry(entry.clone());
         }

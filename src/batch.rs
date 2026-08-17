@@ -12,23 +12,23 @@ use crate::event::{Entry, EntryStatus, EventInfo, Stage, TimingStyle};
 #[allow(clippy::large_enum_variant)]
 #[allow(dead_code)]
 pub enum EditOp {
-    /// Insert or replace the entry (keyed by entry number).
+    /// Insert or replace the entry (keyed by car number).
     Upsert(Entry),
-    /// Tombstone: remove the entry by entry number.
-    Delete(u32),
+    /// Tombstone: remove the entry by car number.
+    Delete(String),
 }
 
 #[allow(dead_code)]
-fn op_key(op: &EditOp) -> u32 {
+fn op_key(op: &EditOp) -> String {
     match op {
-        EditOp::Upsert(e) => e.entry_no,
-        EditOp::Delete(no) => *no,
+        EditOp::Upsert(e) => e.car.clone(),
+        EditOp::Delete(car) => car.clone(),
     }
 }
 
 #[allow(dead_code)]
 fn upsert(entries: &mut Vec<Entry>, entry: Entry) {
-    if let Some(existing) = entries.iter_mut().find(|e| e.entry_no == entry.entry_no) {
+    if let Some(existing) = entries.iter_mut().find(|e| e.car == entry.car) {
         *existing = entry;
     } else {
         entries.push(entry);
@@ -43,7 +43,7 @@ pub fn apply_ops(entries: &[Entry], ops: &[EditOp]) -> Vec<Entry> {
     for op in ops {
         match op {
             EditOp::Upsert(e) => upsert(&mut out, e.clone()),
-            EditOp::Delete(no) => out.retain(|e| e.entry_no != *no),
+            EditOp::Delete(car) => out.retain(|e| e.car != *car),
         }
     }
     out
@@ -62,8 +62,8 @@ pub fn compact_ops(ops: &[EditOp], current: &[Entry]) -> Vec<EditOp> {
         kept.push(op.clone());
     }
     kept.retain(|op| match op {
-        EditOp::Upsert(e) => !current.iter().any(|c| c.entry_no == e.entry_no && c == e),
-        EditOp::Delete(no) => current.iter().any(|c| c.entry_no == *no),
+        EditOp::Upsert(e) => !current.iter().any(|c| c.car == e.car && c == e),
+        EditOp::Delete(car) => current.iter().any(|c| c.car == *car),
     });
     kept
 }
@@ -114,82 +114,55 @@ fn desc_str(s: &Option<String>) -> String {
 #[allow(dead_code)]
 pub fn entry_diff(ops: &[EditOp], current: &[Entry]) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
-    let order_changed = |e: &Entry| -> bool {
-        current
-            .iter()
-            .find(|c| c.entry_no == e.entry_no)
-            .map(|c| c.order != e.order)
-            .unwrap_or(false)
-    };
     for op in ops {
         match op {
-            EditOp::Upsert(e) => match current.iter().find(|c| c.entry_no == e.entry_no) {
+            EditOp::Upsert(e) => match current.iter().find(|c| c.car == e.car) {
                 None => lines.push(format!(
                     "+ {} — new entry (preferred {}, number {})",
                     e.name,
-                    if e.preferred_car.is_empty() {
-                        "none"
-                    } else {
-                        e.preferred_car.as_str()
-                    },
+                    show(&e.preferred_car),
                     car_or_unassigned(&e.car)
                 )),
                 Some(cur) => {
-                    if cur.car != e.car {
+                    if cur.name != e.name {
                         lines.push(format!(
-                            "~ {} — number: {} → {}",
-                            e.name,
-                            car_or_unassigned(&cur.car),
-                            car_or_unassigned(&e.car)
+                            "~ {} — name: {} \u{2192} {}",
+                            e.car, cur.name, e.name
                         ));
                     }
                     if cur.preferred_car != e.preferred_car {
                         lines.push(format!(
-                            "~ {} — preferred: {} → {}",
-                            e.name,
-                            if cur.preferred_car.is_empty() {
-                                "(none)"
-                            } else {
-                                cur.preferred_car.as_str()
-                            },
-                            if e.preferred_car.is_empty() {
-                                "(none)"
-                            } else {
-                                e.preferred_car.as_str()
-                            }
+                            "~ {} — preferred: {} \u{2192} {}",
+                            e.car,
+                            show(&cur.preferred_car),
+                            show(&e.preferred_car)
                         ));
                     }
                     if cur.shared_car != e.shared_car {
                         lines.push(format!(
-                            "~ {} — shared car: {} → {}",
-                            e.name,
+                            "~ {} — shared car: {} \u{2192} {}",
+                            e.car,
                             shared_str(&cur.shared_car),
                             shared_str(&e.shared_car)
                         ));
                     }
                     if cur.description != e.description {
                         lines.push(format!(
-                            "~ {} — description: {} → {}",
-                            e.name,
+                            "~ {} — description: {} \u{2192} {}",
+                            e.car,
                             desc_str(&cur.description),
                             desc_str(&e.description)
                         ));
                     }
-                    if cur.name != e.name || cur.vehicle != e.vehicle {
+                    if cur.vehicle != e.vehicle {
                         lines.push(format!(
-                            "~ Car {} {} — {}",
-                            e.car,
-                            e.name,
-                            if cur.name != e.name {
-                                format!("name: {} → {}", cur.name, e.name)
-                            } else {
-                                format!("vehicle: {} → {}", cur.vehicle, e.vehicle)
-                            }
+                            "~ {} — vehicle: {} \u{2192} {}",
+                            e.car, cur.vehicle, e.vehicle
                         ));
                     }
                     if cur.status != e.status {
                         lines.push(format!(
-                            "~ Car {} — status: {} → {}",
+                            "~ {} — status: {} \u{2192} {}",
                             e.car,
                             status_str(&cur.status),
                             status_str(&e.status)
@@ -198,37 +171,28 @@ pub fn entry_diff(ops: &[EditOp], current: &[Entry]) -> Vec<String> {
                     let (added, removed) = class_delta(&cur.classes, &e.classes);
                     if !removed.is_empty() {
                         lines.push(format!(
-                            "~ Car {} — classes: −{}",
+                            "~ {} — classes: \u{2212}{}",
                             e.car,
                             removed.join(", ")
                         ));
                     }
                     if !added.is_empty() {
-                        lines.push(format!("~ Car {} — classes: +{}", e.car, added.join(", ")));
+                        lines.push(format!("~ {} — classes: +{}", e.car, added.join(", ")));
                     }
                 }
             },
-            EditOp::Delete(no) => {
-                if let Some(e) = current.iter().find(|c| c.entry_no == *no) {
+            EditOp::Delete(car) => {
+                if let Some(e) = current.iter().find(|c| c.car == *car) {
                     lines.push(format!(
-                        "− Car {} {} (removed)",
+                        "\u{2212} Car {} {} (removed)",
                         car_or_unassigned(&e.car),
                         e.name
                     ));
+                } else {
+                    lines.push(format!("\u{2212} (unknown car {car})"));
                 }
             }
         }
-    }
-    // Single summary line for pure reorders (individually noisy).
-    let reordered: Vec<&str> = ops
-        .iter()
-        .filter_map(|op| match op {
-            EditOp::Upsert(e) if order_changed(e) => Some(e.name.as_str()),
-            _ => None,
-        })
-        .collect();
-    if !reordered.is_empty() {
-        lines.push(format!("↕ Reordered: {}", reordered.join(", ")));
     }
     lines
 }
@@ -343,9 +307,9 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
         }
     }
 
-    // New entries (by entry_no not in base).
+    // New entries (by car not in base).
     for e in &staged.entries {
-        if !base.entries.iter().any(|b| b.entry_no == e.entry_no) {
+        if !base.entries.iter().any(|b| b.car == e.car) {
             let classes = if e.classes.is_empty() {
                 String::new()
             } else {
@@ -357,7 +321,7 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
                 format!(", vehicle: {}", e.vehicle)
             };
             lines.push(format!(
-                "+ {} — new entry (#{}, {}{}{})",
+                "+ {} — new entry ({}, {}{}{})",
                 e.name, e.car, e.status, classes, vehicle
             ));
         }
@@ -365,14 +329,9 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
 
     // Compare existing entries for field changes.
     for e in &staged.entries {
-        if let Some(b) = base.entries.iter().find(|b| b.entry_no == e.entry_no) {
+        if let Some(b) = base.entries.iter().find(|b| b.car == e.car) {
             if b.name != e.name {
-                field_diff(
-                    &mut lines,
-                    &format!("Entry #{} name", e.entry_no),
-                    &b.name,
-                    &e.name,
-                );
+                field_diff(&mut lines, &format!("{} name", e.car), &b.name, &e.name);
             }
             if b.classes != e.classes {
                 let before = if b.classes.is_empty() {
@@ -386,14 +345,14 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
                     e.classes.join(", ")
                 };
                 lines.push(format!(
-                    "~ Entry #{} classes: {} → {}",
-                    e.entry_no, before, after
+                    "~ {} classes: {} \u{2192} {}",
+                    e.car, before, after
                 ));
             }
             if b.vehicle != e.vehicle {
                 field_diff(
                     &mut lines,
-                    &format!("Entry #{} vehicle", e.entry_no),
+                    &format!("{} vehicle", e.car),
                     &b.vehicle,
                     &e.vehicle,
                 );
@@ -401,7 +360,7 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
             if b.description != e.description {
                 field_diff(
                     &mut lines,
-                    &format!("Entry #{} description", e.entry_no),
+                    &format!("{} description", e.car),
                     &desc_str(&b.description),
                     &desc_str(&e.description),
                 );
@@ -409,7 +368,7 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
             if b.shared_car != e.shared_car {
                 field_diff(
                     &mut lines,
-                    &format!("Entry #{} shared car", e.entry_no),
+                    &format!("{} shared car", e.car),
                     &shared_str(&b.shared_car),
                     &shared_str(&e.shared_car),
                 );
@@ -417,7 +376,7 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
             if b.status != e.status {
                 field_diff(
                     &mut lines,
-                    &format!("Entry #{} status", e.entry_no),
+                    &format!("{} status", e.car),
                     &status_str(&b.status),
                     &status_str(&e.status),
                 );
@@ -425,11 +384,11 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
         }
     }
 
-    // Removed / withdrawn entries (by entry_no not in staged).
+    // Removed / withdrawn entries (by car not in staged).
     for e in &base.entries {
-        if !staged.entries.iter().any(|s| s.entry_no == e.entry_no) {
+        if !staged.entries.iter().any(|s| s.car == e.car) {
             lines.push(format!(
-                "− {} — removed entry (#{}, {})",
+                "\u{2212} {} — removed entry ({}, {})",
                 e.name, e.car, e.status
             ));
         }
@@ -442,17 +401,8 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
 mod tests {
     use super::*;
 
-    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
     fn entry(car: &str, name: &str) -> Entry {
-        let mut e = Entry::new(car, name);
-        e.entry_no = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        e
-    }
-
-    fn with_no(mut e: Entry, no: u32) -> Entry {
-        e.entry_no = no;
-        e
+        Entry::new(car, name)
     }
 
     fn with_status(mut e: Entry, status: EntryStatus) -> Entry {
@@ -460,72 +410,63 @@ mod tests {
         e
     }
 
-    fn delete(no: u32) -> EditOp {
-        EditOp::Delete(no)
+    fn delete(car: &str) -> EditOp {
+        EditOp::Delete(car.to_string())
     }
 
     #[test]
     fn apply_ops_previews() {
-        let a = with_no(entry("1", "A"), 1);
-        let b = with_no(entry("2", "B"), 2);
+        let a = entry("1", "A");
+        let b = entry("2", "B");
         let current = vec![a, b];
         let ops = vec![
-            EditOp::Upsert(with_status(
-                with_no(entry("2", "B"), 2),
-                EntryStatus::Confirmed,
-            )),
-            EditOp::Upsert(with_no(entry("3", "C"), 3)),
-            delete(1),
+            EditOp::Upsert(with_status(entry("2", "B"), EntryStatus::Confirmed)),
+            EditOp::Upsert(entry("3", "C")),
+            delete("1"),
         ];
         let out = apply_ops(&current, &ops);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].entry_no, 2);
+        assert_eq!(out[0].car, "2");
         assert_eq!(out[0].status, EntryStatus::Confirmed);
-        assert_eq!(out[1].entry_no, 3);
+        assert_eq!(out[1].car, "3");
     }
 
     #[test]
     fn compact_keeps_last_per_entry() {
-        let current = vec![with_no(entry("7", "Alice"), 1)];
+        let current = vec![entry("7", "Alice")];
         let ops = vec![
-            EditOp::Upsert(with_no(entry("8", "Bob"), 2)),
-            EditOp::Upsert(with_no(entry("8", "Bob"), 2)),
-            EditOp::Upsert(with_no(entry("8", "Robert"), 2)),
+            EditOp::Upsert(entry("8", "Bob")),
+            EditOp::Upsert(entry("8", "Bob")),
+            EditOp::Upsert(entry("8", "Robert")),
         ];
         let out = compact_ops(&ops, &current);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0], EditOp::Upsert(with_no(entry("8", "Robert"), 2)));
+        assert_eq!(out[0], EditOp::Upsert(entry("8", "Robert")));
     }
 
     #[test]
     fn compact_add_then_delete_collapses() {
         let current = vec![];
-        let ops = vec![EditOp::Upsert(with_no(entry("9", "Dan"), 1)), delete(1)];
+        let ops = vec![EditOp::Upsert(entry("9", "Dan")), delete("9")];
         assert!(compact_ops(&ops, &current).is_empty());
         // delete-then-re-add keeps the add
-        let ops = vec![delete(1), EditOp::Upsert(with_no(entry("9", "Dan"), 1))];
+        let ops = vec![delete("9"), EditOp::Upsert(entry("9", "Dan"))];
         assert_eq!(
             compact_ops(&ops, &current),
-            vec![EditOp::Upsert(with_no(entry("9", "Dan"), 1))]
+            vec![EditOp::Upsert(entry("9", "Dan"))]
         );
     }
 
     #[test]
     fn compact_drops_noops() {
-        let current = vec![with_status(
-            with_no(entry("7", "Alice"), 1),
-            EntryStatus::Confirmed,
-        )];
+        let current = vec![with_status(entry("7", "Alice"), EntryStatus::Confirmed)];
         // class toggled off then on, status changed then reverted
         let mut toggled = current[0].clone();
         toggled.classes.retain(|c| c != "Outright");
         toggled.classes.push("Outright".into());
         assert_eq!(toggled, current[0]);
         let ops = vec![
-            EditOp::Upsert(with_status(
-                with_no(entry("7", "Alice"), 1),
-                EntryStatus::Submitted,
-            )),
+            EditOp::Upsert(with_status(entry("7", "Alice"), EntryStatus::Submitted)),
             EditOp::Upsert(toggled.clone()),
         ];
         assert!(compact_ops(&ops, &current).is_empty());
@@ -533,8 +474,8 @@ mod tests {
 
     #[test]
     fn compact_delete_of_absent_entry_dropped() {
-        let current = vec![with_no(entry("7", "Alice"), 1)];
-        let ops = vec![delete(99)];
+        let current = vec![entry("7", "Alice")];
+        let ops = vec![delete("99")];
         assert!(compact_ops(&ops, &current).is_empty());
     }
 
@@ -542,17 +483,17 @@ mod tests {
     fn compact_preserves_order() {
         let current = vec![];
         let ops = vec![
-            EditOp::Upsert(with_no(entry("2", "B"), 2)),
-            EditOp::Upsert(with_no(entry("1", "A"), 1)),
-            EditOp::Upsert(with_no(entry("3", "C"), 3)),
+            EditOp::Upsert(entry("2", "B")),
+            EditOp::Upsert(entry("1", "A")),
+            EditOp::Upsert(entry("3", "C")),
         ];
         let out = compact_ops(&ops, &current);
         assert_eq!(
             out,
             vec![
-                EditOp::Upsert(with_no(entry("2", "B"), 2)),
-                EditOp::Upsert(with_no(entry("1", "A"), 1)),
-                EditOp::Upsert(with_no(entry("3", "C"), 3)),
+                EditOp::Upsert(entry("2", "B")),
+                EditOp::Upsert(entry("1", "A")),
+                EditOp::Upsert(entry("3", "C")),
             ]
         );
     }
@@ -560,53 +501,47 @@ mod tests {
     #[test]
     fn entry_diff_lines() {
         let current = vec![
-            with_status(with_no(entry("7", "Alice"), 1), EntryStatus::Submitted),
-            with_no(entry("9", "Dan"), 2),
+            with_status(entry("7", "Alice"), EntryStatus::Submitted),
+            entry("9", "Dan"),
         ];
         let mut updated = current[0].clone();
         updated.status = EntryStatus::Confirmed;
         updated.classes = vec!["Outright".into(), "Junior".into()];
-        updated.car = "77".into();
         let ops = vec![
             EditOp::Upsert(updated),
-            EditOp::Upsert(with_no(entry("8", "Bob"), 3)),
-            delete(2),
+            EditOp::Upsert(entry("8", "Bob")),
+            delete("9"),
         ];
         let lines = entry_diff(&ops, &current);
         let joined = lines.join("\n");
-        assert!(joined.contains("+ Bob — new entry")); // renumbered/shifted
-        assert!(joined.contains("− Car 9 Dan (removed)"));
-        assert!(joined.contains("number: 7 → 77"));
-        assert!(joined.contains("status: entry submitted → confirmed"));
+        assert!(joined.contains("+ Bob \u{2014} new entry"));
+        assert!(joined.contains("Dan"));
+        assert!(joined.contains("status: entry submitted \u{2192} confirmed"));
         assert!(joined.contains("classes: +Junior"));
     }
 
     #[test]
     fn entry_diff_preferred_and_shared_lines() {
-        let current = vec![with_no(entry("7", "Alice"), 1)];
+        let current = vec![entry("7", "Alice")];
         let mut updated = current[0].clone();
         updated.preferred_car = "55".into();
         updated.shared_car = Some("ABC123".into());
         let ops = vec![EditOp::Upsert(updated)];
         let joined = entry_diff(&ops, &current).join("\n");
-        assert!(joined.contains("preferred: (none) → 55"));
-        assert!(joined.contains("shared car: (none) → ABC123"));
+        assert!(joined.contains("preferred: (empty) \u{2192} 55"));
+        assert!(joined.contains("shared car: (none) \u{2192} ABC123"));
     }
 
     #[test]
     fn entry_diff_reorder_summary() {
-        let current = vec![
-            with_no(entry("1", "A"), 1),
-            with_no(entry("2", "B"), 2),
-            with_no(entry("3", "C"), 3),
-        ];
-        let mut b = current[1].clone();
-        b.order = 10;
-        let mut c = current[2].clone();
-        c.order = 20;
+        // With order removed, no reorder detection is possible.
+        // Same entries produce no diff.
+        let current = vec![entry("1", "A"), entry("2", "B"), entry("3", "C")];
+        let b = current[1].clone();
+        let c = current[2].clone();
         let ops = vec![EditOp::Upsert(b), EditOp::Upsert(c)];
         let joined = entry_diff(&ops, &current).join("\n");
-        assert!(joined.contains("↕ Reordered: B, C"), "{joined}");
+        assert!(joined.is_empty(), "{joined}");
     }
 
     fn base() -> EventInfo {

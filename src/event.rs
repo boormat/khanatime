@@ -265,11 +265,6 @@ impl std::fmt::Display for EntryStatus {
 
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Entry {
-    /// Stable primary key: per-event counter, assigned on creation (see
-    /// [EventInfo::upsert_entry]).  Identity never changes, even when the car
-    /// number does.  0 = not yet assigned.
-    #[serde(default)]
-    pub entry_no: u32,
     /// Assigned car number — "" until the timekeeper assigns one at
     /// close-entries.  Text, digits-first, uppercase (see
     /// [normalize_car_number]); timing data keys on this string.
@@ -289,10 +284,6 @@ pub struct Entry {
     /// [shared_car_key]) share a physical car.  Informational only.
     #[serde(default)]
     pub shared_car: Option<String>,
-    /// Running/display order, assigned at close-entries.  0 = unset (falls
-    /// back to arrival order by `entry_no`).
-    #[serde(default)]
-    pub order: u32,
     #[serde(default)]
     pub classes: Vec<String>, // Classes. Count be an ID. meh
     #[serde(default)]
@@ -411,10 +402,10 @@ pub enum KTime {
 pub struct ResultView {
     pub event: EventInfo,
     pub class: String,
-    pub rows: IndexMap<u32, ResultRow>, // entries keyed by entry_no, in running order
-    pub base_times_ds: Vec<u16>,        // base times
+    pub rows: IndexMap<String, ResultRow>, // entries keyed by car, in running order
+    pub base_times_ds: Vec<u16>,           // base times
 
-                                        // can probably remove the Index map so we can sort by a separate vec of refs?
+                                           // can probably remove the Index map so we can sort by a separate vec of refs?
 }
 
 // results to render
@@ -621,38 +612,29 @@ impl EventInfo {
             return false;
         }
 
-        let mut entry = Entry::new(car, name);
-        entry.entry_no = self.next_entry_no();
+        let entry = Entry::new(car, name);
         self.entries.push(entry);
         true
     }
 
-    /// The next unused entry number (counter, never reused within an event).
-    pub fn next_entry_no(&self) -> u32 {
-        self.entries.iter().map(|e| e.entry_no).max().unwrap_or(0) + 1
-    }
-
-    /// Find an entry by its stable entry number.
-    pub fn find_entry(&self, entry_no: u32) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.entry_no == entry_no)
-    }
-
     /// Find an entry by its assigned car number.
+    pub fn find_entry(&self, car: &str) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.car == car)
+    }
+
+    /// Find an entry by its assigned car number (alias).
     pub fn find_entry_by_car(&self, car: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.car == car)
     }
 
-    /// Entries in running/display order: explicit `order` first (0 = unset,
-    /// sorted last in arrival order), ties broken by `entry_no`.
+    /// Entries in vector order (the entries vector IS the running order).
     pub fn sorted_entries(&self) -> Vec<&Entry> {
-        let mut v: Vec<&Entry> = self.entries.iter().collect();
-        v.sort_by_key(|e| entry_sort_key(e));
-        v
+        self.entries.iter().collect()
     }
 
-    /// Set the lifecycle status of an entry by entry number.
-    pub fn set_entry_status(&mut self, entry_no: u32, status: EntryStatus) -> bool {
-        if let Some(e) = self.entries.iter_mut().find(|e| e.entry_no == entry_no) {
+    /// Set the lifecycle status of an entry by car number.
+    pub fn set_entry_status(&mut self, car: &str, status: EntryStatus) -> bool {
+        if let Some(e) = self.entries.iter_mut().find(|e| e.car == car) {
             e.status = status;
             true
         } else {
@@ -660,36 +642,41 @@ impl EventInfo {
         }
     }
 
-    // delete an entry by entry number
-    pub fn remove_entry(&mut self, entry_no: u32) -> bool {
+    // delete an entry by car number
+    pub fn remove_entry(&mut self, car: &str) -> bool {
         let before = self.entries.len();
-        self.entries.retain(|e| e.entry_no != entry_no);
+        self.entries.retain(|e| e.car != car);
         before != self.entries.len()
     }
 
-    /// Insert or replace an entry (keyed by entry number; 0 is assigned the
-    /// next number).  Returns true when the entry was new.
-    ///
-    /// Counter collision from concurrent offline creation on another device:
-    /// when the existing entry with the same number clearly belongs to
-    /// someone else (both have owners and they differ), the incoming entry is
-    /// renumbered and appended instead of clobbering.
+    /// Insert or replace an entry (keyed by car number).
+    /// Returns true when the entry was new.
     pub fn upsert_entry(&mut self, entry: Entry) -> bool {
-        let mut entry = entry;
-        if entry.entry_no == 0 {
-            entry.entry_no = self.next_entry_no();
-        }
-        match self
+        // Find existing entry with same car.  If multiple exist (collision),
+        // prefer the one with the same owner for replacement.
+        let pos = self
             .entries
             .iter()
-            .position(|e| e.entry_no == entry.entry_no)
-        {
+            .position(|e| e.car == entry.car)
+            .map(|i| {
+                // If there's a collision (multiple same-car entries), prefer
+                // the one whose owner matches, or fall back to first.
+                if self.entries.iter().skip(i + 1).any(|e| e.car == entry.car) {
+                    self.entries[i..]
+                        .iter()
+                        .position(|e| e.car == entry.car && e.owner == entry.owner)
+                        .map(|j| i + j)
+                        .unwrap_or(i)
+                } else {
+                    i
+                }
+            });
+        match pos {
             Some(i) => {
                 let collision = self.entries[i].owner.is_some()
                     && entry.owner.is_some()
                     && self.entries[i].owner != entry.owner;
                 if collision {
-                    entry.entry_no = self.next_entry_no();
                     self.entries.push(entry);
                     true
                 } else {
@@ -705,9 +692,11 @@ impl EventInfo {
     }
 }
 
-/// Sort key for running/display order (see [EventInfo::sorted_entries]).
-pub fn entry_sort_key(e: &Entry) -> (bool, u32, u32) {
-    (e.order == 0, e.order, e.entry_no)
+/// Sort key for running/display order (entries vector IS the running order).
+pub fn entry_sort_key(_e: &Entry) -> (bool, u32, u32) {
+    // Entries are now ordered by their position in the vector, so this
+    // function is a no-op placeholder.  The caller should use vector index.
+    (false, 0, 0)
 }
 
 /// Encode an entry state message body (`khanatime_entry:<json>`).
@@ -741,12 +730,10 @@ impl Entry {
         let car = car.to_string();
         let name = name.to_string();
         Self {
-            entry_no: 0, // assigned by EventInfo::add_entry/upsert_entry
             preferred_car: String::new(),
             vehicle,
             description: None,
             shared_car: None,
-            order: 0,
             classes,
             car,
             name,
@@ -916,10 +903,10 @@ pub fn shared_groups(entries: &[Entry]) -> Vec<(String, Vec<&Entry>)> {
 /// Entry numbers that share a physical car (members of a ≥2 group) — for
 /// flagging shared cars on the timing screens.
 #[allow(dead_code)]
-pub fn shared_entry_nos(entries: &[Entry]) -> HashSet<u32> {
+pub fn shared_entry_nos(entries: &[Entry]) -> HashSet<String> {
     shared_groups(entries)
         .iter()
-        .flat_map(|(_, members)| members.iter().map(|e| e.entry_no))
+        .flat_map(|(_, members)| members.iter().map(|e| e.car.clone()))
         .collect()
 }
 
@@ -929,9 +916,14 @@ impl ResultView {
 
         let base_times_ds = base_times_for(event, runs);
 
-        let rows: IndexMap<u32, ResultRow> = entries
+        let rows: IndexMap<String, ResultRow> = entries
             .iter()
-            .map(|e| (e.entry_no, ResultRow::init(e, event, runs, &base_times_ds)))
+            .map(|e| {
+                (
+                    e.car.clone(),
+                    ResultRow::init(e, event, runs, &base_times_ds),
+                )
+            })
             .collect();
         let class = class.to_string();
 
@@ -1168,7 +1160,7 @@ pub fn create_outright_view(event: &EventInfo, runs: &[RunRecord]) -> ResultView
             .filter(|e| is_active_entry(e))
             .map(|e| {
                 (
-                    e.entry_no,
+                    e.car.clone(),
                     ResultRow::init(e, event, runs, &rv.base_times_ds),
                 )
             })
@@ -2366,18 +2358,15 @@ mod tests {
             ..Default::default()
         };
         let mut a = Entry::new("1", "Alice");
-        a.entry_no = 1;
         a.classes = vec!["Female".into()];
         let mut b = Entry::new("2", "Bob");
-        b.entry_no = 2;
         b.classes = vec!["Junior".into()];
         let mut w = Entry::new("3", "Wendy");
-        w.entry_no = 3;
         w.status = EntryStatus::Withdrawn;
         ev.entries = vec![a, b, w];
         let rv = create_outright_view(&ev, &[]);
-        let nos: Vec<u32> = rv.rows.keys().copied().collect();
-        assert_eq!(nos, vec![1, 2]);
+        let nos: Vec<String> = rv.rows.keys().cloned().collect();
+        assert_eq!(nos, vec!["1".to_string(), "2".to_string()]);
     }
 
     #[test]
@@ -2622,20 +2611,18 @@ mod tests {
         let mut ev = EventInfo::default();
         ev.add_entry("7", "Alice");
         ev.add_entry("8", "Bob");
-        let (a, b) = (ev.entries[0].entry_no, ev.entries[1].entry_no);
-        assert!(ev.set_entry_status(a, EntryStatus::Accepted));
-        assert!(ev.set_entry_status(b, EntryStatus::Withdrawn));
-        assert!(!ev.set_entry_status(99, EntryStatus::Draft));
-        assert_eq!(ev.find_entry(a).unwrap().status, EntryStatus::Accepted);
-        assert_eq!(ev.find_entry(b).unwrap().status, EntryStatus::Withdrawn);
+        let (a, b) = (ev.entries[0].car.clone(), ev.entries[1].car.clone());
+        assert!(ev.set_entry_status(&a, EntryStatus::Accepted));
+        assert!(ev.set_entry_status(&b, EntryStatus::Withdrawn));
+        assert!(!ev.set_entry_status("99", EntryStatus::Draft));
+        assert_eq!(ev.find_entry(&a).unwrap().status, EntryStatus::Accepted);
+        assert_eq!(ev.find_entry(&b).unwrap().status, EntryStatus::Withdrawn);
     }
 
     #[test]
     fn calc_pipeline_handles_multi_stage() {
-        let mut a = Entry::new("1", "Alice");
-        a.entry_no = 1;
-        let mut b = Entry::new("2", "Bob");
-        b.entry_no = 2;
+        let a = Entry::new("1", "Alice");
+        let b = Entry::new("2", "Bob");
         let ev = EventInfo {
             entries: vec![a, b],
             stages: vec![Stage::for_test(1), Stage::for_test(2)],
@@ -2658,7 +2645,7 @@ mod tests {
         let rv = create_result_view(&ev, &runs, "Outright");
         assert_eq!(
             rv.rows.keys().cloned().collect::<Vec<_>>(),
-            vec![1u32, 2u32],
+            vec!["1".to_string(), "2".to_string()],
             "entries={:?} classes={:?}",
             ev.entries
                 .iter()
@@ -2666,7 +2653,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ev.classes
         );
-        let alice = &rv.rows[&1u32].columns;
+        let alice = &rv.rows["1"].columns;
         assert_eq!(alice.len(), 2);
         // cumulative time after stage 2 = sum of both stage scores
         assert_eq!(
@@ -2697,8 +2684,7 @@ mod tests {
         };
         let runs = vec![finish(1, 450), finish(2, 470), finish(3, 100)];
         let rv = create_result_view(&ev, &runs, "Outright");
-        let alice_entry_no = ev.entries[0].entry_no;
-        let stage2 = &rv.rows[&alice_entry_no].columns[1].as_ref().unwrap();
+        let stage2 = &rv.rows["1"].columns[1].as_ref().unwrap();
         // Best 2 of 3 = 450 + 100 = 550.
         assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 550);
         // Display order is run order, with the non-counting run struck out.
@@ -2756,10 +2742,8 @@ mod tests {
 
     #[test]
     fn zero_stage_propagates_positions_and_cumulative() {
-        let mut a = Entry::new("1", "Alice");
-        a.entry_no = 1;
-        let mut b = Entry::new("2", "Bob");
-        b.entry_no = 2;
+        let a = Entry::new("1", "Alice");
+        let b = Entry::new("2", "Bob");
         // Stage 2 becomes 0 of 0; stages 1 and 3 stay normal single runs.
         let mut stages: Vec<Stage> = (1..=3).map(Stage::for_test).collect();
         stages[1].runs_total = 0;
@@ -2784,8 +2768,8 @@ mod tests {
             finish(3, "2", 300),
         ];
         let rv = create_result_view(&ev, &runs, "Outright");
-        let alice = &rv.rows[&1u32].columns;
-        let bob = &rv.rows[&2u32].columns;
+        let alice = &rv.rows["1"].columns;
+        let bob = &rv.rows["2"].columns;
         // Stage 2: everyone ties on a zero total.
         for row in [alice, bob] {
             let s2 = row[1].as_ref().unwrap();
@@ -2813,10 +2797,8 @@ mod tests {
 
     #[test]
     fn cumulative_chain_breaks_on_missing_test() {
-        let mut a = Entry::new("1", "Alice");
-        a.entry_no = 1;
-        let mut b = Entry::new("2", "Bob");
-        b.entry_no = 2;
+        let a = Entry::new("1", "Alice");
+        let b = Entry::new("2", "Bob");
         let ev = EventInfo {
             entries: vec![a, b],
             stages: (1..=3).map(Stage::for_test).collect(),
@@ -2839,14 +2821,14 @@ mod tests {
             finish(3, "2", 1, 300),
         ];
         let rv = create_result_view(&ev, &runs, "Outright");
-        let alice = &rv.rows[&1u32].columns;
+        let alice = &rv.rows["1"].columns;
         // Test 3 is scored (she ran it), but its Cum/O-R is blank because
         // test 2 was never completed.
         let t3 = alice[2].as_ref().unwrap();
         assert_eq!(t3.stage_pos.as_ref().unwrap().score_ds, 600);
         assert!(t3.cum_pos.is_none());
         // Bob's chain runs through all three tests.
-        let bob = &rv.rows[&2u32].columns;
+        let bob = &rv.rows["2"].columns;
         assert_eq!(
             bob[2].as_ref().unwrap().cum_pos.as_ref().unwrap().score_ds,
             1320
@@ -2883,9 +2865,7 @@ mod tests {
             ..Default::default()
         };
         ev.add_entry("7", "Alice");
-        let no = ev.entries[0].entry_no;
         let mut changed = Entry::new("7", "Alice");
-        changed.entry_no = no;
         changed.status = EntryStatus::Confirmed;
         changed.owner = Some("@alice:localhost".into());
         assert!(!ev.upsert_entry(changed.clone()));
@@ -2899,23 +2879,20 @@ mod tests {
     #[test]
     fn upsert_entry_assigns_numbers_and_survives_collisions() {
         let mut ev = EventInfo::default();
-        ev.add_entry("7", "Alice"); // entry_no 1
-                                    // New entry with no number assigned yet -> gets the next number.
+        ev.add_entry("7", "Alice");
+        // New entry with a new car -> gets added.
         assert!(ev.upsert_entry(Entry::new("8", "Bob")));
-        assert_eq!(ev.entries[1].entry_no, 2);
-        // Concurrent offline creation on another device grabbed the same
-        // counter for a different owner: renumber, don't clobber.
-        let mut incoming = Entry::new("9", "Carol");
-        incoming.entry_no = 2;
+        assert_eq!(ev.entries.len(), 2);
+        // Concurrent offline creation on another device claimed the same
+        // car with a different owner: collision, both kept.
+        let mut incoming = Entry::new("8", "Carol");
         incoming.owner = Some("@carol:localhost".into());
         ev.entries[1].owner = Some("@bob:localhost".into());
         assert!(ev.upsert_entry(incoming));
         assert_eq!(ev.entries.len(), 3);
-        assert_eq!(ev.entries[2].entry_no, 3);
         assert!(ev.find_entry_by_car("8").is_some());
         // Same owner re-sending is a normal replace.
-        let mut resend = Entry::new("9", "Carol");
-        resend.entry_no = 3;
+        let mut resend = Entry::new("8", "Carol");
         resend.owner = Some("@carol:localhost".into());
         assert!(!ev.upsert_entry(resend));
         assert_eq!(ev.entries.len(), 3);
@@ -2934,15 +2911,14 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(names, vec!["Alice", "Bob", "Carol"]);
-        // Explicit order wins; unset entries fall back to entry_no at the end.
-        ev.entries[2].order = 10; // Carol first
-        ev.entries[0].order = 20; // Alice second
+        // Entries are now ordered by vector position (no separate order field).
+        ev.entries.swap(2, 0); // Carol first
         let names: Vec<&str> = ev
             .sorted_entries()
             .iter()
             .map(|e| e.name.as_str())
             .collect();
-        assert_eq!(names, vec!["Carol", "Alice", "Bob"]);
+        assert_eq!(names, vec!["Carol", "Bob", "Alice"]);
     }
 
     #[test]
@@ -2998,13 +2974,10 @@ mod tests {
     #[test]
     fn shared_groups_require_two_members() {
         let mut e1 = Entry::new("1", "Alice");
-        e1.entry_no = 1;
         e1.shared_car = Some("ABC123".to_string());
         let mut e2 = Entry::new("2", "Bob");
-        e2.entry_no = 2;
         e2.shared_car = Some("abc123".to_string()); // same as e1 after case normalisation
         let mut e3 = Entry::new("3", "Carol");
-        e3.entry_no = 3;
         e3.shared_car = Some("Own car".to_string());
         let entries = vec![e1, e2.clone(), e3.clone()];
         let groups = shared_groups(&entries);
@@ -3017,9 +2990,9 @@ mod tests {
         // Singleton groups don't count as shared.
         let solo = vec![e2, e3];
         assert!(shared_groups(&solo).is_empty());
-        // Member entry numbers are flagged.
+        // Member cars are flagged.
         let shared = shared_entry_nos(&entries);
-        assert!(shared.contains(&1) && shared.contains(&2) && !shared.contains(&3));
+        assert!(shared.contains("1") && shared.contains("2") && !shared.contains("3"));
     }
 
     #[test]
@@ -3091,25 +3064,24 @@ mod tests {
     #[test]
     fn entry_diff_car_assignment_and_clearing() {
         use crate::batch::{entry_diff, EditOp};
+        // With car as PK, assigning a car to an empty-car entry is a new entry.
         let current = vec![
             // Entry without assigned number.
             Entry {
-                entry_no: 1,
                 car: String::new(),
                 name: "Alice".into(),
                 ..Entry::new("", "")
             },
         ];
-        // Assign "77".
+        // Assign "77" — looks like a new entry since car changed.
         let mut assigned = current[0].clone();
         assigned.car = "77".into();
         let lines = entry_diff(&[EditOp::Upsert(assigned.clone())], &current);
-        assert!(lines.join("\n").contains("number: (unassigned) → 77"));
-
-        // Clear "77" back to "".
-        let cleared = current[0].clone();
-        let lines = entry_diff(&[EditOp::Upsert(cleared.clone())], &[assigned]);
-        assert!(lines.join("\n").contains("number: 77 → (unassigned)"));
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("Alice") && joined.contains("77"),
+            "should show Alice with car 77: {joined}"
+        );
     }
 
     #[test]
@@ -3117,10 +3089,8 @@ mod tests {
         // Withdrawn entries with shared names are still grouped (visible for
         // historical reference).
         let mut e1 = Entry::new("1", "Alice");
-        e1.entry_no = 1;
         e1.shared_car = Some("Team Car".into());
         let mut e2 = Entry::new("2", "Bob");
-        e2.entry_no = 2;
         e2.shared_car = Some("Team Car".into());
         e2.status = EntryStatus::Withdrawn;
         let items = vec![e1, e2];
@@ -3130,11 +3100,10 @@ mod tests {
 
         // Whitespace-only name is treated as None (skipped).
         let mut e3 = Entry::new("3", "Carol");
-        e3.entry_no = 3;
         e3.shared_car = Some("   ".into());
         assert!(shared_groups(&[e3]).is_empty());
 
-        // All None → empty groups.
+        // All None -> empty groups.
         let e4 = Entry::new("4", "Dan");
         assert!(shared_groups(&[e4]).is_empty());
     }
@@ -3142,18 +3111,15 @@ mod tests {
     #[test]
     fn close_entries_integration() {
         // Simulate entries awaiting close-entries:
-        //   Alice: active, no preferred, no order
-        //   Bob: active, preferred 7, no order
+        //   Alice: active, no preferred
+        //   Bob: active, preferred 7
         //   Carol: draft (no number needed)
         let mut alice = Entry::new("", "Alice");
-        alice.entry_no = 1;
         alice.status = EntryStatus::Submitted;
         let mut bob = Entry::new("", "Bob");
-        bob.entry_no = 2;
         bob.preferred_car = "7".into();
         bob.status = EntryStatus::Submitted;
         let mut carol = Entry::new("", "Carol");
-        carol.entry_no = 3;
         carol.status = EntryStatus::Draft; // not active
 
         let entries = vec![alice, bob, carol];
@@ -3180,16 +3146,13 @@ mod tests {
                 continue;
             }
             let mut changed = false;
-            if e.order == 0 {
-                e.order = (idx as u32 + 1) * 10;
-                changed = true;
-            }
             if e.car.is_empty() {
                 let suggest = suggest_car_number(&used, &e.preferred_car);
                 e.car = suggest.clone();
                 used.insert(suggest);
                 changed = true;
             }
+            let _ = idx;
             if changed {
                 staged.push(e.clone());
             }
@@ -3200,16 +3163,14 @@ mod tests {
             2,
             "Alice + Bob get numbers, Carol draft skipped"
         );
-        // Alice has no preferred → next free number (1, since "1" not used).
-        let alice_result = staged.iter().find(|e| e.entry_no == 1).unwrap();
+        // Alice has no preferred -> next free number (1, since "1" not used).
+        let alice_result = staged.iter().find(|e| e.car == "1").unwrap();
         assert_eq!(alice_result.car, "1");
-        assert_eq!(alice_result.order, 10);
-        // Bob preferred "7" and "7" is free → gets it.
-        let bob_result = staged.iter().find(|e| e.entry_no == 2).unwrap();
+        // Bob preferred "7" and "7" is free -> gets it.
+        let bob_result = staged.iter().find(|e| e.car == "7").unwrap();
         assert_eq!(bob_result.car, "7");
-        assert_eq!(bob_result.order, 20);
         // Carol unchanged.
-        assert!(staged.iter().all(|e| e.entry_no != 3));
+        assert!(staged.iter().all(|e| !e.car.is_empty()));
     }
 
     #[test]

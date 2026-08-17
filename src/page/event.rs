@@ -34,12 +34,12 @@ pub enum Msg {
     Publish,
     // quick-add entrant
     QuickAdd(InputMsg),
-    /// Load an entry into the text box for editing.
-    EditEntry(u32),
-    /// Toggle a class on/off for an entry.
-    ToggleEntryClass(u32, String),
-    /// Delete an entry.
-    DeleteEntry(u32),
+    /// Load an entry into the text box for editing (keyed by car).
+    EditEntry(String),
+    /// Toggle a class on/off for an entry (keyed by car).
+    ToggleEntryClass(String, String),
+    /// Delete an entry (keyed by car).
+    DeleteEntry(String),
 }
 
 #[derive(Clone, Copy)]
@@ -74,9 +74,9 @@ pub struct Model {
     pub show_entrants: Signal<bool>,
     // quick-add entrant
     pub quick_add: InputModel,
-    /// entry_no of the entry being edited (click-to-edit); used to preserve
-    /// the entry_no when the edited text is re-submitted via quick-add.
-    pub editing_entry_no: Signal<Option<u32>>,
+    /// car of the entry being edited (click-to-edit); used to preserve
+    /// the entry when the edited text is re-submitted via quick-add.
+    pub editing_entry_car: Signal<Option<String>>,
 }
 
 pub fn init() -> Model {
@@ -96,7 +96,7 @@ pub fn init() -> Model {
         show_tests: create_signal(crate::event::load_collapse("tests", true)),
         show_entrants: create_signal(crate::event::load_collapse("entrants", false)),
         quick_add: crate::input::init(),
-        editing_entry_no: create_signal(None),
+        editing_entry_car: create_signal(None),
     }
 }
 
@@ -214,7 +214,7 @@ pub fn update(model: crate::Model, msg: Msg) {
             if input.is_empty() {
                 return;
             }
-            let editing_entry_no = em.editing_entry_no.get_clone();
+            let editing_entry_car = em.editing_entry_car.get_clone();
             let edit_ev = em.edit_event.get_clone().unwrap_or_default();
             match parse_quick_entry(input, &edit_ev) {
                 Ok(qp) => {
@@ -236,10 +236,10 @@ pub fn update(model: crate::Model, msg: Msg) {
                             .collect();
                         entry.car = crate::event::next_free_number(&used);
                     }
-                    // Preserve entry_no when re-adding an edited entry.
-                    if let Some(orig_no) = editing_entry_no {
-                        entry.entry_no = orig_no;
-                        em.editing_entry_no.set(None);
+                    // Preserve car when re-adding an edited entry.
+                    if let Some(orig_car) = editing_entry_car {
+                        entry.car = orig_car;
+                        em.editing_entry_car.set(None);
                     }
                     let car = entry.car.clone();
                     let name = entry.name.clone();
@@ -269,26 +269,26 @@ pub fn update(model: crate::Model, msg: Msg) {
         }
         Msg::QuickAdd(InputMsg::CancelEdit) => {
             crate::input::input_clear(model.screens.setup.quick_add);
-            model.screens.setup.editing_entry_no.set(None);
+            model.screens.setup.editing_entry_car.set(None);
         }
-        Msg::EditEntry(entry_no) => {
+        Msg::EditEntry(car) => {
             let em = model.screens.setup;
             let mut ev = em.edit_event.get_clone().unwrap_or_default();
-            if let Some(pos) = ev.entries.iter().position(|e| e.entry_no == entry_no) {
+            if let Some(pos) = ev.entries.iter().position(|e| e.car == car) {
                 let entry = ev.entries.remove(pos);
                 let text = serialize_entry_for_edit(&entry);
                 let car = entry.car.clone();
                 let name = entry.name.clone();
                 em.quick_add.input.set(text);
                 em.edit_event.set(Some(ev));
-                em.editing_entry_no.set(Some(entry_no));
-                em.feedback.set(format!("Editing #{} {}.", car, name));
+                em.editing_entry_car.set(Some(car.clone()));
+                em.feedback.set(format!("Editing {} {}.", car, name));
             }
         }
-        Msg::ToggleEntryClass(entry_no, class) => {
+        Msg::ToggleEntryClass(car, class) => {
             model.screens.setup.edit_event.update(|e| {
                 if let Some(ref mut ev) = e {
-                    if let Some(entry) = ev.entries.iter_mut().find(|e| e.entry_no == entry_no) {
+                    if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
                         if entry.classes.contains(&class) {
                             entry.classes.retain(|c| c != &class);
                         } else {
@@ -298,16 +298,15 @@ pub fn update(model: crate::Model, msg: Msg) {
                 }
             });
         }
-        Msg::DeleteEntry(entry_no) => {
+        Msg::DeleteEntry(car) => {
             model.screens.setup.edit_event.update(|e| {
                 if let Some(ref mut ev) = e {
                     if is_published(model) {
-                        if let Some(entry) = ev.entries.iter_mut().find(|e| e.entry_no == entry_no)
-                        {
+                        if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
                             entry.status = crate::event::EntryStatus::Withdrawn;
                         }
                     } else {
-                        ev.entries.retain(|e| e.entry_no != entry_no);
+                        ev.entries.retain(|e| e.car != car);
                     }
                 }
             });
@@ -387,7 +386,7 @@ fn send_batch(model: crate::Model) {
     em.confirm.set(None);
     em.confirm_warning.set(String::new());
     em.edit_base.set(None);
-    em.editing_entry_no.set(None);
+    em.editing_entry_car.set(None);
     em.pre_create.set(None);
     em.saved.set("Saved.".to_string());
 }
@@ -465,10 +464,8 @@ fn copy_as_new(model: crate::Model) {
     e.timing_id = None;
     e.timing_alias = None;
     // Entrants + tests are copied; entrant state is reset for the fresh event.
-    for (i, entry) in e.entries.iter_mut().enumerate() {
-        entry.entry_no = (i as u32) + 1;
+    for entry in e.entries.iter_mut() {
         entry.status = crate::event::EntryStatus::Submitted;
-        entry.order = 0;
     }
     em.pre_create.set(Some(src.id.clone()));
     switch_to_draft(model, e);
@@ -487,7 +484,7 @@ fn discard_edits(model: crate::Model) {
     em.confirm.set(None);
     em.confirm_warning.set(String::new());
     em.edit_base.set(None);
-    em.editing_entry_no.set(None);
+    em.editing_entry_car.set(None);
     crate::input::input_clear(em.quick_add);
     let prev = em.pre_create.get_clone();
     em.pre_create.set(None);
@@ -1415,7 +1412,6 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
     let items: Vec<View> = entries
         .iter()
         .map(|e| {
-            let entry_no = e.entry_no;
             let car = e.car.clone();
             let name = e.name.clone();
             let classes = e.classes.clone();
@@ -1424,10 +1420,11 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
             let shared = e.shared_car.clone().unwrap_or_default();
 
             // Car tag
+            let car_tag_text = car.clone();
             let car_tag: View = if car.is_empty() {
                 view! { span(class="tag is-light") { "?" } }
             } else {
-                view! { span(class="tag is-black") { (car) } }
+                view! { span(class="tag is-black") { (car_tag_text) } }
             };
 
             // Class checkboxes (if editing) or class tags (if viewing)
@@ -1438,13 +1435,14 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                         let cl = cl.clone();
                         let on = classes.contains(&cl);
                         let c1 = cl.clone();
+                        let car_for_cls = car.clone();
                         view! {
                             label(class="checkbox is-small") {
                                 input(
                                     r#type="checkbox",
                                     checked=on,
                                     on:change=move |_| {
-                                        crate::update(model, crate::Msg::EventMsg(Msg::ToggleEntryClass(entry_no, c1.clone())));
+                                        crate::update(model, crate::Msg::EventMsg(Msg::ToggleEntryClass(car_for_cls.clone(), c1.clone())));
                                     },
                                 )
                                 (cl)
@@ -1464,12 +1462,13 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
 
             // Delete button (if editing)
             let delete_btn: View = if editing {
+                let car_for_del = car.clone();
                 view! {
                     button(
                         class="delete is-small ml-2",
                         title="Withdraw entry",
                         on:click=move |_| {
-                            crate::update(model, crate::Msg::EventMsg(Msg::DeleteEntry(entry_no)));
+                            crate::update(model, crate::Msg::EventMsg(Msg::DeleteEntry(car_for_del.clone())));
                         },
                     )
                 }
@@ -1479,13 +1478,14 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
 
             // Click-to-edit: clicking the name loads entry into text box
             let name_click = if editing {
+                let car_for_edit = car.clone();
                 view! {
                     span(
                         class="has-text-link",
                         style="cursor: pointer; text-decoration: underline;",
                         title="Click to edit",
                         on:click=move |_| {
-                            crate::update(model, crate::Msg::EventMsg(Msg::EditEntry(entry_no)));
+                            crate::update(model, crate::Msg::EventMsg(Msg::EditEntry(car_for_edit.clone())));
                         },
                     ) { (name) }
                 }
@@ -2422,14 +2422,12 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
 
     Ok(QuickParse {
         entry: crate::event::Entry {
-            entry_no: 0,
             car,
             preferred_car: String::new(),
             name,
             vehicle,
             description,
             shared_car,
-            order: 0,
             classes: field0_classes,
             licence: None,
             passenger: None,
@@ -2459,7 +2457,6 @@ mod tests {
         };
         // Add an existing entry for shared-car lookup tests.
         let mut existing = crate::event::Entry::new("99", "Existing Driver");
-        existing.entry_no = 1;
         existing.shared_car = Some("My Shared Car".into());
         e.entries.push(existing);
         e

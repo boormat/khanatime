@@ -692,8 +692,7 @@ mod tests {
     use super::*;
 
     fn row(car: &str, name: &str) -> ResultRow {
-        let mut e = Entry::new(car, name);
-        e.entry_no = 0;
+        let e = Entry::new(car, name);
         ResultRow {
             entry: e,
             columns: vec![],
