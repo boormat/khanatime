@@ -1,5 +1,4 @@
 pub mod chat;
-pub mod entries;
 pub mod event;
 pub mod events;
 pub mod finish;
@@ -88,6 +87,7 @@ pub fn enqueue_ktime(
 
 /// Enqueue an entry state message (upsert or tombstone) for the current event,
 /// apply it to the local event immediately, and flush + refresh.
+#[allow(dead_code)]
 pub fn enqueue_entry(model: crate::Model, entry: &crate::event::Entry, delete: bool) {
     let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {

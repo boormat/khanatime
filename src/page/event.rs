@@ -403,10 +403,10 @@ fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
     crate::event::session_set_event(&id);
     crate::event::session_set_recent(&id);
     model.screens.chat.expanded.set(Default::default());
-    model.screens.entries.staged.set(Vec::new());
-    model.screens.entries.confirm.set(None);
-    model.screens.entries.admin.set(false);
-    model.screens.entries.show_form.set(false);
+    model.screens.entry_app.staged.set(Vec::new());
+    model.screens.entry_app.confirm.set(None);
+    model.screens.entry_app.admin.set(false);
+    model.screens.entry_app.show_form.set(false);
     model.sync.parcel_open_event.set(None);
     crate::app::refresh_feed(model);
     let em = model.screens.setup;

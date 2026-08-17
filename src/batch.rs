@@ -10,6 +10,7 @@ use crate::event::{Entry, EntryStatus, EventInfo, Stage, TimingStyle};
 /// A staged entry edit (admin edit mode on the Entries page).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)]
+#[allow(dead_code)]
 pub enum EditOp {
     /// Insert or replace the entry (keyed by entry number).
     Upsert(Entry),
@@ -17,6 +18,7 @@ pub enum EditOp {
     Delete(u32),
 }
 
+#[allow(dead_code)]
 fn op_key(op: &EditOp) -> u32 {
     match op {
         EditOp::Upsert(e) => e.entry_no,
@@ -24,6 +26,7 @@ fn op_key(op: &EditOp) -> u32 {
     }
 }
 
+#[allow(dead_code)]
 fn upsert(entries: &mut Vec<Entry>, entry: Entry) {
     if let Some(existing) = entries.iter_mut().find(|e| e.entry_no == entry.entry_no) {
         *existing = entry;
@@ -34,6 +37,7 @@ fn upsert(entries: &mut Vec<Entry>, entry: Entry) {
 
 /// Fold staged ops over the committed entry list (WYSIWYG preview while
 /// editing).
+#[allow(dead_code)]
 pub fn apply_ops(entries: &[Entry], ops: &[EditOp]) -> Vec<Entry> {
     let mut out: Vec<Entry> = entries.to_vec();
     for op in ops {
@@ -50,6 +54,7 @@ pub fn apply_ops(entries: &[Entry], ops: &[EditOp]) -> Vec<Entry> {
 /// last one fully determines that entry's final state), then drop no-ops
 /// against the committed state (an upsert already present, or a tombstone for
 /// an entry that isn't committed).  Order is stable, first-seen.
+#[allow(dead_code)]
 pub fn compact_ops(ops: &[EditOp], current: &[Entry]) -> Vec<EditOp> {
     let mut kept: Vec<EditOp> = Vec::new();
     for op in ops {
@@ -81,6 +86,7 @@ fn status_str(s: &EntryStatus) -> String {
     s.to_string()
 }
 
+#[allow(dead_code)]
 fn car_or_unassigned(car: &str) -> String {
     if car.is_empty() {
         "(unassigned)".to_string()
@@ -105,6 +111,7 @@ fn desc_str(s: &Option<String>) -> String {
 
 /// Human-readable list of changes a batch of entry ops makes, for the confirm
 /// dialog.  Runs over the already-compacted ops.
+#[allow(dead_code)]
 pub fn entry_diff(ops: &[EditOp], current: &[Entry]) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let order_changed = |e: &Entry| -> bool {

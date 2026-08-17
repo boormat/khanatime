@@ -711,6 +711,7 @@ pub fn entry_sort_key(e: &Entry) -> (bool, u32, u32) {
 }
 
 /// Encode an entry state message body (`khanatime_entry:<json>`).
+#[allow(dead_code)]
 pub fn entry_body(event_id: &str, entry: &Entry, delete: bool) -> String {
     let msg = EntryMsg {
         event_id: event_id.to_string(),
@@ -832,6 +833,7 @@ pub fn next_free_number(used: &std::collections::HashSet<String>) -> String {
 
 /// Suggest an assigned car number: the entrant's preferred number when it's
 /// valid and free, else the smallest free pure number.
+#[allow(dead_code)]
 pub fn suggest_car_number(used: &std::collections::HashSet<String>, preferred: &str) -> String {
     if !preferred.is_empty() && validate_car_number(preferred).is_ok() && !used.contains(preferred)
     {
@@ -913,6 +915,7 @@ pub fn shared_groups(entries: &[Entry]) -> Vec<(String, Vec<&Entry>)> {
 
 /// Entry numbers that share a physical car (members of a ≥2 group) — for
 /// flagging shared cars on the timing screens.
+#[allow(dead_code)]
 pub fn shared_entry_nos(entries: &[Entry]) -> HashSet<u32> {
     shared_groups(entries)
         .iter()
@@ -1743,6 +1746,7 @@ pub fn stage_has_timing(scores: &[ScoreData], runs: &[RunRecord], stage: u8) -> 
 }
 
 /// True when a car has any recorded score or run record.
+#[allow(dead_code)]
 pub fn entry_has_timing(scores: &[ScoreData], runs: &[RunRecord], car: &str) -> bool {
     scores.iter().any(|s| s.car == car) || runs.iter().any(|r| r.car == car)
 }

@@ -1,5 +1,6 @@
 mod app;
 mod batch;
+mod entry_app;
 mod event;
 mod ids;
 mod input;

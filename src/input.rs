@@ -56,6 +56,22 @@ pub fn input_clear(model: InputModel) {
     model.feedback.set(String::new());
 }
 
+pub fn input_value(ev: &web_sys::Event) -> String {
+    use wasm_bindgen::JsCast;
+    ev.target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|e| e.value())
+        .unwrap_or_default()
+}
+
+pub fn select_value(ev: &web_sys::Event) -> String {
+    use wasm_bindgen::JsCast;
+    ev.target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+        .map(|e| e.value())
+        .unwrap_or_default()
+}
+
 #[allow(dead_code)]
 pub fn input_feedback(model: InputModel, msg: &str) {
     model.feedback.set(msg.to_string());

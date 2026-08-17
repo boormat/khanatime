@@ -155,7 +155,13 @@ pub struct Screens {
     pub stopwatch: page::stopwatch::Model,
     pub chat: page::chat::Model,
     pub results: page::results::Model,
-    pub entries: page::entries::Model,
+    pub entry_app: crate::entry_app::Model,
+}
+
+/// Domain state for the entry app (independent of khanacross timing).
+#[derive(Clone, Copy)]
+pub struct EntryAppState {
+    pub event: Signal<crate::entry_app::types::EntryEvent>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,6 +169,7 @@ pub struct Model {
     pub screen: Signal<Screen>,
     pub khana: KhanaState,
     pub sync: SyncState,
+    pub entry_app: EntryAppState,
     pub screens: Screens,
 }
 
@@ -178,7 +185,7 @@ pub enum Msg {
     EventMsg(page::event::Msg),
     EventsMsg(page::events::Msg),
     ResultMsg(page::results::Msg),
-    EntriesMsg(page::entries::Msg),
+    EntryAppMsg(crate::entry_app::Msg),
     /// Export the current event's log as a QR parcel.
     ExportParcel,
     /// Import a pasted/scanned QR parcel into the current event.
@@ -264,6 +271,9 @@ impl Model {
                 scan_status: create_signal(String::new()),
                 parcel_qr_paused: create_signal(false),
             },
+            entry_app: EntryAppState {
+                event: create_signal(crate::entry_app::types::EntryEvent::default()),
+            },
             screens: Screens {
                 home: page::home::init(),
                 events: page::events::init(),
@@ -274,7 +284,7 @@ impl Model {
                 stopwatch: page::stopwatch::init(),
                 chat: page::chat::init(),
                 results,
-                entries: page::entries::init(),
+                entry_app: crate::entry_app::init(),
             },
         };
         refresh_feed(m);
@@ -388,10 +398,10 @@ pub fn update(model: Model, msg: Msg) {
             crate::event::session_set_recent(&name);
             model.screens.chat.expanded.set(Default::default());
             // Fresh event: reset any staged entry edits.
-            model.screens.entries.staged.set(Vec::new());
-            model.screens.entries.confirm.set(None);
-            model.screens.entries.admin.set(false);
-            model.screens.entries.show_form.set(false);
+            model.screens.entry_app.staged.set(Vec::new());
+            model.screens.entry_app.confirm.set(None);
+            model.screens.entry_app.admin.set(false);
+            model.screens.entry_app.show_form.set(false);
             // And any pending "open the parcel's event" offer.
             model.sync.parcel_open_event.set(None);
             refresh_feed(model);
@@ -410,7 +420,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::EventMsg(msg) => page::event::update(model, msg),
         Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => page::results::update(model, msg),
-        Msg::EntriesMsg(msg) => page::entries::update(model, msg),
+        Msg::EntryAppMsg(msg) => crate::entry_app::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
         Msg::ExportParcel => crate::sync::export_parcel(model),
         Msg::ImportParcel => crate::sync::import_parcel(model),
@@ -599,6 +609,29 @@ pub fn refresh_feed(model: Model) {
     model.screens.setup.needs_sync.set(has_unsent_setup);
 }
 
+pub fn refresh_entry_app(model: Model) {
+    let id = model.entry_app.event.with(|e| e.id.clone());
+    if id.is_empty() {
+        return;
+    }
+    let log = crate::log::load_log(&id);
+    let pending = crate::log::load_pending(&id);
+    let mut entries = Vec::new();
+    for msg in log.iter().chain(pending.iter()) {
+        if let Some((entry, delete)) = crate::entry_app::sync::parse_entry_body(&msg.body) {
+            if delete {
+                entries.retain(|e: &crate::entry_app::types::Entry| e.entry_no != entry.entry_no);
+            } else if let Some(existing) = entries.iter_mut().find(|e| e.entry_no == entry.entry_no)
+            {
+                *existing = entry;
+            } else {
+                entries.push(entry);
+            }
+        }
+    }
+    model.entry_app.event.update(|ev| ev.entries = entries);
+}
+
 /// Enqueue a setup-manifest message for the current event (the durable record
 /// of every edit) and refresh the feed.  Flushes to the room when connected.
 pub fn enqueue_setup(model: Model) {
@@ -665,7 +698,7 @@ fn view_content(model: Model) -> View {
                 Screen::Stopwatch => page::stopwatch::view(model),
                 Screen::Results => page::results::view(model),
                 Screen::Event => page::event::view(model),
-                Screen::Entries => page::entries::view(model),
+                Screen::Entries => crate::entry_app::view(model),
                 Screen::Chat => page::chat::view(model),
             })
         }
