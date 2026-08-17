@@ -151,11 +151,11 @@ pub fn update(model: crate::Model, msg: Msg) {
                 discard_edits(model);
             } else {
                 let em = model.screens.setup;
-                em.edit_event.set(Some(model.app.event.get_clone()));
+                em.edit_event.set(Some(model.khana.event.get_clone()));
                 em.saved.set(String::new());
                 em.editing.set(true);
                 if is_published(model) {
-                    em.edit_base.set(Some(model.app.event.get_clone()));
+                    em.edit_base.set(Some(model.khana.event.get_clone()));
                     crate::sync::refresh_from_room(model);
                 }
             }
@@ -188,8 +188,8 @@ pub fn update(model: crate::Model, msg: Msg) {
                 .with(|e| e.as_ref().and_then(|ev| ev.stages.get(idx).map(|s| s.num)));
             if let Some(num) = num {
                 if crate::event::stage_has_timing(
-                    &model.app.scores.get_clone(),
-                    &model.app.runs.get_clone(),
+                    &model.khana.scores.get_clone(),
+                    &model.khana.runs.get_clone(),
                     num,
                 ) {
                     em.feedback
@@ -350,7 +350,7 @@ fn serialize_entry_for_edit(entry: &crate::event::Entry) -> String {
 /// nothing to diff yet (the draft must still be persisted).
 fn save_batch(model: crate::Model) {
     let em = model.screens.setup;
-    let committed = model.app.event.get_clone();
+    let committed = model.khana.event.get_clone();
     let staged = em.edit_event.get_clone().unwrap_or_default();
     let diff = crate::batch::event_diff(&committed, &staged);
     if diff.is_empty() {
@@ -380,7 +380,7 @@ fn save_batch(model: crate::Model) {
 fn send_batch(model: crate::Model) {
     let em = model.screens.setup;
     let staged = em.edit_event.get_clone().unwrap_or_default();
-    model.app.event.set(staged);
+    model.khana.event.set(staged);
     commit_event(model);
     em.editing.set(false);
     em.edit_event.set(None);
@@ -397,9 +397,9 @@ fn send_batch(model: crate::Model) {
 /// records `pre_create` first so Discard can restore the previous event.
 fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
     let id = ev.id.clone();
-    model.app.event.set(ev.clone());
-    model.app.scores.set(Vec::new());
-    model.app.runs.set(Vec::new());
+    model.khana.event.set(ev.clone());
+    model.khana.scores.set(Vec::new());
+    model.khana.runs.set(Vec::new());
     crate::event::session_set_event(&id);
     crate::event::session_set_recent(&id);
     model.screens.chat.expanded.set(Default::default());
@@ -407,7 +407,7 @@ fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
     model.screens.entries.confirm.set(None);
     model.screens.entries.admin.set(false);
     model.screens.entries.show_form.set(false);
-    model.app.parcel_open_event.set(None);
+    model.sync.parcel_open_event.set(None);
     crate::app::refresh_feed(model);
     let em = model.screens.setup;
     em.edit_event.set(Some(ev));
@@ -432,7 +432,7 @@ fn create_draft(model: crate::Model) {
         .screens
         .setup
         .pre_create
-        .set(Some(model.app.event.with(|e| e.id.clone())));
+        .set(Some(model.khana.event.with(|e| e.id.clone())));
     model.screens.setup.feedback.set(String::new());
     model.screens.setup.saved.set(String::new());
     switch_to_draft(model, e);
@@ -443,7 +443,7 @@ fn create_draft(model: crate::Model) {
 /// reset for the new event.  The original stays untouched.
 fn copy_as_new(model: crate::Model) {
     let em = model.screens.setup;
-    let src = model.app.event.get_clone();
+    let src = model.khana.event.get_clone();
     if src.is_null() {
         em.feedback.set("No event to copy.".to_string());
         return;
@@ -505,9 +505,9 @@ fn discard_edits(model: crate::Model) {
 /// identity logged in on the Home page.
 fn publish(model: crate::Model) {
     let em = model.screens.setup;
-    let event = model.app.event.get_clone();
-    let scores = model.app.scores.get_clone();
-    let runs = model.app.runs.get_clone();
+    let event = model.khana.event.get_clone();
+    let scores = model.khana.scores.get_clone();
+    let runs = model.khana.runs.get_clone();
     let errs = crate::event::publish_errors(&event, &scores, &runs);
     if !errs.is_empty() {
         em.publish_status
@@ -527,7 +527,7 @@ fn publish_wasm(model: crate::Model) {
     use crate::event::EventStatus;
 
     let em = model.screens.setup;
-    let mut event = model.app.event.get_clone();
+    let mut event = model.khana.event.get_clone();
     if event.id.is_empty() {
         em.publish_status
             .set(Some("Save the event first (needs a name)".to_string()));
@@ -542,7 +542,7 @@ fn publish_wasm(model: crate::Model) {
         let rooms_created = event.space_id.is_some();
         if rooms_created {
             event.status = EventStatus::Published;
-            model.app.event.set(event.clone());
+            model.khana.event.set(event.clone());
             crate::app::enqueue_setup(model);
         }
         match (res, rooms_created) {
@@ -589,10 +589,10 @@ fn view_invite(model: crate::Model) -> View {
     #[cfg(target_arch = "wasm32")]
     {
         let em = model.screens.setup;
-        if em.editing.get() || !model.app.event.with(|e| e.is_published()) {
+        if em.editing.get() || !model.khana.event.with(|e| e.is_published()) {
             return view! {};
         }
-        let event = model.app.event.get_clone();
+        let event = model.khana.event.get_clone();
         let Some((url, svg, element_link)) = invite_view_data(&event) else {
             return view! {};
         };
@@ -702,7 +702,7 @@ fn view_header(model: crate::Model) -> View {
                 h1(class="title is-4") {
                     (move || {
                         let editing = model.screens.setup.editing.get();
-                        let (id, name) = model.app.event.with(|e| (e.id.clone(), e.name.clone()));
+                        let (id, name) = model.khana.event.with(|e| (e.id.clone(), e.name.clone()));
                         if editing {
                             format!("event:{id}")
                         } else if id.is_empty() {
@@ -715,7 +715,7 @@ fn view_header(model: crate::Model) -> View {
             }
             div(class="level-right") {
                 (move || {
-                    if model.app.event.with(|e| e.is_null()) {
+                    if model.khana.event.with(|e| e.is_null()) {
                         view! {}
                     } else {
                         view! {
@@ -730,7 +730,7 @@ fn view_header(model: crate::Model) -> View {
                     }
                 })
                 (move || {
-                    if model.app.event.with(|e| e.is_null()) {
+                    if model.khana.event.with(|e| e.is_null()) {
                         view! {}
                     } else {
                         view_status_tag(model)
@@ -746,7 +746,7 @@ fn view_header(model: crate::Model) -> View {
 /// flag lags a failed/partial publish.
 fn view_status_tag(model: crate::Model) -> View {
     let (published, is_demo, status) = model
-        .app
+        .khana
         .event
         .with(|e| (e.is_published(), e.is_demo(), e.status.to_string()));
     let (class, label) = if is_demo {
@@ -767,7 +767,7 @@ fn view_confirm_modal(model: crate::Model) -> View {
         em.confirm,
         move || {
             let published = model
-                .app
+                .khana
                 .event
                 .with(|e| e.status != crate::event::EventStatus::Draft);
             if published {
@@ -786,7 +786,7 @@ fn view_confirm_modal(model: crate::Model) -> View {
 /// True once an event has left the draft stage (published / running / finished).
 fn is_published(model: crate::Model) -> bool {
     model
-        .app
+        .khana
         .event
         .with(|e| e.status != crate::event::EventStatus::Draft)
 }
@@ -804,7 +804,7 @@ fn view_feedback(model: crate::Model) -> View {
 /// including a published event (amend-only: no deletions, the class list never
 /// renames, and the publish homeserver/reg lock once published).
 fn view_details(model: crate::Model) -> View {
-    if model.app.event.with(|e| e.is_null()) {
+    if model.khana.event.with(|e| e.is_null()) {
         return view! {
             div(class="box") {
                 p(class="help") { "No event selected — create a new event to configure it." }
@@ -821,7 +821,7 @@ fn view_details(model: crate::Model) -> View {
                 let name = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| e.name.clone())
+                    model.khana.event.with(|e| e.name.clone())
                 };
                 let em = em;
                 view! {
@@ -842,7 +842,7 @@ fn view_details(model: crate::Model) -> View {
                 let (club, year) = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| (e.sponsoring_club.clone(), e.year.clone())).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| (e.sponsoring_club.clone(), e.year.clone()))
+                    model.khana.event.with(|e| (e.sponsoring_club.clone(), e.year.clone()))
                 };
                 view! {
                     div(class="field is-grouped") {
@@ -871,7 +871,7 @@ fn view_details(model: crate::Model) -> View {
                 let val = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.event_date.clone()).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| e.event_date.clone())
+                    model.khana.event.with(|e| e.event_date.clone())
                 };
                 view! {
                     div(class="field") {
@@ -891,7 +891,7 @@ fn view_details(model: crate::Model) -> View {
                 let (open, close) = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| (e.entry_open.clone(), e.entry_close.clone())).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| (e.entry_open.clone(), e.entry_close.clone()))
+                    model.khana.event.with(|e| (e.entry_open.clone(), e.entry_close.clone()))
                 };
                 view! {
                     div(class="field is-grouped") {
@@ -920,7 +920,7 @@ fn view_details(model: crate::Model) -> View {
                 let val = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.stripe_link.clone()).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| e.stripe_link.clone())
+                    model.khana.event.with(|e| e.stripe_link.clone())
                 };
                 view! {
                     div(class="field") {
@@ -940,7 +940,7 @@ fn view_details(model: crate::Model) -> View {
                 let val = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.parent_room.clone()).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| e.parent_room.clone())
+                    model.khana.event.with(|e| e.parent_room.clone())
                 };
                 view! {
                     div(class="field") {
@@ -980,7 +980,7 @@ fn view_details(model: crate::Model) -> View {
                 let on = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.entries_enabled).unwrap_or_default()))
                 } else {
-                    model.app.event.with(|e| e.entries_enabled)
+                    model.khana.event.with(|e| e.entries_enabled)
                 };
                 view! {
                     div(class="field") {
@@ -1067,7 +1067,7 @@ fn view_tests_section(model: crate::Model) -> View {
                 .with(|e| e.as_ref().map(|e| e.stages.len()).unwrap_or_default())
         })
     } else {
-        model.app.event.with(|e| e.stage_count())
+        model.khana.event.with(|e| e.stage_count())
     };
     view! {
         div(class="field") {
@@ -1154,7 +1154,7 @@ fn view_class_chips(model: crate::Model, editing: bool) -> View {
             .edit_event
             .with(|e| e.as_ref().map(|e| e.classes.clone()).unwrap_or_default())
     } else {
-        model.app.event.with(|e| e.classes.clone())
+        model.khana.event.with(|e| e.classes.clone())
     };
     let items: Vec<View> = classes
         .iter()
@@ -1226,7 +1226,7 @@ fn view_quick_add(model: crate::Model) -> View {
                         let event = if model.screens.setup.editing.get() {
                             model.screens.setup.edit_event.with(|e| e.clone().unwrap_or_default())
                         } else {
-                            model.app.event.get_clone()
+                            model.khana.event.get_clone()
                         };
                         match parse_quick_entry(&input, &event) {
                             Ok(qp) => {
@@ -1356,7 +1356,7 @@ fn view_entrants_section(model: crate::Model) -> View {
         em.edit_event
             .with(|e| e.as_ref().map(|e| e.entries.len()).unwrap_or_default())
     } else {
-        model.app.event.with(|e| e.entries.len())
+        model.khana.event.with(|e| e.entries.len())
     };
     view! {
         div(class="field") {
@@ -1385,7 +1385,7 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
         em.edit_event
             .with(|e| e.as_ref().map(|e| e.classes.clone()).unwrap_or_default())
     } else {
-        model.app.event.with(|e| e.classes.clone())
+        model.khana.event.with(|e| e.classes.clone())
     };
 
     let entries = if editing {
@@ -1399,7 +1399,7 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                 .unwrap_or_default()
         })
     } else {
-        model.app.event.with(|e| {
+        model.khana.event.with(|e| {
             let mut entries = e.entries.clone();
             entries.sort_by_key(crate::event::entry_sort_key);
             entries
@@ -1537,8 +1537,8 @@ fn view_publish_status(model: crate::Model) -> View {
                     }
                 };
             }
-            let is_null = model.app.event.with(|e| e.is_null());
-            let is_demo = model.app.event.with(|e| e.is_demo());
+            let is_null = model.khana.event.with(|e| e.is_null());
+            let is_demo = model.khana.event.with(|e| e.is_demo());
             let published = is_published(model);
             if is_null {
                 view! { p(class="help") { "Create or open an event first." } }
@@ -1550,7 +1550,7 @@ fn view_publish_status(model: crate::Model) -> View {
                 }
             } else if published {
                 let alias = model
-                    .app
+                    .khana
                     .event
                     .with(|e| e.space_alias.clone())
                     .unwrap_or_default();
@@ -1687,7 +1687,7 @@ fn view_action_bar(model: crate::Model) -> View {
 fn view_edit_btn(model: crate::Model) -> View {
     view! {
         (move || {
-            if !model.app.event.with(|e| !e.is_null()) || model.screens.setup.editing.get() {
+            if !model.khana.event.with(|e| !e.is_null()) || model.screens.setup.editing.get() {
                 return view! {};
             }
             view! {
@@ -1706,7 +1706,7 @@ fn view_edit_btn(model: crate::Model) -> View {
 fn view_clone_btn(model: crate::Model) -> View {
     view! {
         (move || {
-            if !model.app.event.with(|e| !e.is_null()) || model.screens.setup.editing.get() {
+            if !model.khana.event.with(|e| !e.is_null()) || model.screens.setup.editing.get() {
                 return view! {};
             }
             view! {
@@ -1751,7 +1751,7 @@ fn view_publish_btn(model: crate::Model) -> View {
             if em.editing.get() {
                 return view! {};
             }
-            let (is_null, is_demo, published, has_hs) = model.app.event.with(|e| {
+            let (is_null, is_demo, published, has_hs) = model.khana.event.with(|e| {
                 (e.is_null(), e.is_demo(), e.is_published(), !e.homeserver.trim().is_empty())
             });
             if is_null || is_demo || published {
@@ -1788,7 +1788,7 @@ fn view_homeserver_fields(model: crate::Model) -> View {
                         let val = if editing {
                             untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.element_link.clone()).unwrap_or_default()))
                         } else {
-                            model.app.event.with(|e| e.element_link.clone())
+                            model.khana.event.with(|e| e.element_link.clone())
                         };
                         view! {
                             input(class="input", placeholder="Optional — e.g. https://app.element.io", disabled=!editing, value=val,
@@ -1828,7 +1828,7 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                         let current_hs = if editing {
                             untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default()))
                         } else {
-                            model.app.event.with(|e| e.homeserver.clone())
+                            model.khana.event.with(|e| e.homeserver.clone())
                         };
                         let on = current_hs == hs;
                         let label = crate::page::home::hs_host_port(&hs);
@@ -1879,7 +1879,7 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                     .with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default())
             })
         } else {
-            model.app.event.with(|e| e.homeserver.clone())
+            model.khana.event.with(|e| e.homeserver.clone())
         };
         view! {
             div(class="field") {
@@ -1921,7 +1921,7 @@ fn view_stage_list(model: crate::Model) -> View {
                 .with(|e| e.as_ref().map(|e| e.stages.clone()).unwrap_or_default())
         })
     } else {
-        model.app.event.with(|e| e.stages.clone())
+        model.khana.event.with(|e| e.stages.clone())
     };
     let rows: Vec<View> = stages
         .iter()

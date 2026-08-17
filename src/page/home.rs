@@ -53,7 +53,7 @@ pub fn view(model: crate::Model) -> View {
         (move || {
             // No event open: show the picker-style home regardless of whether
             // the device is online/offline or an account is connected.
-            if model.app.event.with(|e| e.is_null()) {
+            if model.khana.event.with(|e| e.is_null()) {
                 view_no_event(model)
             } else {
                 view_dashboard(model)
@@ -95,7 +95,7 @@ fn view_dashboard(model: crate::Model) -> View {
 
 fn view_event_card(model: crate::Model) -> View {
     let (id, name, status) = model
-        .app
+        .khana
         .event
         .with(|e| (e.id.clone(), e.name.clone(), e.status.to_string()));
     let has_event = !id.is_empty();
@@ -150,7 +150,7 @@ fn view_sessions(model: crate::Model) -> View {
         (move || {
             let sm = model.screens.home;
             let _ = sm.refresh.get();
-            let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
+            let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
             let sessions = crate::services::matrix::load_sessions();
             let rows: Vec<View> = sessions
                 .iter()
@@ -227,7 +227,7 @@ fn view_sessions(model: crate::Model) -> View {
             } else {
                 view! {}
             };
-            let conn = model.app.conn.get_clone();
+            let conn = model.sync.conn.get_clone();
             let collapsed = sm.collapsed.get();
             view! {
                 div(class="box") {
@@ -276,7 +276,7 @@ fn view_sessions(model: crate::Model) -> View {
 /// Matrix account id, or the custom homeserver `host:port`, or Offline.
 #[cfg(target_arch = "wasm32")]
 fn view_account_summary(model: crate::Model) -> View {
-    let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
+    let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
     let sess = logged_in
         .then(crate::services::matrix::active_hs)
         .flatten()
@@ -310,7 +310,7 @@ fn view_sessions(_model: crate::Model) -> View {
 }
 
 fn view_actions(model: crate::Model) -> View {
-    let has_event = !model.app.event.with(|e| e.is_null());
+    let has_event = !model.khana.event.with(|e| e.is_null());
     let role = crate::event::local_role();
     let official = role != ROLE_COMPETITOR;
     view! {
@@ -352,8 +352,8 @@ fn view_actions(model: crate::Model) -> View {
 }
 
 fn view_comms(model: crate::Model) -> View {
-    let conn = model.app.conn.get_clone();
-    let room = model.app.room.get_clone();
+    let conn = model.sync.conn.get_clone();
+    let room = model.sync.room.get_clone();
     let (color, text) = match conn {
         ConnState::LoggedIn(_) if room.is_some() => {
             ("is-success", format!("Connected · room {}", room.unwrap()))
@@ -468,12 +468,12 @@ fn stage_progress(
 }
 
 fn view_status_summary(model: crate::Model) -> View {
-    let event = model.app.event.get_clone();
+    let event = model.khana.event.get_clone();
     if event.is_null() {
         return view! {};
     }
-    let scores = model.app.scores.get_clone();
-    let runs = model.app.runs.get_clone();
+    let scores = model.khana.scores.get_clone();
+    let runs = model.khana.runs.get_clone();
 
     let (total, active, withdrawn, draft, reserve) = entry_counts(&event);
     let stages = stage_progress(&event, &scores, &runs);
@@ -622,7 +622,7 @@ fn view_status_summary(model: crate::Model) -> View {
 #[cfg(target_arch = "wasm32")]
 fn view_account_footer(model: crate::Model) -> View {
     let sm = model.screens.home;
-    let pending = model.app.pending_join.get_clone();
+    let pending = model.sync.pending_join.get_clone();
     let pending_view = if let Some(inv) = &pending {
         let name = inv.event.clone();
         view! {

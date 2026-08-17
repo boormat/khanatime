@@ -1,6 +1,6 @@
 //! App shell: screen navigation + shared state.
 //!
-//! Shared, cross-screen state lives in [AppState]; each screen owns its own UI
+//! Shared, cross-screen state lives in [KhanaState] and [SyncState]; each screen owns its own UI
 //! state in [Screens]. Navigation goes through [update]/[show]; `enter` hooks
 //! refresh a screen's data when it becomes current.
 
@@ -100,14 +100,19 @@ pub enum ParcelMode {
     TimingOnly,
 }
 
-/// Global, cross-screen state. Screens read these but never own them.
+/// Khanacross domain state: event data, scores, and run records.
 #[derive(Clone, Copy)]
-pub struct AppState {
+pub struct KhanaState {
     pub event: Signal<EventInfo>,
     pub scores: Signal<Vec<ScoreData>>,
     /// Start/finish run records for the current event (run numbering,
     /// pending-starts, live feeds).
     pub runs: Signal<Vec<RunRecord>>,
+}
+
+/// Shared Matrix/QR infrastructure: connection, identity, parcel handoff.
+#[derive(Clone, Copy)]
+pub struct SyncState {
     /// User id of the logged-in Matrix account (empty when not connected).
     pub identity: Signal<String>,
     pub conn: Signal<ConnState>,
@@ -156,7 +161,8 @@ pub struct Screens {
 #[derive(Clone, Copy)]
 pub struct Model {
     pub screen: Signal<Screen>,
-    pub app: AppState,
+    pub khana: KhanaState,
+    pub sync: SyncState,
     pub screens: Screens,
 }
 
@@ -236,10 +242,12 @@ impl Model {
 
         let m = Model {
             screen: create_signal(Screen::Event),
-            app: AppState {
+            khana: KhanaState {
                 event: create_signal(event_info),
                 scores: create_signal(scores),
                 runs: create_signal(runs),
+            },
+            sync: SyncState {
                 identity: create_signal(String::new()),
                 conn: create_signal(ConnState::Idle),
                 room: create_signal(None),
@@ -321,10 +329,10 @@ pub fn update(model: Model, msg: Msg) {
             }
         }
         Msg::ClearEvent => {
-            let current = model.app.event.with(|e| e.id.clone());
+            let current = model.khana.event.with(|e| e.id.clone());
             crate::event::session_set_recent(&current);
             crate::event::session_clear_event();
-            model.app.event.set(EventInfo {
+            model.khana.event.set(EventInfo {
                 id: String::new(),
                 name: String::new(),
                 stages: vec![],
@@ -332,19 +340,19 @@ pub fn update(model: Model, msg: Msg) {
                 entries: vec![],
                 ..EventInfo::default()
             });
-            model.app.scores.set(Vec::new());
-            model.app.runs.set(Vec::new());
+            model.khana.scores.set(Vec::new());
+            model.khana.runs.set(Vec::new());
             model.screens.chat.feed.set(Vec::new());
-            model.app.room.set(None);
+            model.sync.room.set(None);
             #[cfg(target_arch = "wasm32")]
             crate::services::matrix::set_room(None);
             crate::update(model, Msg::Show(Screen::Home));
         }
         Msg::DeleteEvent(id) => {
             crate::log::remove_event_log(&id);
-            if model.app.event.with(|e| e.id == id) {
+            if model.khana.event.with(|e| e.id == id) {
                 crate::event::session_clear_event();
-                model.app.event.set(EventInfo {
+                model.khana.event.set(EventInfo {
                     id: String::new(),
                     name: String::new(),
                     stages: vec![],
@@ -352,11 +360,11 @@ pub fn update(model: Model, msg: Msg) {
                     entries: vec![],
                     ..EventInfo::default()
                 });
-                model.app.scores.set(Vec::new());
-                model.app.runs.set(Vec::new());
+                model.khana.scores.set(Vec::new());
+                model.khana.runs.set(Vec::new());
                 model.screens.chat.feed.set(Vec::new());
-                model.app.room.set(None);
-                model.app.conn.set(crate::app::ConnState::Idle);
+                model.sync.room.set(None);
+                model.sync.conn.set(crate::app::ConnState::Idle);
                 #[cfg(target_arch = "wasm32")]
                 crate::services::matrix::set_room(None);
             }
@@ -373,9 +381,9 @@ pub fn update(model: Model, msg: Msg) {
                 &crate::log::load_log(&name),
                 &crate::log::load_pending(&name),
             );
-            model.app.event.set(event.clone());
-            model.app.scores.set(scores);
-            model.app.runs.set(runs);
+            model.khana.event.set(event.clone());
+            model.khana.scores.set(scores);
+            model.khana.runs.set(runs);
             crate::event::session_set_event(&name);
             crate::event::session_set_recent(&name);
             model.screens.chat.expanded.set(Default::default());
@@ -385,7 +393,7 @@ pub fn update(model: Model, msg: Msg) {
             model.screens.entries.admin.set(false);
             model.screens.entries.show_form.set(false);
             // And any pending "open the parcel's event" offer.
-            model.app.parcel_open_event.set(None);
+            model.sync.parcel_open_event.set(None);
             refresh_feed(model);
             page::results::update(model, page::results::Msg::Reload);
             crate::sync::join_current_event(model);
@@ -409,13 +417,13 @@ pub fn update(model: Model, msg: Msg) {
         Msg::OpenParcelEvent => crate::sync::open_parcel_event(model),
         Msg::VoidObservation(uid) => {
             // Determine the test from the run record, then delegate to enqueue_void.
-            let test = model.app.runs.with(|runs| {
+            let test = model.khana.runs.with(|runs| {
                 runs.iter()
                     .find(|r| r.uid == uid)
                     .map(|r| r.test)
                     .unwrap_or(1)
             });
-            let car = model.app.runs.with(|runs| {
+            let car = model.khana.runs.with(|runs| {
                 runs.iter()
                     .find(|r| r.uid == uid)
                     .map(|r| r.car.clone())
@@ -430,13 +438,13 @@ pub fn update(model: Model, msg: Msg) {
             let _ = model;
         }
         Msg::ScanStop => {
-            model.app.scan_active.set(false);
+            model.sync.scan_active.set(false);
             #[cfg(target_arch = "wasm32")]
             crate::qr_scan::stop_scan();
         }
         Msg::QrPauseToggle => crate::sync::toggle_qr_pause(model),
         Msg::QrClear => crate::sync::clear_qr(model),
-        Msg::SetParcelMode(mode) => model.app.parcel_mode.set(mode),
+        Msg::SetParcelMode(mode) => model.sync.parcel_mode.set(mode),
         Msg::Join(link) => {
             #[cfg(target_arch = "wasm32")]
             crate::sync::join_via_link(model, link);
@@ -538,7 +546,7 @@ fn listen_for_tab_sync(model: Model) {
     use wasm_bindgen::JsCast;
     let cb = wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::StorageEvent)>::wrap(Box::new(
         move |ev: web_sys::StorageEvent| {
-            let id = model.app.event.with(|e| e.id.clone());
+            let id = model.khana.event.with(|e| e.id.clone());
             if id.is_empty() {
                 return;
             }
@@ -549,9 +557,9 @@ fn listen_for_tab_sync(model: Model) {
             }
             let (event, scores, runs) =
                 crate::replay::replay(&crate::log::load_log(&id), &crate::log::load_pending(&id));
-            model.app.event.set(event);
-            model.app.scores.set(scores);
-            model.app.runs.set(runs);
+            model.khana.event.set(event);
+            model.khana.scores.set(scores);
+            model.khana.runs.set(runs);
             crate::app::refresh_feed(model);
             crate::update(model, crate::Msg::Reload);
         },
@@ -568,7 +576,7 @@ fn listen_for_tab_sync(model: Model) {
 /// Rebuild the chat feed from the current event's stored log + pending, and
 /// refresh the setup screen's "needs sync" flag (unsent setup manifest).
 pub fn refresh_feed(model: Model) {
-    let id = model.app.event.with(|e| e.id.clone());
+    let id = model.khana.event.with(|e| e.id.clone());
     let log = crate::log::load_log(&id);
     let pending = crate::log::load_pending(&id);
     let mut feed: Vec<crate::page::chat::FeedEntry> = log
@@ -580,7 +588,7 @@ pub fn refresh_feed(model: Model) {
     model.screens.chat.feed.set(feed);
     // Only published+ events sync to a room, so only they can need a re-sync.
     let published = model
-        .app
+        .khana
         .event
         .with(|e| e.status != crate::event::EventStatus::Draft);
     let has_unsent_setup = published
@@ -594,17 +602,17 @@ pub fn refresh_feed(model: Model) {
 /// Enqueue a setup-manifest message for the current event (the durable record
 /// of every edit) and refresh the feed.  Flushes to the room when connected.
 pub fn enqueue_setup(model: Model) {
-    let id = model.app.event.with(|e| e.id.clone());
+    let id = model.khana.event.with(|e| e.id.clone());
     if id.is_empty() {
         return;
     }
-    let ev = model.app.event.get_clone();
+    let ev = model.khana.event.get_clone();
     let body = format!(
         "{}{}",
         crate::timing_event::TimingEvent::SETUP_PREFIX,
         serde_json::to_string(&ev).unwrap()
     );
-    let sender = model.app.identity.get_clone();
+    let sender = model.sync.identity.get_clone();
     // Setup is last-writer-wins: replace any superseded setup in the outbox so
     // a draft's Save Local history never gets flushed into the room on publish.
     crate::log::enqueue_setup_pending(&id, crate::log::LogMsg::new_pending(body, sender));
@@ -639,7 +647,7 @@ fn view_content(model: Model) -> View {
         Screen::Chat,
         Screen::Entries,
     ];
-    let effective = if needs_event.contains(&screen) && model.app.event.with(|e| e.is_null()) {
+    let effective = if needs_event.contains(&screen) && model.khana.event.with(|e| e.is_null()) {
         Screen::Home
     } else {
         screen
@@ -665,7 +673,7 @@ fn view_content(model: Model) -> View {
 }
 
 fn view_navbar(model: Model) -> View {
-    let has_event = !model.app.event.with(|e| e.is_null());
+    let has_event = !model.khana.event.with(|e| e.is_null());
     // Screens that need a current event: hidden/disabled until one is picked.
     // (Event itself stays enabled so the first event can be created.)
     let needs_event = [

@@ -64,10 +64,10 @@ pub fn update(model: Model, msg: Msg) {
 #[cfg(target_arch = "wasm32")]
 pub fn resume_on_load(model: Model) {
     // Demo events are local-only: never connect or join a room for them.
-    if model.app.event.with(|e| e.is_demo()) {
+    if model.khana.event.with(|e| e.is_demo()) {
         return;
     }
-    let hs = model.app.event.with(|e| e.homeserver.clone());
+    let hs = model.khana.event.with(|e| e.homeserver.clone());
     if hs.is_empty() {
         return; // no published homeserver on the event yet
     }
@@ -82,7 +82,7 @@ pub fn resume_on_load(model: Model) {
 /// Re-login.
 #[cfg(target_arch = "wasm32")]
 fn restore_and_connect(model: Model, stored: crate::services::matrix::StoredSession) {
-    model.app.conn.set(ConnState::Connecting);
+    model.sync.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&stored.homeserver).await?;
@@ -90,9 +90,11 @@ fn restore_and_connect(model: Model, stored: crate::services::matrix::StoredSess
             // Re-persist (refresh tokens rotate on restore) and mark active.
             crate::services::matrix::save_session(&client, &stored.homeserver);
             crate::services::matrix::set_client(Some(client.clone()));
-            let room =
-                crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
-                    .await;
+            let room = crate::services::matrix::join_room_for_event(
+                &client,
+                &model.khana.event.get_clone(),
+            )
+            .await;
             crate::services::matrix::set_room(room.clone());
             crate::services::matrix::start_sync(client, sink_for(model));
             if room.is_some() {
@@ -103,12 +105,12 @@ fn restore_and_connect(model: Model, stored: crate::services::matrix::StoredSess
         .await;
         match res {
             Ok(room_id) => {
-                model.app.identity.set(stored.user_id.clone());
-                model.app.conn.set(ConnState::LoggedIn(stored.user_id));
-                model.app.room.set(room_id);
+                model.sync.identity.set(stored.user_id.clone());
+                model.sync.conn.set(ConnState::LoggedIn(stored.user_id));
+                model.sync.room.set(room_id);
                 flush_pending(model);
             }
-            Err(e) => model.app.conn.set(ConnState::Error(e)),
+            Err(e) => model.sync.conn.set(ConnState::Error(e)),
         }
     });
 }
@@ -117,7 +119,7 @@ fn restore_and_connect(model: Model, stored: crate::services::matrix::StoredSess
 #[cfg(target_arch = "wasm32")]
 pub fn join_current_event(model: Model) {
     // Demo events are local-only: never join a timing room for them.
-    if model.app.event.with(|e| e.is_demo()) {
+    if model.khana.event.with(|e| e.is_demo()) {
         return;
     }
     let Some(client) = crate::services::matrix::client() else {
@@ -125,11 +127,11 @@ pub fn join_current_event(model: Model) {
     };
     wasm_bindgen_futures::spawn_local(async move {
         let room =
-            crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
+            crate::services::matrix::join_room_for_event(&client, &model.khana.event.get_clone())
                 .await;
         crate::services::matrix::set_room(room.clone());
         model
-            .app
+            .sync
             .room
             .set(room.as_ref().map(|r| r.room_id().to_string()));
         if room.is_some() {
@@ -176,7 +178,7 @@ fn flush_pending_wasm(model: Model) {
         crate::app::refresh_feed(model);
         return;
     };
-    let id = model.app.event.with(|e| e.id.clone());
+    let id = model.khana.event.with(|e| e.id.clone());
     if id.is_empty() {
         crate::app::refresh_feed(model);
         return;
@@ -223,7 +225,7 @@ pub fn relay_to_room(model: Model) {
     let Some(room) = crate::services::matrix::room() else {
         return;
     };
-    let id = model.app.event.with(|e| e.id.clone());
+    let id = model.khana.event.with(|e| e.id.clone());
     if id.is_empty() {
         return;
     }
@@ -273,15 +275,15 @@ pub fn relay_to_room(model: Model) {
 // ----- QR parcel handoff (works offline) -----
 
 /// Pack the current event's whole durable log into a QR parcel and stage it on
-/// `model.app.parcel_export`.  Exporting first promotes the local outbox
+/// `model.sync.parcel_export`.  Exporting first promotes the local outbox
 /// (`publish_outbox`) — handing a message off is publishing it, so unsent
 /// entries leave the outbox and are relayed to the room later instead of being
 /// stuck locally.
 pub fn export_parcel(model: Model) {
-    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() {
         model
-            .app
+            .sync
             .parcel_status
             .set("No event loaded to export.".to_string());
         return;
@@ -290,25 +292,25 @@ pub fn export_parcel(model: Model) {
     let log = crate::log::load_log(&id);
     // Full = whole log (bootstrap); Timing only = just the KT timing records,
     // for a receiver that already has the event.
-    let msgs = if model.app.parcel_mode.get() == crate::app::ParcelMode::TimingOnly {
+    let msgs = if model.sync.parcel_mode.get() == crate::app::ParcelMode::TimingOnly {
         crate::services::qr::filter_timing(&log)
     } else {
         log
     };
     let text = crate::services::qr::pack_parcel(&uid, &msgs);
-    model.app.parcel_export.set(text.clone());
+    model.sync.parcel_export.set(text.clone());
     // QR frames carry the compressed payload: base64(deflate(json)).
     let payload = crate::services::qr::parcel_payload(&text);
     let frames = crate::services::qr::pack_frames(&payload);
     let svgs = crate::services::qr::qr_svgs(&frames, crate::services::qr::MIN_MODULE_PX);
-    model.app.parcel_qr_svgs.set(svgs.clone());
-    model.app.parcel_qr_total.set(svgs.len());
-    model.app.parcel_qr_index.set(0);
-    model.app.parcel_qr_paused.set(false);
+    model.sync.parcel_qr_svgs.set(svgs.clone());
+    model.sync.parcel_qr_total.set(svgs.len());
+    model.sync.parcel_qr_index.set(0);
+    model.sync.parcel_qr_paused.set(false);
     #[cfg(target_arch = "wasm32")]
     start_qr_animation(model, svgs.len());
     let n = msgs.len();
-    let kind = match model.app.parcel_mode.get() {
+    let kind = match model.sync.parcel_mode.get() {
         crate::app::ParcelMode::Full => "full event",
         crate::app::ParcelMode::TimingOnly => "timing",
     };
@@ -317,7 +319,7 @@ pub fn export_parcel(model: Model) {
     } else {
         String::new()
     };
-    model.app.parcel_status.set(format!(
+    model.sync.parcel_status.set(format!(
         "{n} {kind} messages{moved_note}, {frame_count} QR — scan or copy.",
         frame_count = svgs.len()
     ));
@@ -334,8 +336,8 @@ fn start_qr_animation(model: Model, n: usize) {
         return;
     };
     let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::wrap(Box::new(move || {
-        if !model.app.parcel_qr_paused.get() {
-            model.app.parcel_qr_index.update(|i| *i = (*i + 1) % n);
+        if !model.sync.parcel_qr_paused.get() {
+            model.sync.parcel_qr_index.update(|i| *i = (*i + 1) % n);
         }
     }));
     let id = window
@@ -364,17 +366,17 @@ thread_local! {
 
 /// Pause or resume the animated QR export display at its current frame.
 pub fn toggle_qr_pause(model: Model) {
-    model.app.parcel_qr_paused.update(|p| *p = !*p);
+    model.sync.parcel_qr_paused.update(|p| *p = !*p);
 }
 
 /// Clear the QR export display (stops the animation and hides the codes).
 pub fn clear_qr(model: Model) {
     #[cfg(target_arch = "wasm32")]
     clear_qr_timer();
-    model.app.parcel_qr_svgs.set(Vec::new());
-    model.app.parcel_qr_total.set(0);
-    model.app.parcel_qr_index.set(0);
-    model.app.parcel_qr_paused.set(false);
+    model.sync.parcel_qr_svgs.set(Vec::new());
+    model.sync.parcel_qr_total.set(0);
+    model.sync.parcel_qr_index.set(0);
+    model.sync.parcel_qr_paused.set(false);
 }
 
 /// Import a QR parcel: parse it, gate on the current event's uid, then append
@@ -383,8 +385,8 @@ pub fn clear_qr(model: Model) {
 /// the user is warned and offered an open-and-import button (a parcel for the
 /// current event imports straight in).
 pub fn import_parcel(model: Model) {
-    let id = model.app.event.with(|e| e.id.clone());
-    let uid = model.app.event.with(|e| e.uid.clone());
+    let id = model.khana.event.with(|e| e.id.clone());
+    let uid = model.khana.event.with(|e| e.uid.clone());
     let Some(parcel) = parse_parcel_text(model) else {
         return;
     };
@@ -394,20 +396,20 @@ pub fn import_parcel(model: Model) {
     if id.is_empty() || parcel.event_uid != uid {
         match parcel_event_name(&parcel) {
             Some((eid, name)) => {
-                model.app.parcel_open_event.set(Some((eid, name.clone())));
-                model.app.parcel_status.set(format!(
+                model.sync.parcel_open_event.set(Some((eid, name.clone())));
+                model.sync.parcel_status.set(format!(
                     "This parcel is for \"{name}\" — open it to import."
                 ));
             }
             None => {
-                model.app.parcel_open_event.set(None);
+                model.sync.parcel_open_event.set(None);
                 if id.is_empty() {
                     model
-                        .app
+                        .sync
                         .parcel_status
                         .set("Open the event to import into first.".to_string());
                 } else {
-                    model.app.parcel_status.set(format!(
+                    model.sync.parcel_status.set(format!(
                         "This parcel is for a different event (uid {}) — open that event first.",
                         parcel.event_uid
                     ));
@@ -423,7 +425,7 @@ pub fn import_parcel(model: Model) {
 /// reusing the paste path so gating + replay behave identically.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm scan sink
 pub fn import_parcel_text(model: Model, text: &str) {
-    model.app.parcel_import.set(text.to_string());
+    model.sync.parcel_import.set(text.to_string());
     import_parcel(model);
 }
 
@@ -437,27 +439,27 @@ pub fn open_parcel_event(model: Model) {
     };
     let Some((eid, name)) = parcel_event_name(&parcel) else {
         model
-            .app
+            .sync
             .parcel_status
             .set("This parcel has no setup manifest — can't tell which event to open.".into());
-        model.app.parcel_open_event.set(None);
+        model.sync.parcel_open_event.set(None);
         return;
     };
     crate::update(model, crate::Msg::SetEvent(eid.clone()));
     apply_parcel(model, &eid, &parcel);
-    model.app.parcel_open_event.set(None);
+    model.sync.parcel_open_event.set(None);
     model
-        .app
+        .sync
         .parcel_status
         .set(format!("Opened {name} and imported the parcel."));
 }
 
 /// Read and parse the staged parcel text, surfacing errors on the status line.
 fn parse_parcel_text(model: Model) -> Option<crate::services::qr::Parcel> {
-    let text = model.app.parcel_import.get_clone();
+    let text = model.sync.parcel_import.get_clone();
     if text.trim().is_empty() {
         model
-            .app
+            .sync
             .parcel_status
             .set("Paste or scan a parcel first.".to_string());
         return None;
@@ -465,7 +467,7 @@ fn parse_parcel_text(model: Model) -> Option<crate::services::qr::Parcel> {
     match crate::services::qr::unpack_parcel(&text) {
         Ok(p) => Some(p),
         Err(e) => {
-            model.app.parcel_status.set(format!("Import failed: {e}"));
+            model.sync.parcel_status.set(format!("Import failed: {e}"));
             None
         }
     }
@@ -499,13 +501,13 @@ fn apply_parcel(model: Model, id: &str, parcel: &crate::services::qr::Parcel) {
         // Rebuild event/scores/runs from the now-merged log, like SetEvent.
         let (event, scores, runs) =
             crate::replay::replay(&crate::log::load_log(id), &crate::log::load_pending(id));
-        model.app.event.set(event);
-        model.app.scores.set(scores);
-        model.app.runs.set(runs);
+        model.khana.event.set(event);
+        model.khana.scores.set(scores);
+        model.khana.runs.set(runs);
         crate::app::refresh_feed(model);
     }
-    model.app.parcel_import.set(String::new());
-    model.app.parcel_status.set(if added == 0 {
+    model.sync.parcel_import.set(String::new());
+    model.sync.parcel_status.set(if added == 0 {
         "Nothing new — this parcel was already imported.".to_string()
     } else {
         format!("Imported {added} messages.")
@@ -536,7 +538,7 @@ pub fn gen_join_username() -> String {
 /// setup locally and land on Results.
 #[cfg(target_arch = "wasm32")]
 pub fn join_via_link(model: Model, invite: crate::event::Invite) {
-    model.app.conn.set(ConnState::Connecting);
+    model.sync.conn.set(ConnState::Connecting);
     // Public (SSO-reg) homeserver with no stored account: drive the OAuth
     // sign-in directly instead of parking silently.  The invite is kept as the
     // resume target so [sso_complete] can finish the join once signed in.  The
@@ -546,7 +548,7 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
     let needs_sso = crate::services::matrix::load_session_for(&invite.homeserver).is_none()
         && invite.reg == crate::event::RegistrationMode::Sso;
     if needs_sso {
-        model.app.pending_join.set(Some(invite.clone()));
+        model.sync.pending_join.set(Some(invite.clone()));
         model.screens.home.homeserver.set(invite.homeserver.clone());
         let sm = model.screens.home;
         sm.busy.set(true);
@@ -555,7 +557,7 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
             _ => {
                 // Popup blocked: leave the invite parked; the Accounts box
                 // "Sign in to join" button starts SSO from a real gesture.
-                model.app.conn.set(ConnState::Idle);
+                model.sync.conn.set(ConnState::Idle);
                 sm.busy.set(false);
                 return;
             }
@@ -623,17 +625,17 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
                 let user_id = crate::services::matrix::client()
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
                     .unwrap_or_default();
-                model.app.identity.set(user_id.clone());
-                model.app.conn.set(ConnState::LoggedIn(user_id));
+                model.sync.identity.set(user_id.clone());
+                model.sync.conn.set(ConnState::LoggedIn(user_id));
                 crate::update(model, crate::Msg::SetEvent(ev.id));
                 crate::update(model, crate::Msg::Show(crate::Screen::Results));
             }
             Err(e) => {
-                if model.app.pending_join.with(|p| p.is_some()) {
+                if model.sync.pending_join.with(|p| p.is_some()) {
                     // SSO-pending: parked for the Home login form, not an error.
-                    model.app.conn.set(ConnState::Idle);
+                    model.sync.conn.set(ConnState::Idle);
                 } else {
-                    model.app.conn.set(ConnState::Error(e));
+                    model.sync.conn.set(ConnState::Error(e));
                 }
             }
         }
@@ -648,9 +650,9 @@ fn logout(model: Model) {
     crate::services::matrix::deactivate_session();
     crate::services::matrix::set_client(None);
     crate::services::matrix::set_room(None);
-    model.app.identity.set(String::new());
-    model.app.conn.set(ConnState::Idle);
-    model.app.room.set(None);
+    model.sync.identity.set(String::new());
+    model.sync.conn.set(ConnState::Idle);
+    model.sync.room.set(None);
     model.screens.chat.feed.set(Vec::new());
     model
         .screens
@@ -665,7 +667,7 @@ fn logout(model: Model) {
 fn relogin(model: Model, hs: String) {
     let Some(stored) = crate::services::matrix::load_session_for(&hs) else {
         model
-            .app
+            .sync
             .conn
             .set(ConnState::Error(format!("No stored session for {hs}")));
         return;
@@ -687,7 +689,7 @@ fn forget(model: Model, hs: String) {
     let sm = model.screens.home;
     let Some(client) = crate::services::matrix::client() else {
         crate::services::matrix::remove_session(&hs);
-        model.app.conn.set(ConnState::Idle);
+        model.sync.conn.set(ConnState::Idle);
         return;
     };
     sm.busy.set(true);
@@ -696,9 +698,9 @@ fn forget(model: Model, hs: String) {
         let _ = crate::services::matrix::logout(&client).await;
         crate::services::matrix::set_client(None);
         crate::services::matrix::set_room(None);
-        model.app.identity.set(String::new());
-        model.app.conn.set(ConnState::Idle);
-        model.app.room.set(None);
+        model.sync.identity.set(String::new());
+        model.sync.conn.set(ConnState::Idle);
+        model.sync.room.set(None);
         model.screens.chat.feed.set(Vec::new());
         model
             .screens
@@ -718,7 +720,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
     let sm = model.screens.home;
     if hs.trim().is_empty() {
         model
-            .app
+            .sync
             .conn
             .set(ConnState::Error("Enter a homeserver URL".to_string()));
         return;
@@ -730,7 +732,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
     }
     sm.homeserver.set(hs.clone());
     sm.busy.set(true);
-    model.app.conn.set(ConnState::Connecting);
+    model.sync.conn.set(ConnState::Connecting);
     // Open the tab synchronously from the click handler (popup blockers reject
     // `window.open` after an await); it's pointed at the SSO URL when needed
     // and closed when we register instead.
@@ -759,7 +761,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 crate::services::matrix::set_client(Some(client.clone()));
                 let room = crate::services::matrix::join_room_for_event(
                     &client,
-                    &model.app.event.get_clone(),
+                    &model.khana.event.get_clone(),
                 )
                 .await;
                 crate::services::matrix::set_room(room.clone());
@@ -780,16 +782,16 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 let user_id = crate::services::matrix::client()
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
                     .unwrap_or_default();
-                model.app.identity.set(user_id.clone());
-                model.app.conn.set(ConnState::LoggedIn(user_id));
-                model.app.room.set(room_id);
+                model.sync.identity.set(user_id.clone());
+                model.sync.conn.set(ConnState::LoggedIn(user_id));
+                model.sync.room.set(room_id);
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
                 flush_pending(model);
                 // Resume a pending join if it targets this homeserver.
-                let pending = model.app.pending_join.get_clone();
+                let pending = model.sync.pending_join.get_clone();
                 if let Some(link) = &pending {
                     if crate::services::matrix::load_session_for(&link.homeserver).is_some() {
-                        model.app.pending_join.set(None);
+                        model.sync.pending_join.set(None);
                         crate::update(model, crate::Msg::Join(link.clone()));
                     }
                 }
@@ -798,7 +800,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 if let Some(tab) = &tab {
                     let _ = tab.close();
                 }
-                model.app.conn.set(ConnState::Error(e));
+                model.sync.conn.set(ConnState::Error(e));
                 sm.busy.set(false);
             }
         }
@@ -858,14 +860,14 @@ fn sso_begin(model: Model, hs: &str, tab: Option<&web_sys::Window>) {
                 if let Some(tab) = &tab {
                     let _ = tab.location().set_href(auth.url.as_ref());
                 }
-                model.app.conn.set(ConnState::SsoPending);
+                model.sync.conn.set(ConnState::SsoPending);
                 // Not blocking: the user is in the sign-in tab now; if it never
                 // completes they can retry with the password path.
                 sm.busy.set(false);
                 sso_wait_for_callback(model, &state);
             }
             Err(e) => {
-                model.app.conn.set(ConnState::Error(e));
+                model.sync.conn.set(ConnState::Error(e));
                 sm.busy.set(false);
             }
         }
@@ -880,11 +882,11 @@ fn sso_login(model: Model) {
     let sm = model.screens.home;
     let hs = sm.homeserver.get_clone();
     sm.busy.set(true);
-    model.app.conn.set(ConnState::Connecting);
+    model.sync.conn.set(ConnState::Connecting);
     let tab = match web_sys::window().map(|w| w.open()) {
         Some(Ok(Some(tab))) => Some(tab),
         _ => {
-            model.app.conn.set(ConnState::Error(
+            model.sync.conn.set(ConnState::Error(
                 "couldn't open the sign-in tab — allow popups for this site".to_string(),
             ));
             sm.busy.set(false);
@@ -930,9 +932,11 @@ fn sso_complete(model: Model, callback_url: String) {
             };
             crate::services::matrix::finish_oauth_login(&client, &callback_url).await?;
             crate::services::matrix::save_session(&client, client.homeserver().as_ref());
-            let room =
-                crate::services::matrix::join_room_for_event(&client, &model.app.event.get_clone())
-                    .await;
+            let room = crate::services::matrix::join_room_for_event(
+                &client,
+                &model.khana.event.get_clone(),
+            )
+            .await;
             crate::services::matrix::set_room(room.clone());
             crate::services::matrix::start_sync(client, sink_for(model));
             if room.is_some() {
@@ -946,15 +950,15 @@ fn sso_complete(model: Model, callback_url: String) {
                 let user_id = crate::services::matrix::client()
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
                     .unwrap_or_default();
-                model.app.identity.set(user_id.clone());
-                model.app.conn.set(ConnState::LoggedIn(user_id));
-                model.app.room.set(room_id);
+                model.sync.identity.set(user_id.clone());
+                model.sync.conn.set(ConnState::LoggedIn(user_id));
+                model.sync.room.set(room_id);
                 // Resume a parked join (SSO invite) now that we're signed in on
                 // its homeserver, instead of the plain Home connect.
-                let pending = model.app.pending_join.get_clone();
+                let pending = model.sync.pending_join.get_clone();
                 if let Some(link) = &pending {
                     if crate::services::matrix::load_session_for(&link.homeserver).is_some() {
-                        model.app.pending_join.set(None);
+                        model.sync.pending_join.set(None);
                         crate::update(model, crate::Msg::Join(link.clone()));
                         return;
                     }
@@ -962,7 +966,7 @@ fn sso_complete(model: Model, callback_url: String) {
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
                 flush_pending(model);
             }
-            Err(e) => model.app.conn.set(ConnState::Error(e)),
+            Err(e) => model.sync.conn.set(ConnState::Error(e)),
         }
     });
 }
@@ -991,7 +995,7 @@ fn spawn_backfill(model: Model) {
         {
             khanatime::log!("matrix backfill error: {e}");
         }
-        crate::log::reconcile(&model.app.event.with(|e| e.id.clone()));
+        crate::log::reconcile(&model.khana.event.with(|e| e.id.clone()));
         crate::app::refresh_feed(model);
     });
 }
@@ -1009,7 +1013,7 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
     if msg.room.as_str() != room.room_id().as_str() {
         return;
     }
-    let id = model.app.event.with(|e| e.id.clone());
+    let id = model.khana.event.with(|e| e.id.clone());
     if id.is_empty() {
         return;
     }
@@ -1041,7 +1045,7 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
     {
         if let Some(incoming) = crate::event::from_setup_body(&msg.body) {
-            model.app.event.update(|e| {
+            model.khana.event.update(|e| {
                 crate::event::merge_setup(e, &incoming);
             });
         }
@@ -1056,7 +1060,7 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         .starts_with(crate::timing_event::TimingEvent::ENTRY_PREFIX)
     {
         if let Some(entry_msg) = crate::event::from_entry_body(&msg.body) {
-            model.app.event.update(|e| {
+            model.khana.event.update(|e| {
                 if e.uid.is_empty() {
                     e.uid = entry_msg.event_id.clone();
                 }
@@ -1081,13 +1085,13 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         // Mirror the remote run into local state (run numbering,
         // pending-starts) so Start/Finish screens stay live.
         let run = crate::event::record_from_timing(&te);
-        model.app.runs.update(|runs| {
+        model.khana.runs.update(|runs| {
             crate::event::add_run(runs, run);
         });
     }
     if te.r#type == crate::event::RUN_START && te.status.as_deref() == Some("dns") {
         // A no-show start scores NOSHO so the results cell reads "DNS".
-        model.app.scores.update(|s| {
+        model.khana.scores.update(|s| {
             crate::event::upsert_ktime(s, te.test, &te.car, crate::event::KTime::NOSHO);
         });
     }
@@ -1095,7 +1099,7 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         // Full KTime: keeps DNF/FTS/WD/NOSHO and penalty flags intact.
         let run = crate::event::record_from_timing(&te);
         let kt = crate::event::finish_to_ktime(&run);
-        model.app.scores.update(|s| {
+        model.khana.scores.update(|s| {
             crate::event::upsert_ktime(s, te.test, &te.car, kt);
         });
     }

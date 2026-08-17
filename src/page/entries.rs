@@ -109,7 +109,7 @@ fn entry_status_from(value: &str) -> EntryStatus {
 }
 
 fn is_published(model: crate::Model) -> bool {
-    model.app.event.with(|e| e.status != EventStatus::Draft)
+    model.khana.event.with(|e| e.status != EventStatus::Draft)
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
@@ -136,7 +136,7 @@ pub fn update(model: crate::Model, msg: Msg) {
         }
         Msg::SubmitEntry => competitor_submit(model),
         Msg::WithdrawOwn(entry_no) => {
-            if let Some(mut entry) = model.app.event.with(|e| e.find_entry(entry_no).cloned()) {
+            if let Some(mut entry) = model.khana.event.with(|e| e.find_entry(entry_no).cloned()) {
                 entry.status = EntryStatus::Withdrawn;
                 crate::page::enqueue_entry(model, &entry, false);
             }
@@ -179,7 +179,7 @@ pub fn update(model: crate::Model, msg: Msg) {
 
 /// The current effective entry list: committed entries + staged ops.
 fn effective_entries(model: crate::Model) -> Vec<Entry> {
-    let committed = model.app.event.with(|e| e.entries.clone());
+    let committed = model.khana.event.with(|e| e.entries.clone());
     apply_ops(&committed, &model.screens.entries.staged.get_clone())
 }
 
@@ -219,7 +219,7 @@ fn set_car(model: crate::Model, entry_no: u32, raw: &str) {
         }
     };
     let committed = model
-        .app
+        .khana
         .event
         .with(|e| e.find_entry(entry_no).cloned())
         .unwrap_or_else(|| Entry::new("", ""));
@@ -233,8 +233,8 @@ fn set_car(model: crate::Model, entry_no: u32, raw: &str) {
     }
     if !committed.car.is_empty()
         && crate::event::entry_has_timing(
-            &model.app.scores.get_clone(),
-            &model.app.runs.get_clone(),
+            &model.khana.scores.get_clone(),
+            &model.khana.runs.get_clone(),
             &committed.car,
         )
     {
@@ -262,8 +262,8 @@ fn staged_delete(model: crate::Model, entry_no: u32) {
         .unwrap_or_default();
     if !car.is_empty()
         && crate::event::entry_has_timing(
-            &model.app.scores.get_clone(),
-            &model.app.runs.get_clone(),
+            &model.khana.scores.get_clone(),
+            &model.khana.runs.get_clone(),
             &car,
         )
     {
@@ -303,7 +303,7 @@ fn staged_move(model: crate::Model, entry_no: u32, up: bool) {
         })
         .collect();
     // Only stage entries whose order actually changed (keeps the diff small).
-    let committed = model.app.event.with(|e| e.entries.clone());
+    let committed = model.khana.event.with(|e| e.entries.clone());
     em.staged.update(|v| {
         for e in &with_order {
             let changed = committed
@@ -321,7 +321,7 @@ fn staged_move(model: crate::Model, entry_no: u32, up: bool) {
 /// Fill suggested numbers + running order for every active unassigned entry.
 fn assign_numbers(model: crate::Model) {
     let em = model.screens.entries;
-    let committed = model.app.event.with(|e| e.entries.clone());
+    let committed = model.khana.event.with(|e| e.entries.clone());
     let mut sorted = effective_entries(model);
     sorted.sort_by_key(crate::event::entry_sort_key);
     let mut used: HashSet<String> = committed
@@ -382,7 +382,7 @@ fn assign_numbers(model: crate::Model) {
 /// or status.
 fn competitor_submit(model: crate::Model) {
     let em = model.screens.entries;
-    let identity = model.app.identity.get_clone();
+    let identity = model.sync.identity.get_clone();
     if identity.is_empty() {
         em.feedback
             .set("Log in on the Home page to enter.".to_string());
@@ -416,7 +416,7 @@ fn competitor_submit(model: crate::Model) {
         }
     };
 
-    let existing = model.app.event.with(|e| {
+    let existing = model.khana.event.with(|e| {
         e.entries
             .iter()
             .find(|e| {
@@ -453,7 +453,7 @@ fn competitor_submit(model: crate::Model) {
 
 fn save_batch(model: crate::Model) {
     let em = model.screens.entries;
-    let committed = model.app.event.with(|e| e.entries.clone());
+    let committed = model.khana.event.with(|e| e.entries.clone());
     let compacted = compact_ops(&em.staged.get_clone(), &committed);
     if compacted.is_empty() {
         em.feedback.set("No changes to send.".to_string());
@@ -472,7 +472,7 @@ fn send_batch(model: crate::Model) {
             EditOp::Upsert(entry) => crate::page::enqueue_entry(model, &entry, false),
             EditOp::Delete(no) => {
                 let entry = model
-                    .app
+                    .khana
                     .event
                     .with(|e| e.find_entry(no).cloned())
                     .unwrap_or_else(|| {
@@ -562,8 +562,8 @@ fn view_admin_toggle(model: crate::Model) -> View {
 fn view_entrant_list(model: crate::Model) -> View {
     let em = model.screens.entries;
     let admin = em.admin.get();
-    let identity = model.app.identity.get_clone();
-    let classes = model.app.event.with(|e| e.classes.clone());
+    let identity = model.sync.identity.get_clone();
+    let classes = model.khana.event.with(|e| e.classes.clone());
     let mut entries = effective_entries(model);
     entries.sort_by_key(crate::event::entry_sort_key);
     let shared = crate::event::shared_entry_nos(&entries);
@@ -907,7 +907,7 @@ fn view_enter_form(model: crate::Model) -> View {
             }
             // In-app self-entry can be disabled per event (officials in admin
             // mode still manage entries).
-            if !model.app.event.with(|e| e.entries_enabled) {
+            if !model.khana.event.with(|e| e.entries_enabled) {
                 return view! {
                     div(class="box") {
                         h2(class="title is-5") { "Enter the event" }

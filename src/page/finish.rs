@@ -54,7 +54,7 @@ pub fn update(model: crate::Model, msg: Msg) {
 }
 
 fn find_pending(model: crate::Model, test: u8, car: &str) -> Option<RunRecord> {
-    model.app.runs.with(|runs| {
+    model.khana.runs.with(|runs| {
         pending_starts(runs, test)
             .into_iter()
             .find(|r| r.car == car)
@@ -117,13 +117,13 @@ fn do_finish(model: crate::Model) {
         time_ds: Some(time_ds),
         status: Some(sm.penalty.status.get_clone()),
         flags: Some(sm.penalty.flags.get()),
-        official_id: Some(model.app.identity.get_clone()),
+        official_id: Some(model.sync.identity.get_clone()),
         voided: false,
         comment: comment_opt,
         refs: vec![],
     };
 
-    model.app.scores.update(|s| {
+    model.khana.scores.update(|s| {
         upsert_ktime(s, test, &car, ktime);
     });
 
@@ -138,7 +138,7 @@ fn do_finish(model: crate::Model) {
 
 pub fn view(model: crate::Model) -> View {
     let sm = model.screens.finish;
-    let count = model.app.event.with(|e| e.stage_count());
+    let count = model.khana.event.with(|e| e.stage_count());
     view! {
         div {
             h1(class="title is-4") { "Finish timing" }
@@ -176,7 +176,7 @@ pub fn view(model: crate::Model) -> View {
                         view! {
                             div(class="kt-car-chips mt-2") {
                                 (move || {
-                                    let entries = model.app.event.with(|e| e.entries.clone());
+                                    let entries = model.khana.event.with(|e| e.entries.clone());
                                     pad::car_chips(entries, sm.car)
                                 })
                             }
@@ -245,7 +245,7 @@ fn view_pending(model: crate::Model) -> View {
             h2(class="title is-5") { "Pending starts" }
             (move || {
                 let test = model.screens.finish.test.get();
-                let pending = model.app.runs.with(|runs| {
+                let pending = model.khana.runs.with(|runs| {
                     pending_starts(runs, test)
                         .into_iter()
                         .cloned()

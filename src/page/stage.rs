@@ -35,7 +35,7 @@ fn add_score(model: Model) {
         Ok(CmdParse::Time(cmd)) => to_score(model.screens.stage.stage.get(), cmd),
         _ => panic!("add_score called without a parsed time command"),
     });
-    model.app.scores.update(|v| v.push(s));
+    model.khana.scores.update(|v| v.push(s));
 }
 
 fn to_score(stage: u8, cmd: &TimeCmd) -> ScoreData {
@@ -106,7 +106,7 @@ pub fn view(model: Model) -> View {
                 (move || {
                     format!(
                         "Event: {}  Stage:{}",
-                        model.app.event.with(|e| e.name.clone()),
+                        model.khana.event.with(|e| e.name.clone()),
                         model.screens.stage.stage.get()
                     )
                 })
@@ -152,7 +152,7 @@ fn view_preview(model: Model) -> View {
 
 fn view_list(model: Model) -> View {
     let mut v = vec![view_time_header()];
-    model.app.scores.with(|scores| {
+    model.khana.scores.with(|scores| {
         for a in scores.iter() {
             v.push(view_time(a));
         }

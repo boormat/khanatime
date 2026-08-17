@@ -66,7 +66,7 @@ fn start_car(model: crate::Model) {
         time_ds: None,
         status: Some("clean".to_string()),
         flags: None,
-        official_id: Some(model.app.identity.get_clone()),
+        official_id: Some(model.sync.identity.get_clone()),
         voided: false,
         comment: comment_opt,
         refs: vec![],
@@ -95,14 +95,14 @@ fn mark_dns(model: crate::Model) {
         time_ds: None,
         status: Some("dns".to_string()),
         flags: None,
-        official_id: Some(model.app.identity.get_clone()),
+        official_id: Some(model.sync.identity.get_clone()),
         voided: false,
         comment: None,
         refs: vec![],
     };
     crate::page::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".
-    model.app.scores.update(|s| {
+    model.khana.scores.update(|s| {
         crate::event::upsert_ktime(s, test, &car, crate::event::KTime::NOSHO);
     });
     crate::update(model, crate::Msg::Reload);
@@ -113,7 +113,7 @@ fn mark_dns(model: crate::Model) {
 
 pub fn view(model: crate::Model) -> View {
     let sm = model.screens.start;
-    let count = model.app.event.with(|e| e.stage_count());
+    let count = model.khana.event.with(|e| e.stage_count());
     view! {
         div {
             h1(class="title is-4") { "Start timing" }
@@ -121,7 +121,7 @@ pub fn view(model: crate::Model) -> View {
             div(class="box") {
                 div(class="kt-car-chips") {
                     (move || {
-                        let entries = model.app.event.with(|e| e.entries.clone());
+                        let entries = model.khana.event.with(|e| e.entries.clone());
                         pad::car_chips(entries, sm.car)
                     })
                 }

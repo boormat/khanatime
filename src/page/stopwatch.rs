@@ -176,7 +176,7 @@ fn start_car(model: crate::Model) {
     }
     let car = resolved_car(model);
     let test = sm.test.get();
-    if pending_for_car(&model.app.runs.get_clone(), test, &car) {
+    if pending_for_car(&model.khana.runs.get_clone(), test, &car) {
         sm.feedback
             .set(Some("Car is already on course — use STOP".to_string()));
         return;
@@ -192,7 +192,7 @@ fn start_car(model: crate::Model) {
         time_ds: None,
         status: Some("clean".to_string()),
         flags: None,
-        official_id: Some(model.app.identity.get_clone()),
+        official_id: Some(model.sync.identity.get_clone()),
         voided: false,
         comment: comment_opt,
         refs: vec![],
@@ -206,7 +206,7 @@ fn stop_car(model: crate::Model) {
     let car = resolved_car(model);
     let test = sm.test.get();
     let now = js_sys::Date::now() as i64;
-    let runs = model.app.runs.get_clone();
+    let runs = model.khana.runs.get_clone();
     let elapsed = pending_starts(&runs, test)
         .iter()
         .find(|r| r.car == car)
@@ -223,7 +223,7 @@ fn stop_car(model: crate::Model) {
         time_ds: Some(elapsed),
         status: Some("clean".to_string()),
         flags: None,
-        official_id: Some(model.app.identity.get_clone()),
+        official_id: Some(model.sync.identity.get_clone()),
         voided: false,
         comment: comment_opt,
         refs: vec![],
@@ -231,7 +231,7 @@ fn stop_car(model: crate::Model) {
     crate::page::enqueue_run(model, &record);
 
     // Now auto-attach events for this car/test.
-    let runs = model.app.runs.get_clone();
+    let runs = model.khana.runs.get_clone();
     let attached = auto_attach(&runs, test, &car);
     sm.pending.update(|v| {
         v.push(PendingFinish {
@@ -284,12 +284,12 @@ fn commit(model: crate::Model, idx: usize) {
         time_ds: Some(time_ds),
         status: Some(sm.penalty.status.get_clone()),
         flags: Some(sm.penalty.flags.get()),
-        official_id: Some(model.app.identity.get_clone()),
+        official_id: Some(model.sync.identity.get_clone()),
         voided: false,
         comment: Some(comment).filter(|c| !c.is_empty()),
         refs,
     };
-    model.app.scores.update(|s| {
+    model.khana.scores.update(|s| {
         upsert_ktime(s, sm.test.get(), &car, ktime);
     });
     crate::page::enqueue_run(model, &record);
@@ -338,7 +338,7 @@ fn manual_time(model: crate::Model) {
         }
     };
     let test = sm.test.get();
-    let runs = model.app.runs.get_clone();
+    let runs = model.khana.runs.get_clone();
     let attached = auto_attach(&runs, test, &car);
     sm.pending.update(|v| {
         v.push(PendingFinish {
@@ -358,7 +358,7 @@ fn manual_time(model: crate::Model) {
 fn void_observation(model: crate::Model, uid: &str) {
     let sm = model.screens.stopwatch;
     let test = sm.test.get();
-    let runs = model.app.runs.get_clone();
+    let runs = model.khana.runs.get_clone();
     let r = match runs.iter().find(|r| r.uid == uid) {
         Some(r) => r.clone(),
         None => return,
@@ -401,7 +401,7 @@ fn fmt_ts(ts: i64) -> String {
 
 pub fn view(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
-    let count = model.app.event.with(|e| e.stage_count());
+    let count = model.khana.event.with(|e| e.stage_count());
     view! {
         div {
             h1(class="title is-4") { "Stopwatch" }
@@ -437,7 +437,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                     let label = if trimmed == "?" {
                         "#? Unknown".to_string()
                     } else {
-                        let (name, _vehicle) = model.app.event.with(|e| {
+                        let (name, _vehicle) = model.khana.event.with(|e| {
                             e.entries.iter()
                                 .find(|en| en.car == trimmed)
                                 .map(|en| (en.name.clone(), en.vehicle.clone()))
@@ -462,7 +462,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                     class=move || {
                         let car = sm.car.get_clone();
                         let has = pending_for_car(
-                            &model.app.runs.get_clone(),
+                            &model.khana.runs.get_clone(),
                             sm.test.get(),
                             car.trim(),
                         );
@@ -480,7 +480,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                     class=move || {
                         let car = sm.car.get_clone();
                         let has = pending_for_car(
-                            &model.app.runs.get_clone(),
+                            &model.khana.runs.get_clone(),
                             sm.test.get(),
                             car.trim(),
                         );
@@ -503,9 +503,9 @@ fn view_car_chips(model: crate::Model) -> View {
     view! {
         div(class="box") {
             (move || {
-                let entries = model.app.event.with(|e| e.entries.clone());
+                let entries = model.khana.event.with(|e| e.entries.clone());
                 let test = sm.test.get();
-                let runs_total = model.app.event.with(|e| {
+                let runs_total = model.khana.event.with(|e| {
                     e.stages.iter()
                         .find(|s| s.num == test)
                         .map(|s| s.runs_total)
@@ -518,7 +518,7 @@ fn view_car_chips(model: crate::Model) -> View {
                     .map(|e| (e.car.clone(), runs_total))
                     .collect();
                 let mut unknown_finishes: usize = 0;
-                let runs: Vec<crate::event::RunRecord> = model.app.runs.with(|r| r.clone());
+                let runs: Vec<crate::event::RunRecord> = model.khana.runs.with(|r| r.clone());
                 for r in &runs {
                     if r.r#type == RUN_FINISH && r.test == test && !r.voided {
                         if r.car == "?" {

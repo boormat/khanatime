@@ -166,7 +166,7 @@ pub fn view(model: crate::Model) -> View {
 
 /// The event that's currently open, if any.
 fn view_current(model: crate::Model) -> View {
-    let (id, name, status, demo) = model.app.event.with(|e| {
+    let (id, name, status, demo) = model.khana.event.with(|e| {
         (
             e.id.clone(),
             e.name.clone(),
@@ -213,7 +213,7 @@ fn view_current(model: crate::Model) -> View {
 /// Search the Matrix room directory for a published event.
 fn view_published(model: crate::Model) -> View {
     let em = model.screens.events;
-    let logged_in = matches!(model.app.conn.get_clone(), ConnState::LoggedIn(_));
+    let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
     view! {
         div(class="box") {
             h2(class="title is-5") {

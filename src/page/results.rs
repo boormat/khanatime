@@ -76,8 +76,8 @@ fn class_tabs(event: &EventInfo) -> Vec<String> {
 }
 
 fn load_class(model: crate::Model, class: &str) {
-    let event = model.app.event.get_clone();
-    let runs = model.app.runs.get_clone();
+    let event = model.khana.event.get_clone();
+    let runs = model.khana.runs.get_clone();
     let results = build_view(&event, &runs, class);
     model.screens.results.results.set(results);
 }
@@ -137,11 +137,11 @@ fn publish(model: crate::Model) {
     let Some(room) = crate::services::matrix::room() else {
         return;
     };
-    let event = model.app.event.get_clone();
-    let scores = model.app.scores.get_clone();
+    let event = model.khana.event.get_clone();
+    let scores = model.khana.scores.get_clone();
     wasm_bindgen_futures::spawn_local(async move {
         if let Err(e) = crate::services::matrix::send_result(&room, &event, &scores).await {
-            model.app.conn.set(crate::app::ConnState::Error(e));
+            model.sync.conn.set(crate::app::ConnState::Error(e));
         }
     });
 }
@@ -158,7 +158,7 @@ pub fn view(model: crate::Model) -> View {
 }
 
 fn view_publish(model: crate::Model) -> View {
-    let joined = model.app.room.with(|r| r.is_some());
+    let joined = model.sync.room.with(|r| r.is_some());
     view! {
         div(class="box is-hidden-print") {
             div(class="level") {

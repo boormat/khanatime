@@ -23,7 +23,7 @@ use sycamore::prelude::*;
 /// enqueue it to the current event's pending outbox — the durable record until
 /// it's flushed to the timing room.  No-op when no event is selected.
 pub fn enqueue_run(model: crate::Model, run: &crate::event::RunRecord) {
-    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
     }
@@ -33,7 +33,7 @@ pub fn enqueue_run(model: crate::Model, run: &crate::event::RunRecord) {
     if run.uid.is_empty() {
         run.uid = crate::ids::gen_short_id();
     }
-    model.app.runs.update(|runs| {
+    model.khana.runs.update(|runs| {
         crate::event::add_run(runs, run.clone());
     });
     let te = crate::timing_event::TimingEvent {
@@ -51,7 +51,7 @@ pub fn enqueue_run(model: crate::Model, run: &crate::event::RunRecord) {
         comment: run.comment.clone(),
         refs: run.refs.clone(),
     };
-    let sender = model.app.identity.get_clone();
+    let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
@@ -66,20 +66,20 @@ pub fn enqueue_ktime(
     time: &crate::event::KTime,
     comment: Option<String>,
 ) {
-    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
     }
     let mut te = crate::timing_event::TimingEvent::finish(&uid, test, car, time, vec![]);
-    te.official_id = Some(model.app.identity.get_clone());
+    te.official_id = Some(model.sync.identity.get_clone());
     te.comment = comment;
-    let sender = model.app.identity.get_clone();
+    let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     // Mirror the finish into the local run log (results read runs, not the
     // collapsed scores) so manually entered times show up even before the
     // room echoes the message back.
     let run = crate::event::record_from_timing(&te);
-    model.app.runs.update(|runs| {
+    model.khana.runs.update(|runs| {
         crate::event::add_run(runs, run);
     });
     crate::sync::flush_pending(model);
@@ -89,14 +89,14 @@ pub fn enqueue_ktime(
 /// Enqueue an entry state message (upsert or tombstone) for the current event,
 /// apply it to the local event immediately, and flush + refresh.
 pub fn enqueue_entry(model: crate::Model, entry: &crate::event::Entry, delete: bool) {
-    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
     }
     let body = crate::event::entry_body(&uid, entry, delete);
-    let sender = model.app.identity.get_clone();
+    let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(body, sender));
-    model.app.event.update(|e| {
+    model.khana.event.update(|e| {
         if delete {
             e.remove_entry(entry.entry_no);
         } else {
@@ -119,16 +119,16 @@ pub fn enqueue_amend(
     time: &crate::event::KTime,
     comment: Option<String>,
 ) {
-    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
     }
     let mut te = crate::timing_event::TimingEvent::amend(&uid, target_uid, test, car, time);
-    te.official_id = Some(model.app.identity.get_clone());
+    te.official_id = Some(model.sync.identity.get_clone());
     te.comment = comment;
-    let sender = model.app.identity.get_clone();
+    let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
-    model.app.runs.update(|runs| {
+    model.khana.runs.update(|runs| {
         if let Some(r) = runs.iter_mut().find(|r| r.uid == target_uid) {
             r.test = te.test;
             r.car = te.car.clone();
@@ -148,15 +148,15 @@ pub fn enqueue_amend(
 /// Void an existing observation by `target_uid`: enqueue a `void` message and
 /// mark the local run record voided (excluded from pairing/scores).
 pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) {
-    let (id, uid) = model.app.event.with(|e| (e.id.clone(), e.uid.clone()));
+    let (id, uid) = model.khana.event.with(|e| (e.id.clone(), e.uid.clone()));
     if id.is_empty() || uid.is_empty() {
         return;
     }
     let mut te = crate::timing_event::TimingEvent::void(&uid, target_uid, test, car);
-    te.official_id = Some(model.app.identity.get_clone());
-    let sender = model.app.identity.get_clone();
+    te.official_id = Some(model.sync.identity.get_clone());
+    let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
-    model.app.runs.update(|runs| {
+    model.khana.runs.update(|runs| {
         if let Some(r) = runs.iter_mut().find(|r| r.uid == target_uid) {
             r.voided = true;
         }
@@ -174,7 +174,7 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
         div(class="box") {
             h3(class="title is-6") { "Log" }
             (move || {
-                let mut runs: Vec<RunRecord> = model.app.runs.with(|runs| {
+                let mut runs: Vec<RunRecord> = model.khana.runs.with(|runs| {
                     runs.iter()
                         .filter(|r| r.test == test && !r.voided)
                         .filter(|r| r.r#type == RUN_START || r.r#type == RUN_FINISH || r.r#type == RUN_STOP)
@@ -246,14 +246,14 @@ fn fmt_log_ts(ms: i64) -> String {
 /// paste one to import.  The exporter and scanner open as full-screen modals
 /// (see [`view_handoff_modals`]); this box stays compact.
 pub fn view_handoff(model: crate::Model) -> View {
-    let status = model.app.parcel_status.get_clone();
+    let status = model.sync.parcel_status.get_clone();
     let status_view = if status.is_empty() {
         view! {}
     } else {
         let s = status.clone();
         view! { p(class="help has-text-info") { (s) } }
     };
-    let open_event = model.app.parcel_open_event.get_clone();
+    let open_event = model.sync.parcel_open_event.get_clone();
     let open_view = if open_event.is_some() {
         let (_, name) = open_event.clone().unwrap();
         view! {
@@ -320,7 +320,7 @@ pub fn view_handoff(model: crate::Model) -> View {
                     textarea(
                         class="textarea is-small",
                         rows="4",
-                        bind:value=model.app.parcel_import,
+                        bind:value=model.sync.parcel_import,
                         placeholder="Paste a khanatime_parcel:… string",
                     ) {}
                 }
@@ -342,7 +342,7 @@ pub fn view_handoff(model: crate::Model) -> View {
 
 /// Button class for the parcel-mode toggle: active mode is solid.
 fn mode_class(model: crate::Model, mode: crate::app::ParcelMode) -> String {
-    if model.app.parcel_mode.get() == mode {
+    if model.sync.parcel_mode.get() == mode {
         "button is-small is-primary".to_string()
     } else {
         "button is-small".to_string()
@@ -354,9 +354,9 @@ fn mode_class(model: crate::Model, mode: crate::app::ParcelMode) -> String {
 pub fn view_handoff_modals(model: crate::Model) -> View {
     view! {
         (move || {
-            if model.app.scan_active.get() {
+            if model.sync.scan_active.get() {
                 view_scan_modal(model)
-            } else if !model.app.parcel_qr_svgs.with(|v| v.is_empty()) {
+            } else if !model.sync.parcel_qr_svgs.with(|v| v.is_empty()) {
                 view_qr_modal(model)
             } else {
                 view! {}
@@ -368,12 +368,12 @@ pub fn view_handoff_modals(model: crate::Model) -> View {
 /// The exported parcel's QR modal: the current frame as a large SVG, animated
 /// across frames when the parcel spans more than one code.
 fn view_qr_modal(model: crate::Model) -> View {
-    let svgs = model.app.parcel_qr_svgs.get_clone();
-    let i = model.app.parcel_qr_index.get();
-    let total = model.app.parcel_qr_total.get();
-    let paused = model.app.parcel_qr_paused.get();
+    let svgs = model.sync.parcel_qr_svgs.get_clone();
+    let i = model.sync.parcel_qr_index.get();
+    let total = model.sync.parcel_qr_total.get();
+    let paused = model.sync.parcel_qr_paused.get();
     let svg = svgs.get(i).cloned().unwrap_or_default();
-    let exported = model.app.parcel_export.get_clone();
+    let exported = model.sync.parcel_export.get_clone();
     let hint = if total > 1 {
         let anim = if paused {
             "paused — resume to cycle frames."
@@ -442,7 +442,7 @@ fn view_qr_modal(model: crate::Model) -> View {
 
 /// Full-screen camera viewfinder modal for scanning a parcel.
 fn view_scan_modal(model: crate::Model) -> View {
-    let status = model.app.scan_status.get_clone();
+    let status = model.sync.scan_status.get_clone();
     let status_view = if status.is_empty() {
         view! {}
     } else {
