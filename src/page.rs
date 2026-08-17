@@ -189,8 +189,14 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                     .iter()
                     .map(|r| {
                         let uid = r.uid.clone();
-                        let icon = if r.r#type == RUN_START { "\u{25B6}" } else if r.r#type == RUN_STOP { "\u{23F9}" } else { "\u{25A0}" };
-                        let label = format!("{} #{}", icon, r.car);
+                        let (icon_char, icon_class) = if r.r#type == RUN_START {
+                            ("\u{25B6}", "has-text-success")
+                        } else if r.r#type == RUN_STOP {
+                            ("\u{23F9}", "has-text-danger")
+                        } else {
+                            ("\u{25A0}", "")
+                        };
+                        let car_text = format!(" #{}", r.car);
                         let ts = fmt_log_ts(r.ts);
                         let official_view: View = match &r.official_id {
                             Some(o) if !o.is_empty() => {
@@ -209,7 +215,8 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                         view! {
                             div(class="level is-mobile") {
                                 div(class="level-left") {
-                                    span(class="has-text-weight-semibold") { (label) }
+                                    span(class=icon_class) { (icon_char) }
+                                    span(class="has-text-weight-semibold") { (car_text) }
                                     span(class="has-text-grey ml-2") { (ts) }
                                     (official_view)
                                     (comment_view)

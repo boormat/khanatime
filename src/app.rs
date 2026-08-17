@@ -279,10 +279,8 @@ pub fn show(model: Model, screen: Screen) {
     #[cfg(target_arch = "wasm32")]
     push_screen_hash(screen);
     model.screen.set(screen);
-    match screen {
-        Screen::Event => page::event::update(model, page::event::Msg::LoadDetails),
-        Screen::Results => page::results::update(model, page::results::Msg::Reload),
-        _ => {}
+    if screen == Screen::Results {
+        page::results::update(model, page::results::Msg::Reload);
     }
 }
 
@@ -389,7 +387,6 @@ pub fn update(model: Model, msg: Msg) {
             // And any pending "open the parcel's event" offer.
             model.app.parcel_open_event.set(None);
             refresh_feed(model);
-            page::event::update(model, page::event::Msg::LoadDetails);
             page::results::update(model, page::results::Msg::Reload);
             crate::sync::join_current_event(model);
         }

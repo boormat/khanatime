@@ -96,6 +96,13 @@ fn shared_str(s: &Option<String>) -> String {
     }
 }
 
+fn desc_str(s: &Option<String>) -> String {
+    match s.as_deref() {
+        Some(x) if !x.trim().is_empty() => x.trim().to_string(),
+        _ => "(none)".to_string(),
+    }
+}
+
 /// Human-readable list of changes a batch of entry ops makes, for the confirm
 /// dialog.  Runs over the already-compacted ops.
 pub fn entry_diff(ops: &[EditOp], current: &[Entry]) -> Vec<String> {
@@ -151,6 +158,14 @@ pub fn entry_diff(ops: &[EditOp], current: &[Entry]) -> Vec<String> {
                             e.name,
                             shared_str(&cur.shared_car),
                             shared_str(&e.shared_car)
+                        ));
+                    }
+                    if cur.description != e.description {
+                        lines.push(format!(
+                            "~ {} — description: {} → {}",
+                            e.name,
+                            desc_str(&cur.description),
+                            desc_str(&e.description)
                         ));
                     }
                     if cur.name != e.name || cur.vehicle != e.vehicle {
@@ -232,27 +247,64 @@ fn stage_desc(s: &Stage) -> String {
 
 /// Human-readable list of changes from one event config to another, for the
 /// Event Admin confirm dialog.
+fn field_diff(lines: &mut Vec<String>, label: &str, a: &str, b: &str) {
+    if a != b {
+        lines.push(format!("~ {label}: {} → {}", show(a), show(b)));
+    }
+}
+
 pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
-    let mut field = |label: &str, a: &str, b: &str| {
-        if a != b {
-            lines.push(format!("~ {label}: {} → {}", show(a), show(b)));
-        }
-    };
-    field(
+    field_diff(
+        &mut lines,
         "Club / district",
         &base.sponsoring_club,
         &staged.sponsoring_club,
     );
-    field("Name", &base.name, &staged.name);
-    field("Year", &base.year, &staged.year);
-    field("Event date", &base.event_date, &staged.event_date);
-    field("Entry open", &base.entry_open, &staged.entry_open);
-    field("Entry close", &base.entry_close, &staged.entry_close);
-    field("Stripe link", &base.stripe_link, &staged.stripe_link);
-    field("Parent room", &base.parent_room, &staged.parent_room);
-    field("Homeserver", &base.homeserver, &staged.homeserver);
-    field("Element link", &base.element_link, &staged.element_link);
+    field_diff(&mut lines, "Name", &base.name, &staged.name);
+    field_diff(&mut lines, "Year", &base.year, &staged.year);
+    field_diff(
+        &mut lines,
+        "Event date",
+        &base.event_date,
+        &staged.event_date,
+    );
+    field_diff(
+        &mut lines,
+        "Entry open",
+        &base.entry_open,
+        &staged.entry_open,
+    );
+    field_diff(
+        &mut lines,
+        "Entry close",
+        &base.entry_close,
+        &staged.entry_close,
+    );
+    field_diff(
+        &mut lines,
+        "Stripe link",
+        &base.stripe_link,
+        &staged.stripe_link,
+    );
+    field_diff(
+        &mut lines,
+        "Parent room",
+        &base.parent_room,
+        &staged.parent_room,
+    );
+    field_diff(
+        &mut lines,
+        "Homeserver",
+        &base.homeserver,
+        &staged.homeserver,
+    );
+    field_diff(
+        &mut lines,
+        "Element link",
+        &base.element_link,
+        &staged.element_link,
+    );
     if base.entries_enabled != staged.entries_enabled {
         lines.push(if staged.entries_enabled {
             "+ In-app entries: enabled".to_string()
@@ -283,6 +335,99 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
             }
         }
     }
+
+    // New entries (by entry_no not in base).
+    for e in &staged.entries {
+        if !base.entries.iter().any(|b| b.entry_no == e.entry_no) {
+            let classes = if e.classes.is_empty() {
+                String::new()
+            } else {
+                format!(", classes: {}", e.classes.join(", "))
+            };
+            let vehicle = if e.vehicle.is_empty() {
+                String::new()
+            } else {
+                format!(", vehicle: {}", e.vehicle)
+            };
+            lines.push(format!(
+                "+ {} — new entry (#{}, {}{}{})",
+                e.name, e.car, e.status, classes, vehicle
+            ));
+        }
+    }
+
+    // Compare existing entries for field changes.
+    for e in &staged.entries {
+        if let Some(b) = base.entries.iter().find(|b| b.entry_no == e.entry_no) {
+            if b.name != e.name {
+                field_diff(
+                    &mut lines,
+                    &format!("Entry #{} name", e.entry_no),
+                    &b.name,
+                    &e.name,
+                );
+            }
+            if b.classes != e.classes {
+                let before = if b.classes.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    b.classes.join(", ")
+                };
+                let after = if e.classes.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    e.classes.join(", ")
+                };
+                lines.push(format!(
+                    "~ Entry #{} classes: {} → {}",
+                    e.entry_no, before, after
+                ));
+            }
+            if b.vehicle != e.vehicle {
+                field_diff(
+                    &mut lines,
+                    &format!("Entry #{} vehicle", e.entry_no),
+                    &b.vehicle,
+                    &e.vehicle,
+                );
+            }
+            if b.description != e.description {
+                field_diff(
+                    &mut lines,
+                    &format!("Entry #{} description", e.entry_no),
+                    &desc_str(&b.description),
+                    &desc_str(&e.description),
+                );
+            }
+            if b.shared_car != e.shared_car {
+                field_diff(
+                    &mut lines,
+                    &format!("Entry #{} shared car", e.entry_no),
+                    &shared_str(&b.shared_car),
+                    &shared_str(&e.shared_car),
+                );
+            }
+            if b.status != e.status {
+                field_diff(
+                    &mut lines,
+                    &format!("Entry #{} status", e.entry_no),
+                    &status_str(&b.status),
+                    &status_str(&e.status),
+                );
+            }
+        }
+    }
+
+    // Removed / withdrawn entries (by entry_no not in staged).
+    for e in &base.entries {
+        if !staged.entries.iter().any(|s| s.entry_no == e.entry_no) {
+            lines.push(format!(
+                "− {} — removed entry (#{}, {})",
+                e.name, e.car, e.status
+            ));
+        }
+    }
+
     lines
 }
 

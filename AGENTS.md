@@ -17,8 +17,9 @@ scripts/serve_https.sh
 # Release build
 trunk build --release
 
-# Releasable check (fmt + clippy warnings-as-errors + tests) —
+# Build, test, lint.
 # same script CI runs; gates the deploy workflow
+# always check code changes with this. Must pass before commit
 ./scripts/check.sh
 
 # Tests

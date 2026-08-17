@@ -245,6 +245,7 @@ fn stop_car(model: crate::Model) {
         });
     });
     sm.feedback.set(None);
+    sm.car.set(String::new());
 }
 
 fn toggle_attach(model: crate::Model, idx: usize) {
@@ -405,7 +406,6 @@ pub fn view(model: crate::Model) -> View {
         div {
             h1(class="title is-4") { "Stopwatch" }
             (pad::test_chips(count as u8, sm.test))
-            (view_selected_car(model))
             (view_action_buttons(model))
             (view_car_chips(model))
             (view_comment(model))
@@ -416,57 +416,47 @@ pub fn view(model: crate::Model) -> View {
     }
 }
 
-/// Big selected-car chip — double height with big car number, small name + vehicle.
-/// Tap to clear.
-fn view_selected_car(model: crate::Model) -> View {
-    let sm = model.screens.stopwatch;
-    view! {
-        div(class="box") {
-            (move || {
-                let car = sm.car.get_clone();
-                let trimmed = car.trim().to_string();
-                if trimmed.is_empty() {
-                    return view! {
-                        div(class="notification is-light has-text-centered") {
-                            p(class="has-text-grey") { "No car selected — START/STOP will record as #?" }
-                        }
-                    };
-                }
-                let label = if trimmed == "?" {
-                    "#?  Unknown".to_string()
-                } else {
-                    let (name, vehicle) = model.app.event.with(|e| {
-                        e.entries.iter()
-                            .find(|en| en.car == trimmed)
-                            .map(|en| (en.name.clone(), en.vehicle.clone()))
-                            .unwrap_or_default()
-                    });
-                    if vehicle.is_empty() {
-                        format!("#{}  {}", trimmed, name)
-                    } else {
-                        format!("#{}  {} · {}", trimmed, name, vehicle)
-                    }
-                };
-                view! {
-                    div(
-                        class="notification is-primary is-light is-clickable",
-                        on:click=move |_| sm.car.set(String::new()),
-                        style="padding: 0.75rem 1rem;",
-                    ) {
-                        p(class="title is-3 mb-1") { (label) }
-                        p(class="has-text-grey is-size-7") { "Tap to clear" }
-                    }
-                }
-            })
-        }
-    }
-}
-
-/// START (green) and STOP (red) — equal size, always work.  Flag icons.
+/// Selected car + START (green) / STOP (red) — all in one row.
 fn view_action_buttons(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
     view! {
-        div(class="columns is-gapless mt-3") {
+        div(class="columns is-gapless mt-3 is-vcentered") {
+            div(class="column is-narrow mr-3") {
+                (move || {
+                    let car = sm.car.get_clone();
+                    let trimmed = car.trim().to_string();
+                    if trimmed.is_empty() {
+                        return view! {
+                            div(
+                                class="notification is-light is-clickable has-text-grey",
+                                on:click=move |_| sm.car.set(String::new()),
+                                style="padding: 0.5rem 0.75rem; min-width: 8rem;",
+                            ) { "No car" }
+                        };
+                    }
+                    let label = if trimmed == "?" {
+                        "#? Unknown".to_string()
+                    } else {
+                        let (name, _vehicle) = model.app.event.with(|e| {
+                            e.entries.iter()
+                                .find(|en| en.car == trimmed)
+                                .map(|en| (en.name.clone(), en.vehicle.clone()))
+                                .unwrap_or_default()
+                        });
+                        format!("#{} {}", trimmed, name)
+                    };
+                    view! {
+                        div(
+                            class="notification is-primary is-light is-clickable",
+                            on:click=move |_| sm.car.set(String::new()),
+                            style="padding: 0.5rem 0.75rem; min-width: 8rem;",
+                        ) {
+                            span(class="has-text-weight-semibold is-size-6") { (label) }
+                            span(class="has-text-grey is-size-7 ml-1") { " ×" }
+                        }
+                    }
+                })
+            }
             div(class="column") {
                 button(
                     class=move || {
@@ -507,14 +497,39 @@ fn view_action_buttons(model: crate::Model) -> View {
     }
 }
 
-/// Car chips for selecting a car.
+/// Car chips for selecting a car, grouped by runs remaining.
 fn view_car_chips(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
     view! {
         div(class="box") {
             (move || {
                 let entries = model.app.event.with(|e| e.entries.clone());
-                pad::car_chips(entries, sm.car)
+                let test = sm.test.get();
+                let runs_total = model.app.event.with(|e| {
+                    e.stages.iter()
+                        .find(|s| s.num == test)
+                        .map(|s| s.runs_total)
+                        .unwrap_or(1)
+                });
+                // Start every car at runs_total, subtract finishes.
+                let mut runs_remaining: std::collections::HashMap<String, u8> = entries
+                    .iter()
+                    .filter(|e| !e.car.is_empty())
+                    .map(|e| (e.car.clone(), runs_total))
+                    .collect();
+                let mut unknown_finishes: usize = 0;
+                let runs: Vec<crate::event::RunRecord> = model.app.runs.with(|r| r.clone());
+                for r in &runs {
+                    if r.r#type == RUN_FINISH && r.test == test && !r.voided {
+                        if r.car == "?" {
+                            unknown_finishes += 1;
+                        } else if let Some(rem) = runs_remaining.get_mut(&r.car) {
+                            *rem = rem.saturating_sub(1);
+                        }
+                    }
+                }
+                let unknown_remaining = runs_total.saturating_sub(unknown_finishes as u8);
+                pad::car_chips_with_runs(entries, sm.car, &runs_remaining, unknown_remaining)
             })
         }
     }
@@ -645,14 +660,21 @@ fn view_attached_events(model: crate::Model, idx: usize, _p: &PendingFinish) -> 
                     .iter()
                     .enumerate()
                     .map(|(i, a)| {
-                        let icon = if a.r#type == RUN_START { "\u{25B6}" } else { "\u{23F9}" };
-                        let label = format!("{} #{} — {}", icon, a.car, fmt_ts(a.ts));
+                        let (icon_char, icon_class) = if a.r#type == RUN_START {
+                            ("\u{25B6}", "has-text-success")
+                        } else {
+                            ("\u{23F9}", "has-text-danger")
+                        };
                         let is_attached = a.attached;
+                        let car = a.car.clone();
+                        let ts = fmt_ts(a.ts);
+                        let strike = if is_attached { "" } else { "has-text-grey-light has-text-decoration-line-through" };
                         view! {
                             div(class="level is-mobile mb-1") {
                                 div(class="level-left") {
-                                    span(class=if is_attached { "" } else { "has-text-grey-light has-text-decoration-line-through" }) {
-                                        (label)
+                                    span(class=strike) {
+                                        span(class=icon_class) { (icon_char) }
+                                        span { (format!(" #{} — {}", car, ts)) }
                                     }
                                 }
                                 div(class="level-right") {

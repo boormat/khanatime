@@ -1,6 +1,7 @@
 // Structure for in memory storage of event
 // probably will do serialisation for long term storage
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
@@ -280,6 +281,9 @@ pub struct Entry {
     pub name: String, // name
     #[serde(default)]
     pub vehicle: String, // description
+    /// Car description shown to officials at timing (rego, model notes, etc.).
+    #[serde(default)]
+    pub description: Option<String>,
     /// Free-text shared-car name (rego, owner, description — whatever the
     /// entrant/timekeeper types).  Entries whose names match (see
     /// [shared_car_key]) share a physical car.  Informational only.
@@ -739,6 +743,7 @@ impl Entry {
             entry_no: 0, // assigned by EventInfo::add_entry/upsert_entry
             preferred_car: String::new(),
             vehicle,
+            description: None,
             shared_car: None,
             order: 0,
             classes,
@@ -833,6 +838,29 @@ pub fn suggest_car_number(used: &std::collections::HashSet<String>, preferred: &
         return preferred.to_string();
     }
     next_free_number(used)
+}
+
+/// Compare two car numbers for natural sort order: leading numeric run as u32
+/// (so 2 < 10), then trailing suffix.  Unknown "?" sorts last.
+pub fn cmp_car_number(a: &str, b: &str) -> Ordering {
+    if a == "?" {
+        return Ordering::Greater;
+    }
+    if b == "?" {
+        return Ordering::Less;
+    }
+    let ka = num_car_key(a);
+    let kb = num_car_key(b);
+    ka.cmp(&kb)
+}
+
+fn num_car_key(car: &str) -> (u32, &str) {
+    let digits = car.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        (0, car)
+    } else {
+        (car[..digits].parse::<u32>().unwrap_or(0), &car[digits..])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,6 +1399,7 @@ pub fn fresh_event_id() -> String {
 /// True when `homeserver` belongs to matrix.org (matched by host, like the
 /// stored-session helper in `services/matrix.rs` — pure here so it's usable
 /// off-wasm too, e.g. for the Element-link default).
+#[allow(dead_code)]
 pub fn is_matrix_org_homeserver(homeserver: &str) -> bool {
     let host = homeserver
         .split("://")
@@ -1386,6 +1415,7 @@ pub fn is_matrix_org_homeserver(homeserver: &str) -> bool {
 /// Default Element Web origin for `homeserver` (used when the event has no
 /// explicit `element_link`): app.element.io for Matrix, else the local Element
 /// dev instance.  Empty for an unknown/blank homeserver.
+#[allow(dead_code)]
 pub fn element_link_default(homeserver: &str) -> String {
     let hs = homeserver.trim();
     if hs.is_empty() {
@@ -1889,6 +1919,24 @@ pub fn local_role() -> String {
     storage()
         .and_then(|st| st.get_item("kt_role").ok().flatten())
         .unwrap_or_else(|| ROLE_OFFICIAL.to_string())
+}
+
+/// Load a boolean collapse state from localStorage.
+pub fn load_collapse(key: &str, default: bool) -> bool {
+    storage()
+        .and_then(|st| st.get_item(&format!("kt_collapse_{key}")).ok().flatten())
+        .map(|v| v == "true")
+        .unwrap_or(default)
+}
+
+/// Save a boolean collapse state to localStorage.
+pub fn save_collapse(key: &str, value: bool) {
+    if let Some(st) = storage() {
+        let _ = st.set_item(
+            &format!("kt_collapse_{key}"),
+            if value { "true" } else { "false" },
+        );
+    }
 }
 
 #[allow(dead_code)] // paired with local_role(); a role-picker UI is planned
@@ -3089,8 +3137,6 @@ mod tests {
 
     #[test]
     fn close_entries_integration() {
-        use std::collections::HashSet;
-
         // Simulate entries awaiting close-entries:
         //   Alice: active, no preferred, no order
         //   Bob: active, preferred 7, no order
