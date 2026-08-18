@@ -288,6 +288,50 @@ fn handle_scan_string(model: Model, text: &str) {
     }
     if crate::services::qr::unpack_parcel(text).is_ok() {
         finish_scan(model, text);
+        return;
+    }
+    // Account QR: import a shared account from another device.
+    if let Some(json) = text.strip_prefix("khanatime_account:") {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
+            let homeserver = val["homeserver"].as_str().unwrap_or_default().to_string();
+            let user_id = val["user_id"].as_str().unwrap_or_default().to_string();
+            let password = val["password"].as_str().unwrap_or_default().to_string();
+            let description = val["description"].as_str().unwrap_or_default().to_string();
+            if !homeserver.is_empty() && !user_id.is_empty() {
+                let account = crate::services::matrix::Account {
+                    homeserver,
+                    user_id,
+                    description,
+                    account_type: crate::services::matrix::AccountType::EventShared,
+                    kind: crate::services::matrix::StoredAuth::Matrix {
+                        device_id: String::new(),
+                        access_token: String::new(),
+                        refresh_token: None,
+                        password,
+                    },
+                    active: false,
+                    event_uid: None,
+                };
+                crate::services::matrix::save_account(&account);
+            }
+        }
+        model.sync.scan_active.set(false);
+        stop_scan();
+    } else if let Some(json) = text.strip_prefix("khanatime_contact:") {
+        // Contact QR: import a contact from another device.
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
+            let contact = crate::services::matrix::Contact {
+                user_id: val["user_id"].as_str().unwrap_or_default().to_string(),
+                name: val["name"].as_str().unwrap_or_default().to_string(),
+                description: val["description"].as_str().unwrap_or_default().to_string(),
+                phone: val["phone"].as_str().map(|s| s.to_string()),
+            };
+            if !contact.user_id.is_empty() {
+                crate::services::matrix::save_contact(&contact);
+            }
+        }
+        model.sync.scan_active.set(false);
+        stop_scan();
     }
 }
 
