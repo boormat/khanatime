@@ -226,6 +226,10 @@ pub enum Msg {
 
 impl Model {
     pub fn init() -> Model {
+        // Migrate old kt_sync_sessions into the new homeservers/accounts model.
+        #[cfg(target_arch = "wasm32")]
+        crate::services::matrix::migrate_session_storage();
+
         let session_key = crate::event::session_event_name();
         // No real event selected yet: start with NO current event (empty id +
         // name) so the app shows the picker / sign-in screens instead of a
@@ -724,22 +728,27 @@ fn view_navbar(model: Model) -> View {
         Screen::Chat,
         Screen::Entries,
     ];
-    let mut brand: Vec<View> = vec![];
-    for (screen, icon) in [
+    // Top tabs: always visible.
+    let top_tabs = [
         (Screen::Home, "fa fa-home"),
-        (Screen::Events, "fa fa-folder-open"),
-        (Screen::Accounts, "fa fa-user-gear"),
-        (Screen::Event, "fa fa-screwdriver-wrench"),
-        (Screen::Start, "fa fa-flag"),
-        (Screen::Finish, "fa fa-flag-checkered"),
-        (Screen::Stage, "fa fa-stopwatch-20"),
         (Screen::Stopwatch, "fa fa-stopwatch"),
         (Screen::Results, "fa fa-trophy"),
-        (Screen::Entries, "fa fa-users"),
         (Screen::Chat, "fa fa-comments"),
-        (Screen::Help, "fa fa-question"),
-        (Screen::KhanaRules, "fa fa-book"),
-    ] {
+    ];
+    // Burger menu items: admin/less-frequent screens.
+    let burger_items = [
+        (Screen::Events, "fa fa-folder-open", "Events"),
+        (Screen::Event, "fa fa-screwdriver-wrench", "Event config"),
+        (Screen::Entries, "fa fa-users", "Entries"),
+        (Screen::Stage, "fa fa-stopwatch-20", "Manual timing"),
+        (Screen::Start, "fa fa-flag", "Start flag"),
+        (Screen::Finish, "fa fa-flag-checkered", "Finish flag"),
+        (Screen::Accounts, "fa fa-user-gear", "Accounts"),
+        (Screen::Help, "fa fa-question", "Help"),
+        (Screen::KhanaRules, "fa fa-book", "Rules"),
+    ];
+    let mut brand: Vec<View> = vec![];
+    for (screen, icon) in top_tabs {
         let active = model.screen.get() == screen;
         let disabled = !has_event && needs_event.contains(&screen);
         let class = format!(
@@ -759,9 +768,55 @@ fn view_navbar(model: Model) -> View {
             });
         }
     }
+    // Burger dropdown items.
+    let mut burger_menu_items: Vec<View> = vec![];
+    for (screen, icon, label) in burger_items {
+        let disabled = !has_event && needs_event.contains(&screen);
+        let label_owned = label.to_string();
+        if disabled {
+            burger_menu_items.push(view! {
+                a(class="navbar-item has-text-grey-light", title=label_owned) {
+                    span(class="icon") { i(class=icon) }
+                    span { (label) }
+                }
+            });
+        } else {
+            burger_menu_items.push(view! {
+                a(class="navbar-item", on:click=move |_| {
+                    update(model, Msg::Show(screen));
+                    model.screens.home.burger_open.set(false);
+                }) {
+                    span(class="icon") { i(class=icon) }
+                    span { (label) }
+                }
+            });
+        }
+    }
+    let burger_open = model.screens.home.burger_open.get();
+    let burger_class = if burger_open {
+        "navbar-burger is-active"
+    } else {
+        "navbar-burger"
+    };
     view! {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
-            div(class="navbar-brand") { (brand) }
+            div(class="navbar-brand") {
+                (brand)
+                a(
+                    class=burger_class,
+                    on:click=move |_| {
+                        let cur = model.screens.home.burger_open.get();
+                        model.screens.home.burger_open.set(!cur);
+                    },
+                ) {
+                    span {}
+                    span {}
+                    span {}
+                }
+            }
+            div(class=if burger_open { "navbar-menu is-active" } else { "navbar-menu" }) {
+                div(class="navbar-end") { (burger_menu_items) }
+            }
         }
     }
 }

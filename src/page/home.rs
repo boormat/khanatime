@@ -29,6 +29,8 @@ pub struct Model {
     pub delete_target: Signal<Option<String>>,
     /// Bumped after the local event list changes so the picker re-renders.
     pub refresh: Signal<u8>,
+    /// Burger menu open state.
+    pub burger_open: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -43,6 +45,7 @@ pub fn init() -> Model {
         collapsed: create_signal(false),
         delete_target: create_signal(None),
         refresh: create_signal(0),
+        burger_open: create_signal(false),
     }
 }
 
@@ -138,10 +141,7 @@ fn view_event_card(model: crate::Model) -> View {
     }
 }
 
-/// Accounts block: every stored session (homeserver + user), each with
-/// Logout/Login/Forget enabled for its state, plus the relevant login entry
-/// (pending join, or Matrix.org SSO) and add-custom-homeserver.  Rendered
-/// identically whether logged in or not.
+/// Simple account status bar: shows connection state and links to Accounts page.
 #[cfg(target_arch = "wasm32")]
 fn view_sessions(model: crate::Model) -> View {
     view! {
@@ -149,117 +149,25 @@ fn view_sessions(model: crate::Model) -> View {
             let sm = model.screens.home;
             let _ = sm.refresh.get();
             let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
-            let sessions = crate::services::matrix::load_sessions();
-            let rows: Vec<View> = sessions
-                .iter()
-                .map(|s| {
-                    let is_active = logged_in
-                        && crate::services::matrix::active_hs().as_deref()
-                            == Some(s.homeserver.as_str());
-                    let hs = s.homeserver.clone();
-                    let user = s.user_id.clone();
-                    // Logout for the active session only; Login only while
-                    // nothing else is signed in; Forget only when signed out.
-                    let login_hs = hs.clone();
-                    let forget_hs = hs.clone();
-                    let controls = view! {
-                        div(class="buttons has-addons is-small") {
-                            button(
-                                class="button is-small is-link",
-                                disabled=logged_in,
-                                on:click=move |_| {
-                                    crate::update(
-                                        model,
-                                        crate::Msg::Conn(crate::sync::Msg::Relogin(login_hs.clone())),
-                                    )
-                                },
-                            ) { "Login" }
-                            button(
-                                class="button is-small is-light",
-                                disabled=!is_active,
-                                on:click=move |_| {
-                                    crate::update(
-                                        model,
-                                        crate::Msg::Conn(crate::sync::Msg::Logout),
-                                    )
-                                },
-                            ) { "Logout" }
-                            button(
-                                class="button is-small is-danger is-outlined",
-                                disabled=is_active,
-                                on:click=move |_| {
-                                    sm.forget_target.set(Some(forget_hs.clone()));
-                                },
-                            ) { "Forget" }
-                        }
-                    };
-                    view! {
-                        div(class="kt-session-row level is-mobile") {
-                            div(class="level-left") {
-                                div(class="level-item") {
-                                    div {
-                                        div(class="is-flex is-align-items-center") {
-                                            span(class="has-text-weight-medium") { (user) }
-                                            (if is_active {
-                                                view! { span(class="tag is-success is-small ml-2") {
-                                                    span(class="icon is-small") { i(class="fa fa-check") }
-                                                    span { "Logged in" }
-                                                } }
-                                            } else {
-                                                view! {}
-                                            })
-                                        }
-                                        div(class="has-text-grey is-size-7") { (hs) }
-                                    }
-                                }
-                            }
-                            div(class="level-right") {
-                                div(class="level-item") { (controls) }
-                            }
-                        }
-                    }
-                })
-                .collect();
-            let empty = if sessions.is_empty() {
-                view! { p(class="help") { "No saved accounts yet." } }
-            } else {
-                view! {}
-            };
-            let conn = model.sync.conn.get_clone();
-            let collapsed = sm.collapsed.get();
+            let summary = view_account_summary(model);
             view! {
                 div(class="box") {
-                    div(
-                        class="is-flex is-align-items-center is-justify-content-space-between",
-                        on:click=move |_| sm.collapsed.set(!sm.collapsed.get()),
-                    ) {
-                        h2(class="title is-5") { "Accounts" }
+                    div(class="is-flex is-align-items-center is-justify-content-space-between") {
                         div(class="is-flex is-align-items-center") {
-                            (if collapsed {
-                                view_account_summary(model)
-                            } else {
-                                view! {}
-                            })
-                            span(class="icon has-text-grey") {
-                                i(class=if collapsed { "fa fa-chevron-down" } else { "fa fa-chevron-up" })
+                            (summary)
+                        }
+                        div(class="buttons is-small") {
+                            button(
+                                class="button is-small is-link is-outlined",
+                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Accounts)),
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-gear") }
+                                span { "Manage" }
                             }
                         }
                     }
-                    (if !collapsed {
-                        view! {
-                            (empty)
-                            (rows)
-                            (if !logged_in {
-                                view! {
-                                    div(class="kt-session-row") {
-                                        div { (status_html(conn.clone())) }
-                                    }
-                                }
-                            } else {
-                                view! {}
-                            })
-                            (view_account_footer(model))
-                        }
+                    (if !logged_in {
+                        view_account_footer(model)
                     } else {
                         view! {}
                     })
@@ -754,6 +662,7 @@ fn view_add_hs_modal(model: crate::Model) -> View {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 fn status_html(state: ConnState) -> View {
     match state {
         ConnState::Idle => view! { p(class="help") { "Not connected." } },

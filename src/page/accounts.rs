@@ -18,6 +18,7 @@ pub struct Model {
     pub login_pass: Signal<String>,
     pub add_hs_url: Signal<String>,
     pub add_hs_name: Signal<String>,
+    pub add_hs_element: Signal<String>,
     pub contact_user: Signal<String>,
     pub contact_name: Signal<String>,
     pub contact_desc: Signal<String>,
@@ -48,6 +49,7 @@ impl Model {
             login_pass: create_signal(String::new()),
             add_hs_url: create_signal(String::new()),
             add_hs_name: create_signal(String::new()),
+            add_hs_element: create_signal(String::new()),
             contact_user: create_signal(String::new()),
             contact_name: create_signal(String::new()),
             contact_desc: create_signal(String::new()),
@@ -287,6 +289,12 @@ fn view_action_buttons(model: crate::Model) -> View {
                 span(class="icon") { i(class="fa fa-user-plus") }
                 span { "Add contact" }
             }
+            button(class="button is-light", on:click=move |_| {
+                crate::update(model, crate::Msg::ScanStart);
+            }) {
+                span(class="icon") { i(class="fa fa-camera") }
+                span { "Scan QR" }
+            }
         }
     }
 }
@@ -461,23 +469,36 @@ fn view_add_hs_modal(model: crate::Model) -> View {
                             input(class="input", placeholder="e.g. matrix.org", bind:value=sm.add_hs_name)
                         }
                     }
+                    div(class="field") {
+                        label(class="label") { "Element Web URL (optional)" }
+                        div(class="control") {
+                            input(class="input", placeholder="e.g. https://app.element.io", bind:value=sm.add_hs_element)
+                        }
+                        p(class="help") { "Link for opening rooms in Element. Defaults to app.element.io for matrix.org." }
+                    }
                 }
                 footer(class="modal-card-foot") {
                     button(class="button is-link", on:click=move |_| {
                         let url = sm.add_hs_url.get_clone();
                         if url.is_empty() { sm.feedback.set("Enter a URL.".into()); return; }
                         let name = sm.add_hs_name.get_clone();
+                        let element = sm.add_hs_element.get_clone();
                         let reg = if crate::event::is_matrix_org_homeserver(&url) {
                             crate::event::RegistrationMode::Sso
                         } else {
                             crate::event::RegistrationMode::Open
+                        };
+                        let element_link = if element.is_empty() {
+                            crate::event::element_link_default(&url)
+                        } else {
+                            element
                         };
                         let hs = crate::services::matrix::HomeserverConfig {
                             url: url.clone(),
                             name: if name.is_empty() { crate::page::home::hs_host_port(&url) } else { name },
                             description: String::new(),
                             reg,
-                            element_link: crate::event::element_link_default(&url),
+                            element_link,
                         };
                         crate::services::matrix::save_homeserver(&hs);
                         sm.show_add_hs.set(false);
