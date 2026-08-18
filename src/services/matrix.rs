@@ -709,7 +709,6 @@ pub async fn publish_event(
         create_or_join_space(client, &space_alias, event).await?
     };
     event.space_id = Some(space.room_id().to_string());
-    event.space_alias = Some(space_alias.to_string());
 
     let timing = if let Some(tid) = &event.timing_id {
         let rid: ruma::OwnedRoomId = tid.parse().map_err(|e: ruma::IdParseError| e.to_string())?;
@@ -721,7 +720,6 @@ pub async fn publish_event(
         create_or_join_timing(client, &timing_alias).await?
     };
     event.timing_id = Some(timing.room_id().to_string());
-    event.timing_alias = Some(timing_alias.to_string());
 
     finalize_rooms(client, event, &space, &timing).await
 }
@@ -835,10 +833,10 @@ async fn finalize_rooms(
 /// Uses the active client if it's for that homeserver, else a stored session
 /// for it, else an error (no implicit session/user creation).
 pub async fn publish_current_event(event: &mut crate::event::EventInfo) -> Result<(), String> {
-    if event.homeserver.trim().is_empty() {
-        return Err("Pick a homeserver to publish to first.".to_string());
-    }
-    let client = ensure_client_for(&event.homeserver).await?;
+    let hs = event
+        .primary_homeserver()
+        .ok_or("Pick a homeserver to publish to first.")?;
+    let client = ensure_client_for(hs).await?;
     publish_event(&client, event).await
 }
 
@@ -983,11 +981,8 @@ pub async fn open_published_event(
     ev.space_id = Some(space_id.to_string());
     // For old events whose space meta lacks timing_id, discover it by
     // joining the timing room by its deterministic alias.
-    if ev.timing_id.is_none() && !ev.homeserver.is_empty() {
-        let slug = crate::event::build_event_id(&ev.year, &ev.sponsoring_club, &ev.name);
-        let server = crate::event::server_name_from_homeserver(&ev.homeserver);
-        if !slug.is_empty() && !server.is_empty() {
-            let alias = format!("#{}-timing:{}", slug, server);
+    if ev.timing_id.is_none() {
+        if let Some(alias) = ev.timing_alias() {
             if let Ok(timing) = join_room_by_alias(client, &alias).await {
                 ev.timing_id = Some(timing.room_id().to_string());
             }
@@ -1021,8 +1016,8 @@ pub async fn join_room_for_event(client: &Client, event: &crate::event::EventInf
             }
         }
     }
-    if let Some(alias) = &event.timing_alias {
-        if let Ok(room) = join_room_by_alias(client, alias).await {
+    if let Some(alias) = event.timing_alias() {
+        if let Ok(room) = join_room_by_alias(client, &alias).await {
             return Some(room);
         }
     }

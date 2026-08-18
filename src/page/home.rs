@@ -794,7 +794,7 @@ fn view_open_events(model: crate::Model) -> View {
             e.name.clone()
         };
         let hs_tag = if e.is_published() {
-            Some(hs_host_port(&e.homeserver))
+            Some(hs_host_port(e.primary_homeserver().unwrap_or_default()))
         } else {
             None
         };

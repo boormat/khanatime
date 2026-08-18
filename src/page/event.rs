@@ -456,9 +456,11 @@ fn copy_as_new(model: crate::Model) {
     e.uid = crate::ids::gen_short_id();
     e.status = crate::event::EventStatus::Draft;
     e.space_id = None;
-    e.space_alias = None;
     e.timing_id = None;
-    e.timing_alias = None;
+    e.event_homeservers = vec![];
+    e.event_admins = vec![];
+    e.owner = None;
+    e.parent_rooms = vec![];
     // Entrants + tests are copied; entrant state is reset for the fresh event.
     em.pre_create.set(Some(src.id.clone()));
     switch_to_draft(model, e);
@@ -555,7 +557,7 @@ fn publish_wasm(model: crate::Model) {
             (Err(e), false) => {
                 em.publish_status.set(Some(format!(
                     "Publish failed: {e} — check you're signed in to {} on Home if the session expired.",
-                    event.homeserver
+                    event.primary_homeserver().unwrap_or("a homeserver")
                 )));
             }
         }
@@ -638,12 +640,15 @@ fn view_invite(model: crate::Model) -> View {
 #[cfg(target_arch = "wasm32")]
 fn invite_view_data(event: &crate::event::EventInfo) -> Option<(String, String, String)> {
     let sid = event.space_id.clone()?;
+    let homeserver = event.primary_homeserver()?.to_string();
     let invite = crate::event::Invite {
-        homeserver: event.homeserver.clone(),
+        homeserver,
         event: event.id.clone(),
         sid,
         tid: event.timing_id.clone().unwrap_or_default(),
-        reg: event.reg,
+        reg: event.primary_reg(),
+        admin_user: None,
+        admin_pass: None,
     };
     let app_base = {
         let window = web_sys::window()?;
@@ -653,33 +658,7 @@ fn invite_view_data(event: &crate::event::EventInfo) -> Option<(String, String, 
     };
     let url = invite.url(&app_base);
     let svg = crate::services::qr::qr_svg(&url, 320).unwrap_or_default();
-    let base = if event.element_link.trim().is_empty() {
-        crate::event::element_link_default(&event.homeserver)
-    } else {
-        event.element_link.clone()
-    };
-    let link = if base.is_empty() {
-        String::new()
-    } else {
-        // Link directly to the timing room via its alias (#slug-timing:server).
-        let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
-        let server = crate::event::server_name_from_homeserver(&event.homeserver);
-        if server.is_empty() {
-            // Fallback to the space room id if the server name can't be derived.
-            format!(
-                "{}/#/room/{}",
-                base.trim_end_matches('/'),
-                event.space_id.clone().unwrap_or_default()
-            )
-        } else {
-            format!(
-                "{}/#/room/#{}-timing:{}",
-                base.trim_end_matches('/'),
-                slug,
-                server,
-            )
-        }
-    };
+    let link = String::new(); // Element link is now per-homeserver, not per-event
     Some((url, svg, link))
 }
 
@@ -928,19 +907,20 @@ fn view_details(model: crate::Model) -> View {
             })
             (move || {
                 let val = if editing {
-                    untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.parent_room.clone()).unwrap_or_default()))
+                    untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.parent_rooms.join(", ")).unwrap_or_default()))
                 } else {
-                    model.khana.event.with(|e| e.parent_room.clone())
+                    model.khana.event.with(|e| e.parent_rooms.join(", "))
                 };
                 view! {
                     div(class="field") {
-                        label(class="label") { "Parent room" }
+                        label(class="label") { "Parent rooms" }
                         div(class="field has-addons") {
                             div(class="control is-expanded") {
-                                input(class="input", placeholder="Optional — the club/organisation room this event links to", disabled=!editing, value=val,
+                                input(class="input", placeholder="Optional — club/organisation room aliases (comma-separated)", disabled=!editing, value=val,
                                     on:input=move |ev| {
                                         let v = input_value(&ev);
-                                        em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.parent_room = v; } });
+                                        let rooms: Vec<String> = v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                        em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.parent_rooms = rooms; } });
                                     },
                                 )
                             }
@@ -949,9 +929,9 @@ fn view_details(model: crate::Model) -> View {
                                     div(class="control") {
                                         button(
                                             class="button is-light",
-                                            title="Clear parent room",
+                                            title="Clear parent rooms",
                                             on:click=move |_| {
-                                                em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.parent_room = String::new(); } });
+                                                em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.parent_rooms = vec![]; } });
                                             },
                                         ) {
                                             span(class="icon is-small") { i(class="fa fa-eraser") }
@@ -1540,8 +1520,7 @@ fn view_publish_status(model: crate::Model) -> View {
                 let alias = model
                     .khana
                     .event
-                    .with(|e| e.space_alias.clone())
-                    .unwrap_or_default();
+                    .with(|e| e.space_alias().unwrap_or_default());
                 view! {
                     div(class="field is-grouped") {
                         div(class="control") {
@@ -1740,7 +1719,7 @@ fn view_publish_btn(model: crate::Model) -> View {
                 return view! {};
             }
             let (is_null, is_demo, published, has_hs) = model.khana.event.with(|e| {
-                (e.is_null(), e.is_demo(), e.is_published(), !e.homeserver.trim().is_empty())
+                (e.is_null(), e.is_demo(), e.is_published(), !e.event_homeservers.is_empty())
             });
             if is_null || is_demo || published {
                 return view! {};
@@ -1761,45 +1740,19 @@ fn view_publish_btn(model: crate::Model) -> View {
 }
 
 /// Publish-to-Matrix config, in the details: pick a saved homeserver from the
-/// login list (reg mode follows the picked account) and set the Element link.
+/// login list (reg mode follows the picked account).
 fn view_homeserver_fields(model: crate::Model) -> View {
-    let em = model.screens.setup;
-    let editing = em.editing.get();
+    let _em = model.screens.setup;
     view! {
         div(class="field") {
             label(class="label") { "Publish to homeserver" }
             (view_saved_hs_checklist(model))
-            div(class="field") {
-                label(class="label") { "Element Web link" }
-                div(class="control") {
-                    (move || {
-                        let val = if editing {
-                            untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.element_link.clone()).unwrap_or_default()))
-                        } else {
-                            model.khana.event.with(|e| e.element_link.clone())
-                        };
-                        view! {
-                            input(class="input", placeholder="Optional — e.g. https://app.element.io", disabled=!editing, value=val,
-                                on:input=move |ev| {
-                                    let v = input_value(&ev);
-                                    em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.element_link = v; } });
-                                },
-                            )
-                        }
-                    })
-                }
-                p(class="help") {
-                    "Optional link for officials/competitors to open the event's rooms in Element. Defaults to app.element.io for Matrix, localhost:8085 for a custom homeserver."
-                }
-            }
         }
     }
 }
 
 /// Saved-login homeserver picker as toggleable tag-style buttons (wasm only:
-/// reads stored sessions).  `edit_event.homeserver` is the single source of truth —
-/// the matching tag is filled with a check; clicking a selected tag again
-/// clears it (back to offline), so there's always a way to unpick.
+/// reads stored sessions).  `edit_event.event_homeservers` is the source of truth.
 fn view_saved_hs_checklist(model: crate::Model) -> View {
     let em = model.screens.setup;
     let editing = em.editing.get();
@@ -1810,18 +1763,16 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
     {
         let sessions = crate::services::matrix::load_sessions();
 
-        // When not editable (locked or not editing), show a static display
-        // instead of toggle buttons.
         if locked || !editing {
-            let current_hs = model.khana.event.with(|e| e.homeserver.clone());
+            let hs_list = model.khana.event.with(|e| e.event_homeservers.clone());
             let locked_reason = if is_demo {
                 "Demo events are local-only and cannot be published."
             } else if published {
-                "Homeserver cannot be changed after publishing."
+                "Homeservers cannot be changed after publishing."
             } else {
-                "Enter Edit mode to change the homeserver."
+                "Enter Edit mode to change the homeservers."
             };
-            return if current_hs.is_empty() {
+            return if hs_list.is_empty() {
                 view! {
                     div(class="field") {
                         label(class="label is-small") { "Publish to homeserver" }
@@ -1831,7 +1782,11 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                     }
                 }
             } else {
-                let label = crate::page::home::hs_host_port(&current_hs);
+                let label = hs_list
+                    .iter()
+                    .map(|h| crate::page::home::hs_host_port(h))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 view! {
                     div(class="field") {
                         label(class="label is-small") { "Publish to homeserver" }
@@ -1856,8 +1811,7 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                 view! {
                     (move || {
                         let hs = s.homeserver.clone();
-                        let current_hs = em.edit_event.with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default());
-                        let on = current_hs == hs;
+                        let on = em.edit_event.with(|e| e.as_ref().map(|e| e.event_homeservers.contains(&hs)).unwrap_or(false));
                         let label = crate::page::home::hs_host_port(&hs);
                         view! {
                             button(
@@ -1866,7 +1820,7 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                                     if on { "is-primary is-selected" } else { "is-light" }
                                 ),
                                 title=if on {
-                                    "Selected — click to go offline (no homeserver)"
+                                    "Selected — click to remove"
                                 } else {
                                     "Publish to this homeserver"
                                 },
@@ -1874,16 +1828,9 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                                     em.edit_event.update(|e| {
                                         if let Some(ref mut ev) = e {
                                             if on {
-                                                ev.homeserver = String::new();
+                                                ev.event_homeservers.retain(|h| h != &hs);
                                             } else {
-                                                ev.homeserver = hs.clone();
-                                                let reg = crate::services::matrix::load_session_for(&hs)
-                                                    .map(|s| s.reg)
-                                                    .unwrap_or(crate::event::RegistrationMode::Sso);
-                                                ev.reg = reg;
-                                                if ev.element_link.trim().is_empty() {
-                                                    ev.element_link = crate::event::element_link_default(&hs);
-                                                }
+                                                ev.event_homeservers.push(hs.clone());
                                             }
                                         }
                                     });
@@ -1899,24 +1846,26 @@ fn view_saved_hs_checklist(model: crate::Model) -> View {
                 }
             })
             .collect();
-        let current_hs = em
-            .edit_event
-            .with(|e| e.as_ref().map(|e| e.homeserver.clone()).unwrap_or_default());
+        let hs_list = em.edit_event.with(|e| {
+            e.as_ref()
+                .map(|e| e.event_homeservers.clone())
+                .unwrap_or_default()
+        });
         view! {
             div(class="field") {
                 label(class="label is-small") { "From your logins" }
                 div(class="kt-hs-tags") {
                     (buttons)
                 }
-                (if current_hs.is_empty() {
+                (if hs_list.is_empty() {
                     view! {
                         p(class="help") {
                             "No homeserver selected — pick one above to enable Publish (or leave offline for a local-only event)."
                         }
                     }
                 } else {
-                    let h = current_hs.clone();
-                    view! { p(class="help") { "Publish to: " (h) " — click the tag again to go offline." } }
+                    let h = hs_list.iter().map(|h| crate::page::home::hs_host_port(h)).collect::<Vec<_>>().join(", ");
+                    view! { p(class="help") { "Publish to: " (h) " — click a tag again to remove." } }
                 })
                 p(class="help") { "Homeservers are added on the Home page." }
             }

@@ -248,21 +248,27 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
     );
     field_diff(
         &mut lines,
-        "Parent room",
-        &base.parent_room,
-        &staged.parent_room,
+        "Parent rooms",
+        &base.parent_rooms.join(", "),
+        &staged.parent_rooms.join(", "),
     );
     field_diff(
         &mut lines,
-        "Homeserver",
-        &base.homeserver,
-        &staged.homeserver,
+        "Homeservers",
+        &base.event_homeservers.join(", "),
+        &staged.event_homeservers.join(", "),
     );
     field_diff(
         &mut lines,
-        "Element link",
-        &base.element_link,
-        &staged.element_link,
+        "Event admins",
+        &base.event_admins.join(", "),
+        &staged.event_admins.join(", "),
+    );
+    field_diff(
+        &mut lines,
+        "Owner",
+        base.owner.as_deref().unwrap_or(""),
+        staged.owner.as_deref().unwrap_or(""),
     );
     if base.entries_enabled != staged.entries_enabled {
         lines.push(if staged.entries_enabled {

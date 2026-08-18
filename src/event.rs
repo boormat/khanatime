@@ -163,36 +163,30 @@ pub struct EventInfo {
     pub status: EventStatus,
 
     // ---- Matrix (populated on publish) ----
-    /// Homeserver the event is published on.  Required before publish; drives
-    /// which session is resumed and which homeserver the invite points at.
+    /// Homeservers this event publishes to (e.g. ["https://matrix.org"]).
     #[serde(default)]
-    pub homeserver: String,
-    /// How a scanned invite should sign in on that homeserver (`open` =
-    /// auto-register an account; `sso` = public HS, offer SSO only).
+    pub event_homeservers: Vec<String>,
+    /// Event admins — flat list of Matrix user IDs (authorization list).
     #[serde(default)]
-    pub reg: RegistrationMode,
+    pub event_admins: Vec<String>,
+    /// Creator's personal account (invited with admin power levels).
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// Space room id (populated on publish).
     #[serde(default)]
     pub space_id: Option<String>,
-    #[serde(default)]
-    pub space_alias: Option<String>,
+    /// Timing room id (populated on publish).
     #[serde(default)]
     pub timing_id: Option<String>,
-    #[serde(default)]
-    pub timing_alias: Option<String>,
 
-    // ---- optional event config (editable anytime) ----
-    /// Optional parent room (club/organisation space) this event links into.
+    // ---- optional config ----
+    /// Parent room aliases/IDs this event links into (one per homeserver).
     #[serde(default)]
-    pub parent_room: String,
+    pub parent_rooms: Vec<String>,
     /// Allow competitors to self-enter in the app (the Entries page form).
     /// Off by default; officials can always manage entries.
     #[serde(default)]
     pub entries_enabled: bool,
-    /// Optional Element Web origin for opening the event's rooms (auto-defaults
-    /// per homeserver: app.element.io for Matrix, localhost:8085 for a custom
-    /// homeserver).
-    #[serde(default)]
-    pub element_link: String,
 }
 
 /// How a scanned invite should authenticate on its homeserver.
@@ -418,15 +412,13 @@ impl Default for EventInfo {
             organisers: vec![],
             officials: vec![],
             status: EventStatus::Draft,
-            homeserver: String::new(),
-            reg: RegistrationMode::default(),
+            event_homeservers: vec![],
+            event_admins: vec![],
+            owner: None,
             space_id: None,
-            space_alias: None,
             timing_id: None,
-            timing_alias: None,
-            parent_room: String::new(),
+            parent_rooms: vec![],
             entries_enabled: false,
-            element_link: String::new(),
         }
     }
 }
@@ -453,7 +445,35 @@ impl EventInfo {
     /// True when the event was published to a Matrix room (has the room ids +
     /// homeserver needed to re-join it).
     pub fn is_published(&self) -> bool {
-        !self.homeserver.is_empty() && self.space_id.is_some() && self.timing_id.is_some()
+        !self.event_homeservers.is_empty() && self.space_id.is_some() && self.timing_id.is_some()
+    }
+
+    /// The primary homeserver URL, if any.
+    pub fn primary_homeserver(&self) -> Option<&str> {
+        self.event_homeservers.first().map(|s| s.as_str())
+    }
+
+    /// Registration mode derived from the primary homeserver.
+    pub fn primary_reg(&self) -> RegistrationMode {
+        match self.primary_homeserver() {
+            Some(hs) if is_matrix_org_homeserver(hs) => RegistrationMode::Sso,
+            Some(_) => RegistrationMode::Open,
+            None => RegistrationMode::default(),
+        }
+    }
+
+    /// Space room alias derived from event slug + primary homeserver.
+    pub fn space_alias(&self) -> Option<String> {
+        let slug = build_event_id(&self.year, &self.sponsoring_club, &self.name);
+        let server = server_name_from_homeserver(self.primary_homeserver()?);
+        Some(format!("#{}:{}", slug, server))
+    }
+
+    /// Timing room alias derived from event slug + primary homeserver.
+    pub fn timing_alias(&self) -> Option<String> {
+        let slug = build_event_id(&self.year, &self.sponsoring_club, &self.name);
+        let server = server_name_from_homeserver(self.primary_homeserver()?);
+        Some(format!("#{}-timing:{}", slug, server))
     }
 
     /// The invite a published event joins by — enough to connect to its
@@ -463,11 +483,13 @@ impl EventInfo {
             return None;
         }
         Some(Invite {
-            homeserver: self.homeserver.clone(),
+            homeserver: self.primary_homeserver()?.to_string(),
             event: self.id.clone(),
             sid: self.space_id.clone().unwrap_or_default(),
             tid: self.timing_id.clone().unwrap_or_default(),
-            reg: self.reg,
+            reg: self.primary_reg(),
+            admin_user: None,
+            admin_pass: None,
         })
     }
 
@@ -1260,6 +1282,9 @@ pub struct Invite {
     pub sid: String,   // space room id
     pub tid: String,   // timing room id
     pub reg: RegistrationMode,
+    /// Admin account credentials (for official QR only).
+    pub admin_user: Option<String>,
+    pub admin_pass: Option<String>,
 }
 
 fn encode_query(s: &str) -> String {
@@ -1304,14 +1329,21 @@ fn decode_query(s: &str) -> String {
 
 impl Invite {
     pub fn to_query(&self) -> String {
-        format!(
+        let mut q = format!(
             "homeserver={}&event={}&sid={}&tid={}&reg={}",
             encode_query(&self.homeserver),
             encode_query(&self.event),
             encode_query(&self.sid),
             encode_query(&self.tid),
             encode_query(reg_str(self.reg)),
-        )
+        );
+        if let Some(user) = &self.admin_user {
+            q.push_str(&format!("&admin_user={}", encode_query(user)));
+        }
+        if let Some(pass) = &self.admin_pass {
+            q.push_str(&format!("&admin_pass={}", encode_query(pass)));
+        }
+        q
     }
 
     pub fn from_query(q: &str) -> Option<Invite> {
@@ -1320,6 +1352,8 @@ impl Invite {
         let mut sid = None;
         let mut tid = None;
         let mut reg = None;
+        let mut admin_user = None;
+        let mut admin_pass = None;
         for pair in q.split('&') {
             let mut it = pair.splitn(2, '=');
             let (k, v) = (it.next()?, it.next()?);
@@ -1329,6 +1363,8 @@ impl Invite {
                 "sid" => sid = Some(decode_query(v)),
                 "tid" => tid = Some(decode_query(v)),
                 "reg" => reg = Some(decode_query(v)),
+                "admin_user" => admin_user = Some(decode_query(v)),
+                "admin_pass" => admin_pass = Some(decode_query(v)),
                 _ => {}
             }
         }
@@ -1339,6 +1375,8 @@ impl Invite {
             tid: tid.unwrap_or_default(),
             // Default to SSO (conservative) on an unknown/absent reg.
             reg: reg.and_then(|r| reg_from_str(&r)).unwrap_or_default(),
+            admin_user: admin_user.filter(|s| !s.is_empty()),
+            admin_pass: admin_pass.filter(|s| !s.is_empty()),
         })
     }
 
@@ -1553,7 +1591,7 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     if event.is_demo() {
         errs.push("Demo events are for local training only and can't be published.".to_string());
     }
-    if event.homeserver.trim().is_empty() {
+    if event.event_homeservers.is_empty() {
         errs.push("Pick a homeserver to publish to.".to_string());
     }
     // The human fields form the room alias at publish, so they must be usable
@@ -1801,6 +1839,8 @@ mod tests {
             sid: "!abc:matrix.org".to_string(),
             tid: "!xyz:matrix.org".to_string(),
             reg: RegistrationMode::Sso,
+            admin_user: None,
+            admin_pass: None,
         };
         let q = inv.to_query();
         assert!(q.contains("sid=%21abc"));
@@ -1817,6 +1857,8 @@ mod tests {
             sid: "!a:b".to_string(),
             tid: "!b:b".to_string(),
             reg: RegistrationMode::Open,
+            admin_user: None,
+            admin_pass: None,
         };
         let back = Invite::from_query(&inv.to_query()).unwrap();
         assert_eq!(back.reg, RegistrationMode::Open);
@@ -1842,6 +1884,8 @@ mod tests {
             sid: "!space:matrix.org".into(),
             tid: "!timing:matrix.org".into(),
             reg: RegistrationMode::Sso,
+            admin_user: None,
+            admin_pass: None,
         };
         let absolute = format!("https://host/app?{}", inv.to_query());
         assert_eq!(Invite::from_url(&absolute).unwrap(), inv);
@@ -1858,6 +1902,8 @@ mod tests {
             sid: "!s:localhost".to_string(),
             tid: "!t:localhost".to_string(),
             reg: RegistrationMode::Open,
+            admin_user: None,
+            admin_pass: None,
         };
         assert!(inv
             .url("http://localhost:8080/khanatime/")
@@ -2069,7 +2115,7 @@ mod tests {
             name: "X".into(),
             year: "2026".into(),
             stages: vec![],
-            homeserver: "http://localhost:8008".into(),
+            event_homeservers: vec!["http://localhost:8008".into()],
             ..Default::default()
         };
         let score = ScoreData {

@@ -67,7 +67,11 @@ pub fn resume_on_load(model: Model) {
     if model.khana.event.with(|e| e.is_demo()) {
         return;
     }
-    let hs = model.khana.event.with(|e| e.homeserver.clone());
+    let hs = model.khana.event.with(|e| {
+        e.primary_homeserver()
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    });
     if hs.is_empty() {
         return; // no published homeserver on the event yet
     }
