@@ -1594,6 +1594,9 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     if event.event_homeservers.is_empty() {
         errs.push("Pick a homeserver to publish to.".to_string());
     }
+    if event.owner.is_none() {
+        errs.push("Set an owner before publishing (needed for admin access to rooms).".to_string());
+    }
     // The human fields form the room alias at publish, so they must be usable
     // even though the event id itself is random.
     if event.name.trim().is_empty() || year_token(&event.year).is_empty() {
@@ -2138,6 +2141,7 @@ mod tests {
         assert!(!publish_errors(&ev, &[], &[]).is_empty());
         // Stages configured -> clean.
         ev.stages = vec![Stage::for_test(1)];
+        ev.owner = Some("@test:localhost".into());
         assert!(publish_errors(&ev, &[], &[]).is_empty());
         // Timing data -> error.
         assert!(publish_errors(&ev, &[score], &[]).contains(

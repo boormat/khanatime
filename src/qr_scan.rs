@@ -313,6 +313,11 @@ fn handle_scan_string(model: Model, text: &str) {
                     event_uid: None,
                 };
                 crate::services::matrix::save_account(&account);
+                model
+                    .screens
+                    .accounts
+                    .refresh
+                    .set(model.screens.accounts.refresh.get() + 1);
             }
         }
         model.sync.scan_active.set(false);
@@ -328,6 +333,11 @@ fn handle_scan_string(model: Model, text: &str) {
             };
             if !contact.user_id.is_empty() {
                 crate::services::matrix::save_contact(&contact);
+                model
+                    .screens
+                    .accounts
+                    .refresh
+                    .set(model.screens.accounts.refresh.get() + 1);
             }
         }
         model.sync.scan_active.set(false);

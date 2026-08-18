@@ -770,45 +770,81 @@ fn view_confirm_modal(model: crate::Model) -> View {
     )
 }
 
-/// Publish confirmation modal: shows what will happen before publishing.
+/// Publish confirmation modal: shows errors or summary.  Publish button is
+/// only enabled when there are zero errors.
 fn view_publish_confirm_modal(model: crate::Model) -> View {
     let em = model.screens.setup;
     if !em.show_publish_confirm.get() {
         return view! {};
     }
     let event = model.khana.event.get_clone();
-    let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
-    let name = event.name.clone();
-    let owner = event.owner.clone().unwrap_or_default();
-    let space_alias = event.space_alias().unwrap_or_default();
-    let timing_alias = event.timing_alias().unwrap_or_default();
-    let mut hs_items: Vec<View> = Vec::new();
-    for hs in &event.event_homeservers {
-        let label = crate::page::home::hs_host_port(hs);
-        hs_items.push(view! { li { (label) } });
-    }
-    let hs_list_html = if hs_items.is_empty() {
-        view! { p(class="has-text-danger") { "No homeservers selected." } }
+    let scores = model.khana.scores.get_clone();
+    let runs = model.khana.runs.get_clone();
+    let errs = crate::event::publish_errors(&event, &scores, &runs);
+    let blocked = !errs.is_empty();
+    let title = if blocked {
+        "Cannot publish"
     } else {
-        view! { p { "Publish to:" } ul { (hs_items) } }
+        "Confirm publish"
     };
-    let alias_html = if slug.is_empty() {
-        view! { p(class="has-text-danger") { "Need a name and 4-digit year before publishing." } }
-    } else {
-        view! { p { "Room alias: " code { "#" (slug) } } }
-    };
-    let rooms_html = if !space_alias.is_empty() {
+    // Pre-render body to avoid closure move issues with String values.
+    let body = if blocked {
+        let mut items: Vec<View> = Vec::new();
+        for e in &errs {
+            let msg = e.clone();
+            items.push(view! { li(class="has-text-danger") { (msg) } });
+        }
         view! {
-            p { "Space: " code { (space_alias) } }
-            p { "Timing: " code { (timing_alias) } }
+            p(class="has-text-weight-semibold mb-2") { "Fix these issues before publishing:" }
+            ul { (items) }
         }
     } else {
-        view! {}
+        let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
+        let name = event.name.clone();
+        let owner = event.owner.clone().unwrap_or_default();
+        let space_alias = event.space_alias().unwrap_or_default();
+        let timing_alias = event.timing_alias().unwrap_or_default();
+        let hs_count = event.event_homeservers.len();
+        let hs_label = if hs_count == 1 {
+            event
+                .event_homeservers
+                .first()
+                .map(|h| crate::page::home::hs_host_port(h))
+                .unwrap_or_default()
+        } else {
+            format!("{} homeservers", hs_count)
+        };
+        let mut parts: Vec<View> = Vec::new();
+        parts.push(view! { p { strong { (name) } } });
+        if !slug.is_empty() {
+            parts.push(view! { p { "Room: " code { "#" (slug) } } });
+        }
+        parts.push(view! { p { "Publish to: " (hs_label) } });
+        if !space_alias.is_empty() {
+            parts.push(view! { p { "Space: " code { (space_alias) } } });
+            parts.push(view! { p { "Timing: " code { (timing_alias) } } });
+        }
+        if !owner.is_empty() {
+            parts.push(view! { p { "Owner: " code { (owner) } } });
+        }
+        view! { (parts) }
     };
-    let owner_html = if !owner.is_empty() {
-        view! { p { "Owner: " code { (owner) } } }
+    let footer = if blocked {
+        view! {
+            button(class="button is-link", disabled=true) { "Publish" }
+            button(class="button", on:click=move |_| {
+                crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+            }) { "Close" }
+        }
     } else {
-        view! { p(class="has-text-warning") { "No owner set." } }
+        view! {
+            button(class="button is-link", on:click=move |_| {
+                crate::update(model, crate::Msg::EventMsg(Msg::PublishDo));
+            }) { "Publish" }
+            button(class="button", on:click=move |_| {
+                crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+            }) { "Cancel" }
+        }
     };
     view! {
         div(class="modal is-active") {
@@ -817,26 +853,13 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
             })
             div(class="modal-card") {
                 header(class="modal-card-head") {
-                    p(class="modal-card-title") { "Confirm publish" }
+                    p(class="modal-card-title") { (title) }
                     button(class="delete", on:click=move |_| {
                         crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
                     })
                 }
-                section(class="modal-card-body") {
-                    p { strong { (name) } }
-                    (alias_html)
-                    (hs_list_html)
-                    (rooms_html)
-                    (owner_html)
-                }
-                footer(class="modal-card-foot") {
-                    button(class="button is-link", on:click=move |_| {
-                        crate::update(model, crate::Msg::EventMsg(Msg::PublishDo));
-                    }) { "Publish" }
-                    button(class="button", on:click=move |_| {
-                        crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
-                    }) { "Cancel" }
-                }
+                section(class="modal-card-body") { (body) }
+                footer(class="modal-card-foot") { (footer) }
             }
         }
     }

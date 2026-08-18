@@ -792,30 +792,30 @@ fn view_navbar(model: Model) -> View {
             });
         }
     }
-    let burger_open = model.screens.home.burger_open.get();
-    let burger_class = if burger_open {
-        "navbar-burger is-active"
-    } else {
-        "navbar-burger"
-    };
     view! {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") {
                 (brand)
-                a(
-                    class=burger_class,
-                    on:click=move |_| {
-                        let cur = model.screens.home.burger_open.get();
-                        model.screens.home.burger_open.set(!cur);
-                    },
-                ) {
-                    span {}
-                    span {}
-                    span {}
+                (move || {
+                    let open = model.screens.home.burger_open.get();
+                    let cls = if open { "navbar-burger is-active" } else { "navbar-burger" };
+                    view! {
+                        a(
+                            class=cls,
+                            on:click=move |_| {
+                                let cur = model.screens.home.burger_open.get();
+                                model.screens.home.burger_open.set(!cur);
+                            },
+                        ) {
+                            span {}
+                            span {}
+                            span {}
+                        }
+                    }
+                })
+                div(class=if model.screens.home.burger_open.get() { "navbar-menu is-active" } else { "navbar-menu" }) {
+                    div(class="navbar-end") { (burger_menu_items) }
                 }
-            }
-            div(class=if burger_open { "navbar-menu is-active" } else { "navbar-menu" }) {
-                div(class="navbar-end") { (burger_menu_items) }
             }
         }
     }

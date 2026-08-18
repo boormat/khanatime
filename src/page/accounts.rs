@@ -633,6 +633,7 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
         crate::services::qr::qr_svg(&payload, 320).unwrap_or_default()
     };
     let svg_empty = svg.is_empty();
+    let payload_empty = payload.is_empty();
     view! {
         div(class="modal is-active") {
             div(class="modal-background", on:click=move |_| sm.show_qr.set(None))
@@ -647,6 +648,35 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                     } else {
                         view! { div(dangerously_set_inner_html=svg) {} }
                     })
+                    (if !payload_empty {
+                        let display = if payload.len() > 80 {
+                            format!("{}…", &payload[..80])
+                        } else {
+                            payload.clone()
+                        };
+                        let copy_data = payload.clone();
+                        view! {
+                            div(class="mt-4") {
+                                p(class="has-text-weight-semibold is-size-7 mb-1") { "QR payload:" }
+                                pre(class="has-text-left is-size-7 has-background-light p-2") {
+                                    code { (display) }
+                                }
+                            }
+                            button(
+                                class="button is-small is-link is-outlined",
+                                on:click=move |_| {
+                                    if let Some(window) = web_sys::window() {
+                                        let nav = window.navigator();
+                                        let _ = nav.clipboard().write_text(&copy_data);
+                                    }
+                                    sm.feedback.set("Copied to clipboard.".into());
+                                },
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-copy") }
+                                span { "Copy" }
+                            }
+                        }
+                    } else { view! {} })
                 }
                 footer(class="modal-card-foot") {
                     button(class="button", on:click=move |_| sm.show_qr.set(None)) { "Close" }
