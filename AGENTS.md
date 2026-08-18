@@ -8,7 +8,7 @@
 
 ```bash
 # Dev server (Trunk, auto-reload on save)
-trunk serve
+trunk serve -p 8082
 
 # HTTPS dev server — OIDC/SSO testing against matrix.org (needs the /etc/hosts
 # alias khanatime.test; see the script header for one-time sudo setup)
@@ -97,11 +97,11 @@ src/
 ├── main.rs             # entry: panic hook, render, warm-start/join-link startup
 │                       #   (re-exports Model/Msg/Screen/update from app.rs)
 ├── lib.rs              # log! macro + web_log (console.log)
-├── app.rs              # Screen enum, Model, Msg, AppState, update(), navbar, view
+├── app.rs              # Screen enum, Model, Msg, Mode, KhanaState, SyncState, update(), navbar, view
 ├── sync.rs             # Matrix connect/logout/resume/join + merge sink, QR parcel
 │                       #   export/import + relay-to-room (wasm)
 ├── view.rs             # small view helpers
-├── event.rs            # EventInfo, Entry, EntryMsg, RunRecord, KTime, KTimeTime,
+├── event.rs            # EventInfo, Entry, RunRecord, KTime, KTimeTime,
 │                       #   car-number/shared-car helpers, Invite, results calc
 ├── batch.rs             # staged-edit ops (EditOp, compact_ops, diffs)
 ├── ids.rs               # generated short ids (Crocker base32) + content_id(body)
@@ -114,7 +114,7 @@ src/
 │                       #   "parcel" / outbox), publish_outbox + confirm_in_room
 ├── replay.rs           # pure rebuild of event/scores/runs from the log
 ├── timing_event.rs     # TimingEvent wire format (KT {json}, khanatime_* prefixes)
-├── page.rs             # page modules + shared enqueue_run/enqueue_ktime/enqueue_entry
+├── page.rs             # page modules + shared enqueue_run/enqueue_ktime
 │                       #   + view_handoff (offline handoff box)
 ├── services/
 │   ├── mod.rs
@@ -127,7 +127,6 @@ src/
     ├── events.rs       # event hub: demo / search published / QR / plan new / saved
     ├── chat.rs         # read-only room message view
     ├── event.rs        # event setup (classes, stages, lifecycle)
-    ├── entries.rs      # competitor entry + admin close-entries workflow
     ├── stage.rs        # TIMER — command-line stopwatch entry
     │                   #   parse_command()/parse_car(), CmdParse, TimeCmd
     ├── start.rs        # start flag screen
@@ -142,13 +141,9 @@ src/
 ### Domain model (see PLAN.md + docs/KhanacrossRules.md)
 
 - `EventInfo { name, stages_count, classes, entries }`
-- `Entry { entry_no, car, preferred_car, name, vehicle, shared_car, order,
-  classes, status, owner }` — `entry_no` is the stable per-event PK (a
-  counter); `car` is the assigned number (text: digits-first, uppercase, no
-  whitespace, e.g. "00 0B 24TBC"), "" until the timekeeper assigns it at
-  close-entries; `preferred_car` is the entrant's nomination; `shared_car` is a
-  free-text (rego/owner/description) tying entries that share a physical car;
-  `order` is the running order (0 = arrival).  See `docs/plan/car-numbers.md`.
+- `Entry { car, name, vehicle, description, shared, classes, passenger }`
+  — `car` is the primary key (text: digits-first, uppercase, e.g. "00 0B 24TBC");
+  entries vector position is the running order. See `docs/plan/car-numbers.md`.
 - `ScoreData { stage, car, time }` — one record per stage per car
 - `KTime` enum + `KTimeTime { time_ds, flags, garage }` — time stored in
   **deciseconds** (`time_ds`), plus flag penalties (count) and garage flag.
@@ -158,7 +153,7 @@ src/
 - `EventStatus` is `Draft → Published → Running → Finished`. Anything after
   draft is **amend-only**: never delete data, change state instead (entries get
   `Withdrawn`, a used test/entry can't be removed — see
-  `event::stage_has_timing`/`entry_has_timing` guards). Event details stay
+  `event::stage_has_timing` guards). Event details stay
   editable (the class list never renames; the publish homeserver/reg lock once
   published). "Clone Event" copies the opened event (entrants + tests, entrant
   state reset) into a fresh editable draft id/name/uid.
@@ -168,8 +163,7 @@ src/
   alias (`build_event_id`). An event can be created with an empty name (must be
   named before publish).
 - A new event starts with a single test (`EventInfo::default`); `Add test`
-  duplicates the last test's settings. In-app self-entry is **off by default**
-  (`entries_enabled`); officials can always manage entries.
+  duplicates the last test's settings. Officials can always manage entries.
 - The publish homeserver is picked from the **saved logins** via a checkbox
   list on the details form ("Offline only" = no homeserver, a local-only event
   until one is chosen). Homeservers are added on the Home page.

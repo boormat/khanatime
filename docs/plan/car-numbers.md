@@ -1,5 +1,12 @@
 # Car numbers, entry identity, and shared cars
 
+> **Note (2026-08-18):** This document describes the pre-trim Entry struct.
+> The current `event::Entry` has 7 fields: `car, name, vehicle, description,
+> shared, classes, passenger`. Fields `entry_no`, `preferred_car`, `order`,
+> `status`, `owner` have been removed. `car` is now the primary key. Entry
+> messages (`EntryMsg`, `entry_body`, `ENTRY_PREFIX`) have been removed.
+> See `docs/plan/app-mode-and-qr-signing.md` for current status.
+
 ## Summary
 
 Car numbers are **text** (digits-first, uppercase, no whitespace) — `007`, `0`,

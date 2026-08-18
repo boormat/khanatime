@@ -3,6 +3,11 @@
 > Status: future change, not yet implemented.
 > Related: `docs/plan/multi-transport.md`, `docs/plan/layout-navigation.md`,
 > `docs/plan/car-photos.md`.
+>
+> **Stale references (2026-08-18):** This document references EventInfo fields
+> that have been removed (`entry_open`, `entry_close`, `stripe_link`, `cost`,
+> `max_entries`, `info_links`, `officials`, `entries_enabled`). The current
+> EventInfo struct has been simplified.
 
 ## 1. Homeserver + Account model
 

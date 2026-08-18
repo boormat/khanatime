@@ -1,5 +1,10 @@
 # Nav & layout rework — burger menu, stopwatch, COC status
 
+> **Stale references (2026-08-18):** This document references `EntryStatus`
+> and `EntryMsg` which have been removed from event.rs. The app mode system
+> (Testing/Organiser/Spectator/Official/Competitor) has been implemented.
+> Burger menu is live. See `docs/plan/app-mode-and-qr-signing.md`.
+
 ## Summary
 
 Tighten the top navbar by moving the admin-type screens under a Burger menu,

@@ -1,5 +1,9 @@
 # Multi-transport timing, observation ids, and amendments
 
+> **Stale references (2026-08-18):** This document references `EntryMsg` and
+> `ENTRY_PREFIX` which have been removed from event.rs. Entry messages are no
+> longer part of the wire format.
+
 ## Summary
 
 Timing data moves over **three transports**:

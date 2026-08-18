@@ -2,6 +2,9 @@
 
 > Status: future change, not yet implemented.
 > See also: `docs/plan/` for other planned features.
+>
+> **Stale references (2026-08-18):** This document references `EntryMsg`
+> struct which has been removed from event.rs.
 
 ## Goal
 

@@ -1,5 +1,9 @@
 # Identity + amendments — wire format v2 (Phase 1)
 
+> **Stale references (2026-08-18):** This document references `EntryMsg` and
+> `ENTRY_PREFIX` which have been removed from event.rs. Entry messages are no
+> longer part of the wire format.
+
 ## Summary
 
 Give every event and every timing observation a **stable generated id**, and

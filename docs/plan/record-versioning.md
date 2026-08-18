@@ -4,6 +4,9 @@
 > Pre-release, clients and room history are disposable (see AGENTS.md, no
 > back-compat), so versioning buys nothing until real data must survive.
 >
+> **Stale references (2026-08-18):** This document references `EntryStatus`
+> which has been removed from event.rs.
+>
 > Versioning for the two persistence layers: localStorage serde payloads
 > (`event:`, `times:`, `runs:`) and the Matrix `TimingEvent` wire format
 > (`khanatime` content key). Motivated by the UNKNOWN feature adding a `note`
