@@ -27,7 +27,9 @@ pub struct Model {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum QrTarget {
-    Account(String),
+    /// Share account credentials (includes password). `true` = personal (warn).
+    Account { homeserver: String, personal: bool },
+    /// Share as contact (no credentials).
     Contact(String),
 }
 
@@ -124,11 +126,13 @@ fn view_homeservers(model: crate::Model) -> View {
                 format!("{} · {}", a.description, type_label)
             };
             let active = a.active;
+            let is_personal = a.account_type == crate::services::matrix::AccountType::Personal;
             let a_user = a.user_id.clone();
             let a_hs = a.homeserver.clone();
             let a_hs2 = a.homeserver.clone();
             let a_user2 = a.user_id.clone();
             let a_hs3 = a.homeserver.clone();
+            let a_user3 = a.user_id.clone();
             account_rows.push(view! {
                 div(class="notification is-light") {
                     div(class="is-flex is-align-items-center is-justify-content-space-between") {
@@ -166,12 +170,24 @@ fn view_homeservers(model: crate::Model) -> View {
                             }
                             button(
                                 class="button is-small is-info is-outlined ml-2",
-                                title="Share via QR",
+                                title="Share account credentials via QR",
                                 on:click=move |_| {
-                                    sm.show_qr.set(Some(QrTarget::Account(a_hs3.clone())));
+                                    sm.show_qr.set(Some(QrTarget::Account {
+                                        homeserver: a_hs3.clone(),
+                                        personal: is_personal,
+                                    }));
                                 },
                             ) {
                                 span(class="icon is-small") { i(class="fa fa-qrcode") }
+                            }
+                            button(
+                                class="button is-small is-light ml-2",
+                                title="Share as contact (no password)",
+                                on:click=move |_| {
+                                    sm.show_qr.set(Some(QrTarget::Contact(a_user3.clone())));
+                                },
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-address-card") }
                             }
                         }
                     }
@@ -582,8 +598,11 @@ fn view_contact_modal(_model: crate::Model) -> View {
 #[cfg(target_arch = "wasm32")]
 fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
     let sm = model.screens.accounts;
-    let (title, payload) = match &target {
-        QrTarget::Account(hs) => {
+    let (title, payload, warning) = match &target {
+        QrTarget::Account {
+            homeserver: hs,
+            personal,
+        } => {
             let accounts = crate::services::matrix::load_accounts();
             match accounts.iter().find(|a| a.homeserver == *hs && a.active) {
                 Some(a) => {
@@ -602,28 +621,48 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                         }))
                         .unwrap_or_default()
                     );
-                    (format!("Account — {}", a.user_id), data)
+                    let warn = if *personal {
+                        Some("This QR contains your personal account credentials including password. Only share with trusted people in person.".to_string())
+                    } else {
+                        None
+                    };
+                    (format!("Account — {}", a.user_id), data, warn)
                 }
-                None => ("No active account".into(), String::new()),
+                None => ("No active account".into(), String::new(), None),
             }
         }
         QrTarget::Contact(uid) => {
+            // First check contacts, then check accounts (share as contact, no password).
             let contacts = crate::services::matrix::load_contacts();
-            match contacts.iter().find(|c| c.user_id == *uid) {
-                Some(c) => {
+            if let Some(c) = contacts.iter().find(|c| c.user_id == *uid) {
+                let data = format!(
+                    "khanatime_contact:{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "user_id": c.user_id,
+                        "name": c.name,
+                        "description": c.description,
+                        "phone": c.phone,
+                    }))
+                    .unwrap_or_default()
+                );
+                (format!("Contact — {}", c.user_id), data, None)
+            } else {
+                // Not in contacts — check accounts for sharing as contact.
+                let accounts = crate::services::matrix::load_accounts();
+                if let Some(a) = accounts.iter().find(|a| a.user_id == *uid) {
                     let data = format!(
                         "khanatime_contact:{}",
                         serde_json::to_string(&serde_json::json!({
-                            "user_id": c.user_id,
-                            "name": c.name,
-                            "description": c.description,
-                            "phone": c.phone,
+                            "user_id": a.user_id,
+                            "name": a.user_id,
+                            "description": a.description,
                         }))
                         .unwrap_or_default()
                     );
-                    (format!("Contact — {}", c.user_id), data)
+                    (format!("Contact — {}", a.user_id), data, None)
+                } else {
+                    ("Contact not found".into(), String::new(), None)
                 }
-                None => ("Contact not found".into(), String::new()),
             }
         }
     };
@@ -643,6 +682,16 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                     button(class="delete", on:click=move |_| sm.show_qr.set(None))
                 }
                 section(class="modal-card-body has-text-centered") {
+                    (match warning {
+                        Some(ref msg) => {
+                            let m = msg.clone();
+                            view! { div(class="notification is-danger is-light mb-4 has-text-left") {
+                                p(class="has-text-weight-semibold") { "Warning" }
+                                p { (m) }
+                            }}
+                        }
+                        None => view! {},
+                    })
                     (if svg_empty {
                         view! { p { "No data to encode." } }
                     } else {
