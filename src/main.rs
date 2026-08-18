@@ -1,21 +1,35 @@
 mod app;
-mod batch;
 mod entry_app;
-mod event;
 mod ids;
 mod input;
 mod join;
+mod khana;
 mod log;
 mod page;
 #[cfg(target_arch = "wasm32")]
 mod qr_scan;
-mod replay;
 mod services;
 mod sync;
-mod timing_event;
-mod view;
 
 pub use app::{ConnState, Model, Msg, Screen};
+
+// Re-export moved modules so existing `crate::event::*` and similar paths
+// keep working during the transition period.
+pub mod event {
+    pub use crate::khana::event::*;
+}
+pub mod timing_event {
+    pub use crate::khana::timing_event::*;
+}
+pub mod view {
+    pub use crate::khana::view::*;
+}
+pub mod batch {
+    pub use crate::khana::batch::*;
+}
+pub mod replay {
+    pub use crate::khana::replay::*;
+}
 
 use sycamore::prelude::*;
 use sycamore::render;
@@ -109,7 +123,7 @@ fn oauth_callback() -> Option<()> {
 fn initial_screen() -> Screen {
     #[cfg(target_arch = "wasm32")]
     if let Some(screen) = app::screen_from_url() {
-        let has_event = !crate::event::session_event_name().is_empty();
+        let has_event = !crate::khana::event::session_event_name().is_empty();
         if !screen.needs_event() || has_event {
             return screen;
         }
@@ -129,7 +143,7 @@ fn warm_start() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
         let active = crate::services::matrix::active_hs().is_some();
-        let event = crate::event::session_event_name();
+        let event = crate::khana::event::session_event_name();
         let has_event = !event.is_empty();
         active && has_event
     }

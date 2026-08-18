@@ -1,7 +1,7 @@
 use sycamore::prelude::*;
 
 use crate::event::{elapsed_ds, pending_starts, upsert_ktime, KTime, RunRecord, RUN_FINISH};
-use crate::page::{pad, penalty};
+use crate::khana::page::{pad, penalty};
 
 // Big-button finish timing: pending starts (tap to select), car chips,
 // penalty chips, and a big FINISH button.  Pairs with the pending start when
@@ -127,7 +127,7 @@ fn do_finish(model: crate::Model) {
         upsert_ktime(s, test, &car, ktime);
     });
 
-    crate::page::enqueue_run(model, &finish);
+    crate::khana::helpers::enqueue_run(model, &finish);
     crate::update(model, crate::Msg::Reload);
     sm.car.set(String::new());
     sm.time.set(String::new());
@@ -205,7 +205,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
-            (crate::page::view_timing_log(model, sm.test.get()))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get()))
         }
     }
 }

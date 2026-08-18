@@ -75,7 +75,7 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::PlanNew => {
             crate::update(
                 model,
-                crate::Msg::EventMsg(crate::page::event::Msg::CreateDraft),
+                crate::Msg::EventMsg(crate::khana::page::event::Msg::CreateDraft),
             );
             crate::update(model, crate::Msg::Show(crate::Screen::Event));
         }
@@ -158,7 +158,7 @@ pub fn view(model: crate::Model) -> View {
             (view_current(model))
             (view_published(model))
             (view_plan(model))
-            (crate::page::view_handoff(model))
+            (crate::khana::helpers::view_handoff(model))
             (view_feedback(model))
         }
     }

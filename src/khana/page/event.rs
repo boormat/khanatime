@@ -614,7 +614,7 @@ fn view_invite(model: crate::Model) -> View {
             view! {
                 button(
                     class="button is-small is-light",
-                    on:click=move |_| crate::page::copy_text(&element_c),
+                    on:click=move |_| crate::khana::helpers::copy_text(&element_c),
                 ) { span(class="icon is-small") { i(class="fa fa-external-link") } span { "Copy Element link" } }
             }
         };
@@ -636,7 +636,7 @@ fn view_invite(model: crate::Model) -> View {
                             div(class="control") {
                                 button(
                                     class="button is-small is-light",
-                                    on:click=move |_| crate::page::copy_text(&url_c),
+                                    on:click=move |_| crate::khana::helpers::copy_text(&url_c),
                                 ) { span(class="icon is-small") { i(class="fa fa-copy") } span { "Copy URL" } }
                             }
                             (element_btn)
