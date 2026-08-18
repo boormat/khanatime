@@ -104,56 +104,51 @@ src/
 ├── app.rs              # Screen enum, Model, Msg, Mode, KhanaState, SyncState, update(), navbar, view
 ├── sync.rs             # Matrix connect/logout/resume/join + merge sink, QR parcel
 │                       #   export/import + relay-to-room (wasm)
-├── view.rs             # small view helpers
-├── event.rs            # EventInfo, Entry, RunRecord, KTime, KTimeTime,
-│                       #   car-number/shared-car helpers, Invite, results calc
-├── batch.rs             # staged-edit ops (EditOp, compact_ops, diffs)
-├── ids.rs               # generated short ids (Crocker base32) + content_id(body)
-│                       #   dedup key: KT bodies -> embedded observation uid
-├── input.rs             # keyboard/input helpers
-├── join.rs              # QR join-link arrival: parse location query + consume (wasm)
-├── qr_scan.rs           # camera QR scanning for parcel import (wasm; BarcodeDetector)
-├── log.rs              # per-event message log + pending outbox (localStorage);
-│                       #   LogMsg.origin tracks the publishing transport (room id /
-│                       #   "parcel" / outbox), publish_outbox + confirm_in_room
-├── replay.rs           # pure rebuild of event/scores/runs from the log
-├── timing_event.rs     # TimingEvent wire format (KT {json}, khanatime_* prefixes)
-├── page.rs             # page modules + shared enqueue_run/enqueue_ktime
-│                       #   + view_handoff (offline handoff box)
+├── ids.rs              # generated short ids (Crocker base32) + content_id(body)
+├── input.rs            # keyboard/input helpers
+├── join.rs             # QR join-link arrival: parse location query + consume (wasm)
+├── qr_scan.rs          # camera QR scanning for parcel import (wasm; BarcodeDetector)
+├── log.rs              # per-event message log + pending outbox (localStorage)
 ├── entry_app/          # independent entry management (types, batch, sync, UI)
 │   ├── types.rs        #   EntryEvent, Entry, EntryStatus, EventStatus
 │   ├── batch.rs        #   staged-edit ops (EditOp, compact_ops, entry_diff)
 │   ├── sync.rs         #   entry wire format, enqueue_entry, parse_entry_body
 │   └── mod.rs          #   Model, Msg, init(), update(), view()
 ├── services/
-│   ├── mod.rs
-│   ├── qr.rs           # QR parcel codec: khanatime_parcel:{json} pack/unpack +
-│   │                   #   khanatime_qr: frame codec (DEFLATE+base64) + SVG
-│   │                   #   rendering + filter_timing (pure)
+│   ├── qr.rs           # QR parcel codec (DEFLATE+base64, SVG rendering)
 │   └── matrix.rs       # matrix-sdk transport wrapper (wasm)
-└── page/
-    ├── home.rs         # sign-in + current-event dashboard
-    ├── events.rs       # event hub: demo / search published / QR / plan new / saved
-    ├── chat.rs         # read-only room message view
-    ├── event.rs        # event setup (classes, stages, lifecycle)
-    ├── stage.rs        # TIMER — command-line stopwatch entry
-    │                   #   parse_command()/parse_car(), CmdParse, TimeCmd
-    ├── start.rs        # start flag screen
-    ├── finish.rs       # finish flag screen
-    ├── pad.rs          # keypad input helper
-    ├── penalty.rs      # penalty-flag input helper
-    ├── results.rs      # results + score computation (ResultRow/ResultScore/Pos)
-    ├── help.rs         # usage help
-    └── khana_rule.rs   # rendered rules reference
+├── page/               # shared pages (generic, not khanacross-specific)
+│   ├── home.rs         # sign-in + current-event dashboard
+│   ├── events.rs       # event hub: demo / search published / QR / plan new
+│   ├── accounts.rs     # account/homeserver management
+│   ├── chat.rs         # read-only room message view
+│   └── help.rs         # usage help
+└── khana/              # khanacross-timing domain
+    ├── event.rs        # EventInfo, Entry, Stage, KTime, scoring, car-number
+    ├── batch.rs        # staged-edit ops (EditOp, compact_ops, event_diff)
+    ├── replay.rs       # pure rebuild of event/scores/runs from the log
+    ├── timing_event.rs # TimingEvent wire format (KT {json}, khanatime_* prefixes)
+    ├── view.rs         # KTime rendering (ktime, show_ktimetime, car_number)
+    ├── helpers.rs      # enqueue_run/ktime/amend/void, view_timing_log, view_handoff
+    └── page/
+        ├── event.rs    # event setup (classes, stages, lifecycle)
+        ├── results.rs  # results + score computation (ResultRow/ResultScore/Pos)
+        ├── stage.rs    # TIMER — command-line stopwatch entry
+        ├── start.rs    # start flag screen
+        ├── finish.rs   # finish flag screen
+        ├── stopwatch.rs # cooperative stopwatch
+        ├── penalty.rs  # penalty-flag input helper
+        ├── pad.rs      # keypad input helper
+        └── khana_rule.rs # rendered rules reference
 ```
 
 ### Domain model (see PLAN.md + docs/KhanacrossRules.md)
 
-- `EventInfo { name, stages_count, classes, entries }`
-- `Entry { car, name, vehicle, description, shared, classes, passenger }`
+- `khana::event::EventInfo { name, stages_count, classes, entries }`
+- `khana::event::Entry { car, name, vehicle, description, shared, classes, passenger }`
   — `car` is the primary key (text: digits-first, uppercase, e.g. "00 0B 24TBC");
   entries vector position is the running order. See `docs/plan/car-numbers.md`.
-- `ScoreData { stage, car, time }` — one record per stage per car
+- `khana::event::ScoreData { stage, car, time }` — one record per stage per car
 - `KTime` enum + `KTimeTime { time_ds, flags, garage }` — time stored in
   **deciseconds** (`time_ds`), plus flag penalties (count) and garage flag.
 
