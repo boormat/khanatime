@@ -39,29 +39,33 @@ unlinted code.
 
 ## Worktrees
 
-For larger changes, or when the main branch has concurrent activity,
-use a git worktree to isolate the work:
+For anything except trivial changes, the main repo existing changes, 
+use a git worktree to isolate the work.  
+On completion, Fast forward merge the back to main repo dir.
+If it cannot fast forward, rebase the worktree, and retest and fix.
+If there is local changes in the main repo, prompt the user to help.
+
+Worktrees can be in ~/work/
 
 ```bash
 # Create a worktree on a feature branch
-git worktree add ../khanatime-feature-name -b feature/feature-name
+git worktree add ~/work/khanatime-feature-name -b feature/feature-name
 
 # Work in the worktree
-cd ../khanatime-feature-name
+cd ~/work/khanatime-feature-name
 # ... make changes, run check.sh, commit ...
 
-# When done, merge or rebase back to main
-cd ../khanatime
-git merge feature/feature-name
-# or
-git rebase main  # (from the worktree)
+# When done, in the main repo, FF merge
+git merge --no-ff feature/feature-name
+# If not rebase in the worktree
+git rebase main  # (in the worktree)
 
 # Clean up the worktree
-git worktree remove ../khanatime-feature-name
+git worktree remove ~/work/khanatime-feature-name
 ```
 
 The agent should offer to create a temp worktree when:
-- The change touches 5+ files
+- The change touches more than 10 lines or 3 files
 - There are uncommitted changes on main
 - The user asks for it explicitly
 
@@ -116,6 +120,11 @@ src/
 ├── timing_event.rs     # TimingEvent wire format (KT {json}, khanatime_* prefixes)
 ├── page.rs             # page modules + shared enqueue_run/enqueue_ktime
 │                       #   + view_handoff (offline handoff box)
+├── entry_app/          # independent entry management (types, batch, sync, UI)
+│   ├── types.rs        #   EntryEvent, Entry, EntryStatus, EventStatus
+│   ├── batch.rs        #   staged-edit ops (EditOp, compact_ops, entry_diff)
+│   ├── sync.rs         #   entry wire format, enqueue_entry, parse_entry_body
+│   └── mod.rs          #   Model, Msg, init(), update(), view()
 ├── services/
 │   ├── mod.rs
 │   ├── qr.rs           # QR parcel codec: khanatime_parcel:{json} pack/unpack +
@@ -185,14 +194,12 @@ src/
 
 ## Sync model (current direction)
 
-- Single shared Matrix room per event named "timing"; room history replays as
-  store-and-forward offline sync. See `docs/research/MessagingSpike.md` and the
-  Comms section of `PLAN.md`.
 - **No back-compat.** Pre-release: every client's localStorage and all room
   history is disposable. Any device may start empty and any room may be
   wiped or re-created. Don't build versioning, migration, or merge/ordering
   protection around existing data surviving; plain replay-in-order +
   last-writer-wins is fine.
+
 - **QR parcel handoff is live** (offline mode): the Handoff box on Results/Events
   exports the event's full log as a `khanatime_parcel:{json}` string and imports
   one from another device — no network needed. Export promotes the local outbox
@@ -203,6 +210,7 @@ src/
   (`qr_scan.rs`, browser BarcodeDetector; paste fallback) are live. Frames
   carry the parcel DEFLATE-compressed + base64; export is **Full event** or
   **Timing only** (`qr::filter_timing`), picked on the Handoff box.
+
 - The single-room baseline is being extended to **multi-transport** (dual
   homeservers with content-id merge + auto-relay, QR parcel handoff, and
   generated event/observation ids with `amend`/`void`) — plan and wire-format
@@ -213,6 +221,7 @@ src/
   sync plumbing with that in mind. **Wire v2 is live** (event/observation
   uids, `amend`/`void` with `target`); no fallback for old v1 bodies — they
   fail parse and are dropped, so clear localStorage + room history once.
+
 - Voice = Push-to-Talk via an embedded Element Call voice widget (MatrixRTC /
   LiveKit), driven host-side through the Rust SDK `widget` module; needs a
   LAN homeserver + LiveKit SFU + `lk-jwt-service`. See "Voice — Push-to-Talk"
