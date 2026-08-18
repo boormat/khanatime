@@ -57,7 +57,7 @@ pub fn init() -> StageModel {
 /// Send the entered time to the current event's pending outbox (the durable
 /// record until it's flushed to the timing room).
 fn broadcast_time(model: Model, car: &str, stage: u8, time: &KTime) {
-    crate::page::enqueue_ktime(model, stage, car, time, None);
+    crate::khana::helpers::enqueue_ktime(model, stage, car, time, None);
 }
 
 pub fn update(model: Model, msg: StageMsg) {
@@ -116,7 +116,7 @@ pub fn view(model: Model) -> View {
             (input_box_wrap(model))
             (move || {
                 let test = model.screens.stage.stage.get();
-                crate::page::view_timing_log(model, test)
+                crate::khana::helpers::view_timing_log(model, test)
             })
         }
     }

@@ -1,7 +1,7 @@
 use sycamore::prelude::*;
 
 use crate::event::{RunRecord, RUN_START};
-use crate::page::pad;
+use crate::khana::page::pad;
 
 // Big-button start timing: pick a car, press START.  Records a `start` run
 // (for pending-starts / run numbering) to the pending outbox.
@@ -71,7 +71,7 @@ fn start_car(model: crate::Model) {
         comment: comment_opt,
         refs: vec![],
     };
-    crate::page::enqueue_run(model, &record_run);
+    crate::khana::helpers::enqueue_run(model, &record_run);
     sm.feedback.set(None);
     sm.car.set(String::new());
     sm.comment.set(String::new());
@@ -100,7 +100,7 @@ fn mark_dns(model: crate::Model) {
         comment: None,
         refs: vec![],
     };
-    crate::page::enqueue_run(model, &record_run);
+    crate::khana::helpers::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".
     model.khana.scores.update(|s| {
         crate::event::upsert_ktime(s, test, &car, crate::event::KTime::NOSHO);
@@ -150,7 +150,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
-            (crate::page::view_timing_log(model, sm.test.get()))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get()))
         }
     }
 }

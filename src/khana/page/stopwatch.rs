@@ -4,7 +4,7 @@ use crate::event::{
     elapsed_ds, pending_for_car, pending_starts, upsert_ktime, RunRecord, RUN_FINISH, RUN_START,
     RUN_STOP,
 };
-use crate::page::{pad, penalty};
+use crate::khana::page::{pad, penalty};
 
 // Cooperative stopwatch: START sends a start event, STOP sends a stop event
 // and opens a confirm panel with auto-attached observations, CONFIRM sends a
@@ -197,7 +197,7 @@ fn start_car(model: crate::Model) {
         comment: comment_opt,
         refs: vec![],
     };
-    crate::page::enqueue_run(model, &record);
+    crate::khana::helpers::enqueue_run(model, &record);
     sm.feedback.set(None);
 }
 
@@ -228,7 +228,7 @@ fn stop_car(model: crate::Model) {
         comment: comment_opt,
         refs: vec![],
     };
-    crate::page::enqueue_run(model, &record);
+    crate::khana::helpers::enqueue_run(model, &record);
 
     // Now auto-attach events for this car/test.
     let runs = model.khana.runs.get_clone();
@@ -292,7 +292,7 @@ fn commit(model: crate::Model, idx: usize) {
     model.khana.scores.update(|s| {
         upsert_ktime(s, sm.test.get(), &car, ktime);
     });
-    crate::page::enqueue_run(model, &record);
+    crate::khana::helpers::enqueue_run(model, &record);
     sm.pending.update(|v| v.remove(idx));
     sm.car.set(String::new());
     sm.comment.set(String::new());
@@ -308,7 +308,7 @@ fn cancel(model: crate::Model, idx: usize) {
         let test = sm.test.get();
         for a in &p.attached {
             if a.attached {
-                crate::page::enqueue_void(model, &a.uid, test, &a.car);
+                crate::khana::helpers::enqueue_void(model, &a.uid, test, &a.car);
             }
         }
     }
@@ -363,7 +363,7 @@ fn void_observation(model: crate::Model, uid: &str) {
         Some(r) => r.clone(),
         None => return,
     };
-    crate::page::enqueue_void(model, uid, test, &r.car);
+    crate::khana::helpers::enqueue_void(model, uid, test, &r.car);
     sm.feedback
         .set(Some(format!("Voided {} #{}", r.r#type, r.car)));
 }
@@ -411,7 +411,7 @@ pub fn view(model: crate::Model) -> View {
             (view_comment(model))
             (view_manual_entry(model))
             (view_pending_stack(model))
-            (crate::page::view_timing_log(model, sm.test.get()))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get()))
         }
     }
 }

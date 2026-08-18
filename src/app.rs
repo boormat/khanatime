@@ -234,13 +234,13 @@ pub struct Screens {
     pub home: page::home::Model,
     pub events: page::events::Model,
     pub accounts: page::accounts::Model,
-    pub setup: page::event::Model,
-    pub stage: page::stage::StageModel,
-    pub start: page::start::Model,
-    pub finish: page::finish::Model,
-    pub stopwatch: page::stopwatch::Model,
+    pub setup: crate::khana::page::event::Model,
+    pub stage: crate::khana::page::stage::StageModel,
+    pub start: crate::khana::page::start::Model,
+    pub finish: crate::khana::page::finish::Model,
+    pub stopwatch: crate::khana::page::stopwatch::Model,
     pub chat: page::chat::Model,
-    pub results: page::results::Model,
+    pub results: crate::khana::page::results::Model,
     pub entry_app: crate::entry_app::Model,
 }
 
@@ -266,13 +266,13 @@ pub enum Msg {
     SetEvent(String), // event id to load
     Reload,           // event or score data changed (in storage)
     Conn(crate::sync::Msg),
-    StageMsg(page::stage::StageMsg),
-    StartMsg(page::start::Msg),
-    FinishMsg(page::finish::Msg),
-    StopwatchMsg(page::stopwatch::Msg),
-    EventMsg(page::event::Msg),
+    StageMsg(crate::khana::page::stage::StageMsg),
+    StartMsg(crate::khana::page::start::Msg),
+    FinishMsg(crate::khana::page::finish::Msg),
+    StopwatchMsg(crate::khana::page::stopwatch::Msg),
+    EventMsg(crate::khana::page::event::Msg),
     EventsMsg(page::events::Msg),
-    ResultMsg(page::results::Msg),
+    ResultMsg(crate::khana::page::results::Msg),
     EntryAppMsg(crate::entry_app::Msg),
     /// Export the current event's log as a QR parcel.
     ExportParcel,
@@ -337,7 +337,7 @@ impl Model {
                 &crate::log::load_pending(&session_key),
             )
         };
-        let results = page::results::init(&event_info, &runs);
+        let results = crate::khana::page::results::init(&event_info, &runs);
 
         let m = Model {
             screen: create_signal(Screen::Event),
@@ -371,11 +371,11 @@ impl Model {
                 home: page::home::init(),
                 events: page::events::init(),
                 accounts: page::accounts::init(),
-                setup: page::event::init(),
-                stage: page::stage::init(),
-                start: page::start::init(),
-                finish: page::finish::init(),
-                stopwatch: page::stopwatch::init(),
+                setup: crate::khana::page::event::init(),
+                stage: crate::khana::page::stage::init(),
+                start: crate::khana::page::start::init(),
+                finish: crate::khana::page::finish::init(),
+                stopwatch: crate::khana::page::stopwatch::init(),
                 chat: page::chat::init(),
                 results,
                 entry_app: crate::entry_app::init(),
@@ -392,7 +392,7 @@ pub fn show(model: Model, screen: Screen) {
     push_screen_hash(screen);
     model.screen.set(screen);
     if screen == Screen::Results {
-        page::results::update(model, page::results::Msg::Reload);
+        crate::khana::page::results::update(model, crate::khana::page::results::Msg::Reload);
     }
 }
 
@@ -507,21 +507,21 @@ pub fn update(model: Model, msg: Msg) {
             // And any pending "open the parcel's event" offer.
             model.sync.parcel_open_event.set(None);
             refresh_feed(model);
-            page::results::update(model, page::results::Msg::Reload);
+            crate::khana::page::results::update(model, crate::khana::page::results::Msg::Reload);
             crate::sync::join_current_event(model);
         }
 
         Msg::Reload => {
-            page::results::update(model, page::results::Msg::Reload);
+            crate::khana::page::results::update(model, crate::khana::page::results::Msg::Reload);
         }
 
-        Msg::StageMsg(msg) => page::stage::update(model, msg),
-        Msg::StartMsg(msg) => page::start::update(model, msg),
-        Msg::FinishMsg(msg) => page::finish::update(model, msg),
-        Msg::StopwatchMsg(msg) => page::stopwatch::update(model, msg),
-        Msg::EventMsg(msg) => page::event::update(model, msg),
+        Msg::StageMsg(msg) => crate::khana::page::stage::update(model, msg),
+        Msg::StartMsg(msg) => crate::khana::page::start::update(model, msg),
+        Msg::FinishMsg(msg) => crate::khana::page::finish::update(model, msg),
+        Msg::StopwatchMsg(msg) => crate::khana::page::stopwatch::update(model, msg),
+        Msg::EventMsg(msg) => crate::khana::page::event::update(model, msg),
         Msg::EventsMsg(msg) => page::events::update(model, msg),
-        Msg::ResultMsg(msg) => page::results::update(model, msg),
+        Msg::ResultMsg(msg) => crate::khana::page::results::update(model, msg),
         Msg::EntryAppMsg(msg) => crate::entry_app::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
         Msg::ExportParcel => crate::sync::export_parcel(model),
@@ -541,7 +541,7 @@ pub fn update(model: Model, msg: Msg) {
                     .map(|r| r.car.clone())
                     .unwrap_or_default()
             });
-            crate::page::enqueue_void(model, &uid, test, &car);
+            crate::khana::helpers::enqueue_void(model, &uid, test, &car);
         }
         Msg::ScanStart => {
             #[cfg(target_arch = "wasm32")]
@@ -592,7 +592,7 @@ pub fn setup_effects(model: Model) {
     // stage command preview: re-parse whenever the input text changes
     create_effect(move || {
         let input = model.screens.stage.cmd.input.get_clone();
-        let cmd = page::stage::parse_command(&input);
+        let cmd = crate::khana::page::stage::parse_command(&input);
         model.screens.stage.preview.set(cmd);
     });
     #[cfg(target_arch = "wasm32")]
@@ -764,7 +764,7 @@ pub fn view(model: Model) -> View {
         div {
             (move || view_navbar(model))
             (move || view_content(model))
-            (crate::page::view_handoff_modals(model))
+            (crate::khana::helpers::view_handoff_modals(model))
         }
     }
 }
@@ -794,13 +794,13 @@ fn view_content(model: Model) -> View {
                 Screen::Events => page::events::view(model),
                 Screen::Accounts => page::accounts::view(model),
                 Screen::Help => page::help::view(),
-                Screen::KhanaRules => page::khana_rule::view(),
-                Screen::Stage => page::stage::view(model),
-                Screen::Start => page::start::view(model),
-                Screen::Finish => page::finish::view(model),
-                Screen::Stopwatch => page::stopwatch::view(model),
-                Screen::Results => page::results::view(model),
-                Screen::Event => page::event::view(model),
+                Screen::KhanaRules => crate::khana::page::khana_rule::view(),
+                Screen::Stage => crate::khana::page::stage::view(model),
+                Screen::Start => crate::khana::page::start::view(model),
+                Screen::Finish => crate::khana::page::finish::view(model),
+                Screen::Stopwatch => crate::khana::page::stopwatch::view(model),
+                Screen::Results => crate::khana::page::results::view(model),
+                Screen::Event => crate::khana::page::event::view(model),
                 Screen::Entries => crate::entry_app::view(model),
                 Screen::Chat => page::chat::view(model),
             })
