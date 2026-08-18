@@ -138,6 +138,69 @@ pub enum StoredAuth {
     },
 }
 
+// ----- homeserver / account / contact model -----
+//
+// The new storage model splits the old flat `StoredSession` into three lists:
+// `kt_homeservers` (known servers), `kt_accounts` (accounts on those servers),
+// and `kt_contacts` (known Matrix users without credentials).
+
+const HOMESERVERS_KEY: &str = "kt_homeservers";
+const ACCOUNTS_KEY: &str = "kt_accounts";
+const CONTACTS_KEY: &str = "kt_contacts";
+
+/// A known homeserver with metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeserverConfig {
+    pub url: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub reg: crate::event::RegistrationMode,
+    #[serde(default)]
+    pub element_link: String,
+}
+
+/// Account type determines how the app uses this account.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountType {
+    #[default]
+    Personal,
+    EventShared,
+    ClubShared,
+}
+
+/// An account on a homeserver, with credentials and metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Account {
+    pub homeserver: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub account_type: AccountType,
+    #[serde(flatten)]
+    pub kind: StoredAuth,
+    #[serde(default)]
+    pub active: bool,
+    /// For EventShared accounts: the event uid this account was created for.
+    #[serde(default)]
+    pub event_uid: Option<String>,
+}
+
+/// A known Matrix user without credentials (from a QR scan or manual entry).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Contact {
+    pub user_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub phone: Option<String>,
+}
+
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
@@ -303,6 +366,193 @@ fn clear_active_hs() {
     if let Some(st) = storage() {
         let _ = st.remove_item(ACTIVE_KEY);
     }
+}
+
+// ----- homeserver / account / contact persistence -----
+
+fn read_homeservers() -> Vec<HomeserverConfig> {
+    storage()
+        .and_then(|st| st.get_item(HOMESERVERS_KEY).ok().flatten())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+fn write_homeservers(hs: &[HomeserverConfig]) {
+    if let Some(st) = storage() {
+        if let Ok(json) = serde_json::to_string(hs) {
+            let _ = st.set_item(HOMESERVERS_KEY, &json);
+        }
+    }
+}
+
+pub fn load_homeservers() -> Vec<HomeserverConfig> {
+    read_homeservers()
+}
+
+#[allow(dead_code)]
+pub fn save_homeserver(hs: &HomeserverConfig) {
+    let mut list = read_homeservers();
+    if let Some(existing) = list.iter_mut().find(|h| h.url == hs.url) {
+        *existing = hs.clone();
+    } else {
+        list.push(hs.clone());
+    }
+    write_homeservers(&list);
+}
+
+#[allow(dead_code)]
+pub fn remove_homeserver(url: &str) {
+    let list = read_homeservers();
+    let filtered: Vec<_> = list.into_iter().filter(|h| h.url != url).collect();
+    write_homeservers(&filtered);
+}
+
+fn read_accounts() -> Vec<Account> {
+    storage()
+        .and_then(|st| st.get_item(ACCOUNTS_KEY).ok().flatten())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+fn write_accounts(accounts: &[Account]) {
+    if let Some(st) = storage() {
+        if let Ok(json) = serde_json::to_string(accounts) {
+            let _ = st.set_item(ACCOUNTS_KEY, &json);
+        }
+    }
+}
+
+pub fn load_accounts() -> Vec<Account> {
+    read_accounts()
+}
+
+#[allow(dead_code)]
+pub fn load_accounts_for(homeserver: &str) -> Vec<Account> {
+    read_accounts()
+        .into_iter()
+        .filter(|a| a.homeserver == homeserver)
+        .collect()
+}
+
+#[allow(dead_code)]
+pub fn save_account(account: &Account) {
+    let mut list = read_accounts();
+    if let Some(existing) = list
+        .iter_mut()
+        .find(|a| a.homeserver == account.homeserver && a.user_id == account.user_id)
+    {
+        *existing = account.clone();
+    } else {
+        list.push(account.clone());
+    }
+    write_accounts(&list);
+}
+
+#[allow(dead_code)]
+pub fn remove_account(homeserver: &str, user_id: &str) {
+    let list = read_accounts();
+    let filtered: Vec<_> = list
+        .into_iter()
+        .filter(|a| !(a.homeserver == homeserver && a.user_id == user_id))
+        .collect();
+    write_accounts(&filtered);
+}
+
+fn read_contacts() -> Vec<Contact> {
+    storage()
+        .and_then(|st| st.get_item(CONTACTS_KEY).ok().flatten())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[allow(dead_code)]
+fn write_contacts(contacts: &[Contact]) {
+    if let Some(st) = storage() {
+        if let Ok(json) = serde_json::to_string(contacts) {
+            let _ = st.set_item(CONTACTS_KEY, &json);
+        }
+    }
+}
+
+pub fn load_contacts() -> Vec<Contact> {
+    read_contacts()
+}
+
+#[allow(dead_code)]
+pub fn save_contact(contact: &Contact) {
+    let mut list = read_contacts();
+    if let Some(existing) = list.iter_mut().find(|c| c.user_id == contact.user_id) {
+        *existing = contact.clone();
+    } else {
+        list.push(contact.clone());
+    }
+    write_contacts(&list);
+}
+
+#[allow(dead_code)]
+pub fn remove_contact(user_id: &str) {
+    let list = read_contacts();
+    let filtered: Vec<_> = list.into_iter().filter(|c| c.user_id != user_id).collect();
+    write_contacts(&filtered);
+}
+
+/// Migrate old `kt_sync_sessions` data into the new homeservers + accounts model.
+/// Called once on first load; idempotent (no-ops if new keys already exist).
+#[allow(dead_code)]
+pub fn migrate_session_storage() {
+    let st = match storage() {
+        Some(s) => s,
+        None => return,
+    };
+    // If new keys already exist, migration already ran.
+    if st.get_item(HOMESERVERS_KEY).ok().flatten().is_some() {
+        return;
+    }
+    let old_sessions: Vec<StoredSession> = st
+        .get_item(SESSION_KEY)
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if old_sessions.is_empty() {
+        // Write empty new lists so migration marker is set.
+        write_homeservers(&[]);
+        write_accounts(&[]);
+        write_contacts(&[]);
+        return;
+    }
+    // Extract unique homeservers.
+    let mut homeservers: Vec<HomeserverConfig> = Vec::new();
+    for s in &old_sessions {
+        if !homeservers.iter().any(|h| h.url == s.homeserver) {
+            homeservers.push(HomeserverConfig {
+                url: s.homeserver.clone(),
+                name: crate::page::home::hs_host_port(&s.homeserver),
+                description: String::new(),
+                reg: s.reg,
+                element_link: crate::event::element_link_default(&s.homeserver),
+            });
+        }
+    }
+    // Convert sessions to accounts.
+    let active = active_hs_key().unwrap_or_default();
+    let accounts: Vec<Account> = old_sessions
+        .iter()
+        .map(|s| Account {
+            homeserver: s.homeserver.clone(),
+            user_id: s.user_id.clone(),
+            description: String::new(),
+            account_type: AccountType::Personal,
+            kind: s.kind.clone(),
+            active: s.homeserver == active,
+            event_uid: None,
+        })
+        .collect();
+    write_homeservers(&homeservers);
+    write_accounts(&accounts);
+    write_contacts(&[]);
 }
 
 // ----- OAuth / OIDC SSO (passwordless matrix.org accounts) -----

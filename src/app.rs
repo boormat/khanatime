@@ -14,6 +14,7 @@ pub enum Screen {
     #[default]
     Home,
     Events,
+    Accounts,
     Help,
     KhanaRules,
     Results,
@@ -32,6 +33,7 @@ impl Screen {
         match self {
             Screen::Home => "home",
             Screen::Events => "events",
+            Screen::Accounts => "accounts",
             Screen::Help => "help",
             Screen::KhanaRules => "rules",
             Screen::Results => "results",
@@ -49,6 +51,7 @@ impl Screen {
         Some(match name {
             "home" => Screen::Home,
             "events" => Screen::Events,
+            "accounts" => Screen::Accounts,
             "help" => Screen::Help,
             "rules" => Screen::KhanaRules,
             "results" => Screen::Results,
@@ -148,6 +151,7 @@ pub struct SyncState {
 pub struct Screens {
     pub home: page::home::Model,
     pub events: page::events::Model,
+    pub accounts: page::accounts::Model,
     pub setup: page::event::Model,
     pub stage: page::stage::StageModel,
     pub start: page::start::Model,
@@ -277,6 +281,7 @@ impl Model {
             screens: Screens {
                 home: page::home::init(),
                 events: page::events::init(),
+                accounts: page::accounts::init(),
                 setup: page::event::init(),
                 stage: page::stage::init(),
                 start: page::start::init(),
@@ -690,6 +695,7 @@ fn view_content(model: Model) -> View {
             (match effective {
                 Screen::Home => page::home::view(model),
                 Screen::Events => page::events::view(model),
+                Screen::Accounts => page::accounts::view(model),
                 Screen::Help => page::help::view(),
                 Screen::KhanaRules => page::khana_rule::view(),
                 Screen::Stage => page::stage::view(model),
@@ -722,6 +728,7 @@ fn view_navbar(model: Model) -> View {
     for (screen, icon) in [
         (Screen::Home, "fa fa-home"),
         (Screen::Events, "fa fa-folder-open"),
+        (Screen::Accounts, "fa fa-user-gear"),
         (Screen::Event, "fa fa-screwdriver-wrench"),
         (Screen::Start, "fa fa-flag"),
         (Screen::Finish, "fa fa-flag-checkered"),
@@ -778,6 +785,7 @@ mod tests {
             Screen::Entries,
             Screen::Chat,
             Screen::Stopwatch,
+            Screen::Accounts,
         ];
         for screen in all {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));

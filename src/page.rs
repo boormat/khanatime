@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod chat;
 pub mod event;
 pub mod events;
