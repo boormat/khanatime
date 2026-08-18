@@ -475,7 +475,6 @@ fn copy_as_new(model: crate::Model) {
     e.space_id = None;
     e.timing_id = None;
     e.event_homeservers = vec![];
-    e.event_admins = vec![];
     e.owner = None;
     e.parent_rooms = vec![];
     // Entrants + tests are copied; entrant state is reset for the fresh event.
@@ -815,7 +814,6 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
         } else {
             format!("{} homeservers", hs_count)
         };
-        let admin_count = event.event_admins.len();
         let mut parts: Vec<View> = Vec::new();
         parts.push(view! { p { strong { (name) } } });
         if !slug.is_empty() {
@@ -829,9 +827,9 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
         if !owner.is_empty() {
             parts.push(view! { p { "Owner: " code { (owner) } } });
         }
-        if admin_count > 0 {
-            let admins = event.event_admins.join(", ");
-            parts.push(view! { p { "Admins: " code { (admins) } " (invited + admin PL)" } });
+        let org_ids: Vec<String> = event.organisers.iter().map(|o| o.id.clone()).collect();
+        if !org_ids.is_empty() {
+            parts.push(view! { p { "Organisers: " code { (org_ids.join(", ")) } " (invited + admin PL)" } });
         }
         parts.push(
             view! { p { "History: " code { "world_readable" } " (new joiners see everything)" } },
@@ -1027,6 +1025,8 @@ fn view_details(model: crate::Model) -> View {
                 }
             })
             (view_homeserver_fields(model))
+            (view_owner_picker(model))
+            (view_organisers_picker(model))
             (move || view_tests_section(model))
             (move || view_classes_section(model))
             (move || view_entrants_section(model))
@@ -1785,6 +1785,164 @@ fn view_publish_btn(model: crate::Model) -> View {
             }
         })
     }
+}
+
+/// Owner picker: single-select from accounts with stored credentials.
+#[cfg(target_arch = "wasm32")]
+fn view_owner_picker(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let editing = em.editing.get();
+    view! {
+        (move || {
+            let accounts = crate::services::matrix::load_accounts();
+            let current_owner = if editing {
+                untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.owner.clone()).unwrap_or_default()))
+            } else {
+                model.khana.event.with(|e| e.owner.clone())
+            };
+            let mut items: Vec<View> = Vec::new();
+            for a in &accounts {
+                let uid = a.user_id.clone();
+                let display = if a.description.is_empty() {
+                    crate::page::home::hs_host_port(&a.homeserver)
+                } else {
+                    a.description.clone()
+                };
+                let is_on = current_owner.as_ref() == Some(&uid);
+                let cls = format!(
+                    "button is-small {}",
+                    if is_on { "is-primary is-selected" } else { "is-light" }
+                );
+                let uid_click = uid.clone();
+                let display_label = display.clone();
+                items.push(view! {
+                    button(
+                        class=cls,
+                        disabled=!editing,
+                        on:click=move |_| {
+                            em.edit_event.update(|e| {
+                                if let Some(ref mut ev) = e {
+                                    ev.owner = if is_on { None } else { Some(uid_click.clone()) };
+                                }
+                            });
+                        },
+                    ) {
+                        span { (uid) }
+                        span(class="is-size-7 has-text-grey ml-1") { (display_label) }
+                    }
+                });
+            }
+            let body = if items.is_empty() {
+                view! { p(class="help") { "No accounts available. Add one on the Accounts page." } }
+            } else {
+                view! { (items) }
+            };
+            view! {
+                div(class="field") {
+                    label(class="label") { "Owner (room creator)" }
+                    div(class="kt-hs-tags") { (body) }
+                }
+            }
+        })
+    }
+}
+
+/// Organisers picker: multi-select from contacts + accounts.
+#[cfg(target_arch = "wasm32")]
+fn view_organisers_picker(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    let editing = em.editing.get();
+    view! {
+        (move || {
+            // Build options from contacts + accounts.
+            let contacts = crate::services::matrix::load_contacts();
+            let accounts = crate::services::matrix::load_accounts();
+            let mut options: Vec<(String, String)> = Vec::new();
+            for c in &contacts {
+                let display = if c.name.is_empty() {
+                    c.description.clone()
+                } else if c.description.is_empty() {
+                    c.name.clone()
+                } else {
+                    format!("{} · {}", c.name, c.description)
+                };
+                options.push((c.user_id.clone(), display));
+            }
+            for a in &accounts {
+                if !options.iter().any(|(id, _)| id == &a.user_id) {
+                    let display = if a.description.is_empty() {
+                        crate::page::home::hs_host_port(&a.homeserver)
+                    } else {
+                        a.description.clone()
+                    };
+                    options.push((a.user_id.clone(), display));
+                }
+            }
+            let current_orgs: Vec<String> = if editing {
+                untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.organisers.iter().map(|o| o.id.clone()).collect()).unwrap_or_default()))
+            } else {
+                model.khana.event.with(|e| e.organisers.iter().map(|o| o.id.clone()).collect())
+            };
+            let mut items: Vec<View> = Vec::new();
+            for (uid, display) in &options {
+                let uid_owned = uid.clone();
+                let display_owned = display.clone();
+                let is_on = current_orgs.contains(uid);
+                let cls = format!(
+                    "button is-small {}",
+                    if is_on { "is-primary is-selected" } else { "is-light" }
+                );
+                let uid_click = uid_owned.clone();
+                let display_click = display_owned.clone();
+                items.push(view! {
+                    button(
+                        class=cls,
+                        disabled=!editing,
+                        on:click=move |_| {
+                            em.edit_event.update(|e| {
+                                if let Some(ref mut ev) = e {
+                                    if let Some(pos) = ev.organisers.iter().position(|o| o.id == uid_click) {
+                                        ev.organisers.remove(pos);
+                                    } else {
+                                        ev.organisers.push(crate::event::Official {
+                                            id: uid_click.clone(),
+                                            name: display_click.clone(),
+                                            role: String::new(),
+                                            public_key: None,
+                                        });
+                                    }
+                                }
+                            });
+                        },
+                    ) {
+                        span { (uid_owned) }
+                        span(class="is-size-7 has-text-grey ml-1") { (display_owned) }
+                    }
+                });
+            }
+            let body = if items.is_empty() {
+                view! { p(class="help") { "No contacts or accounts available." } }
+            } else {
+                view! { (items) }
+            };
+            view! {
+                div(class="field") {
+                    label(class="label") { "Organisers (invited + admin PL)" }
+                    div(class="kt-hs-tags") { (body) }
+                }
+            }
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_owner_picker(_model: crate::Model) -> View {
+    view! {}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_organisers_picker(_model: crate::Model) -> View {
+    view! {}
 }
 
 /// Publish-to-Matrix config, in the details: pick a saved homeserver from the

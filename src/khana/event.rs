@@ -152,9 +152,6 @@ pub struct EventInfo {
     /// Homeservers this event publishes to (e.g. ["https://matrix.org"]).
     #[serde(default)]
     pub event_homeservers: Vec<String>,
-    /// Event admins — flat list of Matrix user IDs (authorization list).
-    #[serde(default)]
-    pub event_admins: Vec<String>,
     /// Admin account that creates the room (room owner).
     #[serde(default)]
     pub owner: Option<String>,
@@ -214,6 +211,9 @@ pub struct Official {
     pub name: String,
     #[serde(default)]
     pub role: String, // ROLE_KEY_OFFICIAL | ROLE_OFFICIAL | ROLE_COMPETITOR
+    /// Public signing key for cross-device verification (future).
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 /// Lifecycle of the event.
@@ -388,7 +388,6 @@ impl Default for EventInfo {
             organisers: vec![],
             status: EventStatus::Draft,
             event_homeservers: vec![],
-            event_admins: vec![],
             owner: None,
             space_id: None,
             timing_id: None,
@@ -1571,6 +1570,11 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     if event.owner.is_none() {
         errs.push("Set an owner before publishing (needed for admin access to rooms).".to_string());
     }
+    if let Some(ref owner) = event.owner {
+        if !event.organisers.iter().any(|o| o.id == *owner) {
+            errs.push("Owner must be in the organisers list.".to_string());
+        }
+    }
     // The human fields form the room alias at publish, so they must be usable
     // even though the event id itself is random.
     if event.name.trim().is_empty() || year_token(&event.year).is_empty() {
@@ -2116,6 +2120,12 @@ mod tests {
         // Stages configured -> clean.
         ev.stages = vec![Stage::for_test(1)];
         ev.owner = Some("@test:localhost".into());
+        ev.organisers = vec![Official {
+            id: "@test:localhost".into(),
+            name: String::new(),
+            role: String::new(),
+            public_key: None,
+        }];
         assert!(publish_errors(&ev, &[], &[]).is_empty());
         // Timing data -> error.
         assert!(publish_errors(&ev, &[score], &[]).contains(

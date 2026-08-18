@@ -242,12 +242,6 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
     );
     field_diff(
         &mut lines,
-        "Event admins",
-        &base.event_admins.join(", "),
-        &staged.event_admins.join(", "),
-    );
-    field_diff(
-        &mut lines,
         "Owner",
         base.owner.as_deref().unwrap_or(""),
         staged.owner.as_deref().unwrap_or(""),

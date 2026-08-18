@@ -1078,19 +1078,19 @@ async fn finalize_rooms(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Invite event admins to both rooms and grant admin power levels.
-    for admin_id in &event.event_admins {
-        let Ok(user_id) = admin_id.parse::<ruma::OwnedUserId>() else {
+    // Invite organisers (including owner) to both rooms and grant admin power levels.
+    for official in &event.organisers {
+        let Ok(user_id) = official.id.parse::<ruma::OwnedUserId>() else {
             continue;
         };
         let _ = space.invite_user_by_id(&user_id).await;
         let _ = timing.invite_user_by_id(&user_id).await;
     }
-    // Grant admin PL to all event admins on both rooms.
+    // Grant admin PL to all organisers on both rooms.
     let admin_power = ruma::int!(100);
     let mut pl_updates: Vec<(ruma::OwnedUserId, ruma::Int)> = Vec::new();
-    for id in &event.event_admins {
-        if let Ok(uid) = id.parse::<ruma::OwnedUserId>() {
+    for official in &event.organisers {
+        if let Ok(uid) = official.id.parse::<ruma::OwnedUserId>() {
             pl_updates.push((uid, admin_power));
         }
     }
