@@ -144,21 +144,7 @@ pub struct EventInfo {
     #[serde(default)]
     pub event_date: String,
     #[serde(default)]
-    pub entry_open: String,
-    #[serde(default)]
-    pub entry_close: String,
-    #[serde(default)]
-    pub stripe_link: String,
-    #[serde(default)]
-    pub cost: String,
-    #[serde(default)]
-    pub max_entries: Option<u32>,
-    #[serde(default)]
-    pub info_links: Vec<String>,
-    #[serde(default)]
     pub organisers: Vec<Official>,
-    #[serde(default)]
-    pub officials: Vec<Official>,
     #[serde(default)]
     pub status: EventStatus,
 
@@ -169,7 +155,7 @@ pub struct EventInfo {
     /// Event admins — flat list of Matrix user IDs (authorization list).
     #[serde(default)]
     pub event_admins: Vec<String>,
-    /// Creator's personal account (invited with admin power levels).
+    /// Admin account that creates the room (room owner).
     #[serde(default)]
     pub owner: Option<String>,
     /// Space room id (populated on publish).
@@ -183,10 +169,6 @@ pub struct EventInfo {
     /// Parent room aliases/IDs this event links into (one per homeserver).
     #[serde(default)]
     pub parent_rooms: Vec<String>,
-    /// Allow competitors to self-enter in the app (the Entries page form).
-    /// Off by default; officials can always manage entries.
-    #[serde(default)]
-    pub entries_enabled: bool,
 }
 
 /// How a scanned invite should authenticate on its homeserver.
@@ -403,14 +385,7 @@ impl Default for EventInfo {
             sponsoring_club: String::new(),
             year: String::new(),
             event_date: String::new(),
-            entry_open: String::new(),
-            entry_close: String::new(),
-            stripe_link: String::new(),
-            cost: String::new(),
-            max_entries: None,
-            info_links: vec![],
             organisers: vec![],
-            officials: vec![],
             status: EventStatus::Draft,
             event_homeservers: vec![],
             event_admins: vec![],
@@ -418,7 +393,6 @@ impl Default for EventInfo {
             space_id: None,
             timing_id: None,
             parent_rooms: vec![],
-            entries_enabled: false,
         }
     }
 }

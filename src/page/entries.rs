@@ -907,7 +907,7 @@ fn view_enter_form(model: crate::Model) -> View {
             }
             // In-app self-entry can be disabled per event (officials in admin
             // mode still manage entries).
-            if !model.khana.event.with(|e| e.entries_enabled) {
+            if !model.entry_app.event.with(|e| e.entries_enabled) {
                 return view! {
                     div(class="box") {
                         h2(class="title is-5") { "Enter the event" }

@@ -230,24 +230,6 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
     );
     field_diff(
         &mut lines,
-        "Entry open",
-        &base.entry_open,
-        &staged.entry_open,
-    );
-    field_diff(
-        &mut lines,
-        "Entry close",
-        &base.entry_close,
-        &staged.entry_close,
-    );
-    field_diff(
-        &mut lines,
-        "Stripe link",
-        &base.stripe_link,
-        &staged.stripe_link,
-    );
-    field_diff(
-        &mut lines,
         "Parent rooms",
         &base.parent_rooms.join(", "),
         &staged.parent_rooms.join(", "),
@@ -270,13 +252,6 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
         base.owner.as_deref().unwrap_or(""),
         staged.owner.as_deref().unwrap_or(""),
     );
-    if base.entries_enabled != staged.entries_enabled {
-        lines.push(if staged.entries_enabled {
-            "+ In-app entries: enabled".to_string()
-        } else {
-            "− In-app entries: disabled".to_string()
-        });
-    }
 
     let (added, removed) = class_delta(&base.classes, &staged.classes);
     if !removed.is_empty() {

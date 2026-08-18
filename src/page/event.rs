@@ -970,55 +970,6 @@ fn view_details(model: crate::Model) -> View {
                 }
             })
             (move || {
-                let (open, close) = if editing {
-                    untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| (e.entry_open.clone(), e.entry_close.clone())).unwrap_or_default()))
-                } else {
-                    model.khana.event.with(|e| (e.entry_open.clone(), e.entry_close.clone()))
-                };
-                view! {
-                    div(class="field is-grouped") {
-                        div(class="control is-expanded") {
-                            label(class="label") { "Entry open" }
-                            input(class="input", r#type="date", disabled=!editing, value=open,
-                                on:input=move |ev| {
-                                    let v = input_value(&ev);
-                                    em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.entry_open = v; } });
-                                },
-                            )
-                        }
-                        div(class="control is-expanded") {
-                            label(class="label") { "Entry close" }
-                            input(class="input", r#type="date", disabled=!editing, value=close,
-                                on:input=move |ev| {
-                                    let v = input_value(&ev);
-                                    em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.entry_close = v; } });
-                                },
-                            )
-                        }
-                    }
-                }
-            })
-            (move || {
-                let val = if editing {
-                    untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.stripe_link.clone()).unwrap_or_default()))
-                } else {
-                    model.khana.event.with(|e| e.stripe_link.clone())
-                };
-                view! {
-                    div(class="field") {
-                        label(class="label") { "Stripe link" }
-                        div(class="control") {
-                            input(class="input", placeholder="https://buy.stripe.com/...", disabled=!editing, value=val,
-                                on:input=move |ev| {
-                                    let v = input_value(&ev);
-                                    em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.stripe_link = v; } });
-                                },
-                            )
-                        }
-                    }
-                }
-            })
-            (move || {
                 let val = if editing {
                     untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.parent_rooms.join(", ")).unwrap_or_default()))
                 } else {
@@ -1056,38 +1007,6 @@ fn view_details(model: crate::Model) -> View {
                                 view! {}
                             })
                         }
-                    }
-                }
-            })
-            (move || {
-                let on = if editing {
-                    untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.entries_enabled).unwrap_or_default()))
-                } else {
-                    model.khana.event.with(|e| e.entries_enabled)
-                };
-                view! {
-                    div(class="field") {
-                        label(class="label") { "In-app entries" }
-                        div(class="control") {
-                            label(class="checkbox") {
-                                input(
-                                    r#type="checkbox",
-                                    disabled=!em.editing.get(),
-                                    checked=on,
-                                    on:change=move |ev: web_sys::Event| {
-                                        use wasm_bindgen::JsCast;
-                                        let checked = ev
-                                            .target()
-                                            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
-                                            .map(|i| i.checked())
-                                            .unwrap_or(false);
-                                        em.edit_event.update(|e| { if let Some(ref mut ev) = e { ev.entries_enabled = checked; } });
-                                    },
-                                )
-                                " Allow competitors to enter in the app"
-                            }
-                        }
-                        p(class="help") { "Turn this off to close in-app self-entry (officials can still manage entries)." }
                     }
                 }
             })
