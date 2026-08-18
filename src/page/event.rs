@@ -32,6 +32,10 @@ pub enum Msg {
     StageDelete(usize),
     // publish + sync to Matrix
     Publish,
+    /// Actually publish after confirmation.
+    PublishDo,
+    /// Cancel the publish confirmation.
+    PublishCancel,
     // quick-add entrant
     QuickAdd(InputMsg),
     /// Load an entry into the text box for editing (keyed by car).
@@ -77,6 +81,8 @@ pub struct Model {
     /// car of the entry being edited (click-to-edit); used to preserve
     /// the entry when the edited text is re-submitted via quick-add.
     pub editing_entry_car: Signal<Option<String>>,
+    /// Publish confirmation dialog.
+    pub show_publish_confirm: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -97,6 +103,7 @@ pub fn init() -> Model {
         show_entrants: create_signal(crate::event::load_collapse("entrants", false)),
         quick_add: crate::input::init(),
         editing_entry_car: create_signal(None),
+        show_publish_confirm: create_signal(false),
     }
 }
 
@@ -206,7 +213,17 @@ pub fn update(model: crate::Model, msg: Msg) {
             });
             em.edit_rev.set(em.edit_rev.get().wrapping_add(1));
         }
-        Msg::Publish => publish(model),
+        Msg::Publish => {
+            let em = model.screens.setup;
+            em.show_publish_confirm.set(true);
+        }
+        Msg::PublishDo => {
+            model.screens.setup.show_publish_confirm.set(false);
+            publish(model);
+        }
+        Msg::PublishCancel => {
+            model.screens.setup.show_publish_confirm.set(false);
+        }
         Msg::QuickAdd(InputMsg::DoThing) => {
             let em = model.screens.setup;
             let input = em.quick_add.input.get_clone();
@@ -571,6 +588,7 @@ pub fn view(model: crate::Model) -> View {
             (move || view_invite(model))
             (move || view_details(model))
             (view_confirm_modal(model))
+            (view_publish_confirm_modal(model))
         }
     }
 }
@@ -750,6 +768,78 @@ fn view_confirm_modal(model: crate::Model) -> View {
         move || crate::update(model, crate::Msg::EventMsg(Msg::DiscardBatch)),
         em.confirm_warning,
     )
+}
+
+/// Publish confirmation modal: shows what will happen before publishing.
+fn view_publish_confirm_modal(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    if !em.show_publish_confirm.get() {
+        return view! {};
+    }
+    let event = model.khana.event.get_clone();
+    let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
+    let name = event.name.clone();
+    let owner = event.owner.clone().unwrap_or_default();
+    let space_alias = event.space_alias().unwrap_or_default();
+    let timing_alias = event.timing_alias().unwrap_or_default();
+    let mut hs_items: Vec<View> = Vec::new();
+    for hs in &event.event_homeservers {
+        let label = crate::page::home::hs_host_port(hs);
+        hs_items.push(view! { li { (label) } });
+    }
+    let hs_list_html = if hs_items.is_empty() {
+        view! { p(class="has-text-danger") { "No homeservers selected." } }
+    } else {
+        view! { p { "Publish to:" } ul { (hs_items) } }
+    };
+    let alias_html = if slug.is_empty() {
+        view! { p(class="has-text-danger") { "Need a name and 4-digit year before publishing." } }
+    } else {
+        view! { p { "Room alias: " code { "#" (slug) } } }
+    };
+    let rooms_html = if !space_alias.is_empty() {
+        view! {
+            p { "Space: " code { (space_alias) } }
+            p { "Timing: " code { (timing_alias) } }
+        }
+    } else {
+        view! {}
+    };
+    let owner_html = if !owner.is_empty() {
+        view! { p { "Owner: " code { (owner) } } }
+    } else {
+        view! { p(class="has-text-warning") { "No owner set." } }
+    };
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background", on:click=move |_| {
+                crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+            })
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { "Confirm publish" }
+                    button(class="delete", on:click=move |_| {
+                        crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                    })
+                }
+                section(class="modal-card-body") {
+                    p { strong { (name) } }
+                    (alias_html)
+                    (hs_list_html)
+                    (rooms_html)
+                    (owner_html)
+                }
+                footer(class="modal-card-foot") {
+                    button(class="button is-link", on:click=move |_| {
+                        crate::update(model, crate::Msg::EventMsg(Msg::PublishDo));
+                    }) { "Publish" }
+                    button(class="button", on:click=move |_| {
+                        crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                    }) { "Cancel" }
+                }
+            }
+        }
+    }
 }
 
 /// True once an event has left the draft stage (published / running / finished).
