@@ -103,6 +103,88 @@ pub enum ParcelMode {
     TimingOnly,
 }
 
+/// App-level UI mode: controls which screens appear in the navbar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Testing,
+    Organiser,
+    Spectator,
+    Official,
+    Competitor,
+}
+
+impl Mode {
+    /// All modes in display order.
+    pub const ALL: [Mode; 5] = [
+        Mode::Testing,
+        Mode::Organiser,
+        Mode::Spectator,
+        Mode::Official,
+        Mode::Competitor,
+    ];
+
+    /// Human-readable label for the mode picker.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Testing => "Testing",
+            Mode::Organiser => "Organiser",
+            Mode::Spectator => "Spectator",
+            Mode::Official => "Official",
+            Mode::Competitor => "Competitor",
+        }
+    }
+
+    /// Screens visible in the navbar for this mode (canonical order).
+    pub fn visible_screens(self) -> &'static [Screen] {
+        use Screen::*;
+        match self {
+            Mode::Testing => &[
+                Home, Events, Accounts, Help, KhanaRules, Results, Stage, Start, Finish, Event,
+                Entries, Chat, Stopwatch,
+            ],
+            Mode::Organiser => &[
+                Home, Events, Accounts, Event, Start, Finish, Stage, Stopwatch, Results, Entries,
+                Chat, Help, KhanaRules,
+            ],
+            Mode::Spectator => &[Home, Results],
+            Mode::Official => &[
+                Home, Events, Start, Finish, Stage, Stopwatch, Results, Entries, Chat, Help,
+                KhanaRules,
+            ],
+            Mode::Competitor => &[Home, Events, Results, Entries, Help, KhanaRules],
+        }
+    }
+
+    /// Does this mode include the given screen?
+    pub fn has_screen(self, screen: Screen) -> bool {
+        self.visible_screens().contains(&screen)
+    }
+
+    /// Load from localStorage (`kt_mode`), defaulting to Competitor.
+    pub fn from_storage() -> Self {
+        let name = storage()
+            .and_then(|st| st.get_item("kt_mode").ok().flatten())
+            .unwrap_or_default();
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|m| m.label() == name)
+            .unwrap_or(Mode::Competitor)
+    }
+
+    /// Persist to localStorage.
+    pub fn save(self) {
+        if let Some(st) = storage() {
+            let _ = st.set_item("kt_mode", self.label());
+        }
+    }
+}
+
+/// localStorage helper (same pattern as `event::storage()`).
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
+}
+
 /// Khanacross domain state: event data, scores, and run records.
 #[derive(Clone, Copy)]
 pub struct KhanaState {
@@ -171,6 +253,7 @@ pub struct EntryAppState {
 #[derive(Clone, Copy)]
 pub struct Model {
     pub screen: Signal<Screen>,
+    pub mode: Signal<Mode>,
     pub khana: KhanaState,
     pub sync: SyncState,
     pub entry_app: EntryAppState,
@@ -179,6 +262,7 @@ pub struct Model {
 
 pub enum Msg {
     Show(Screen),
+    SetMode(Mode),
     SetEvent(String), // event id to load
     Reload,           // event or score data changed (in storage)
     Conn(crate::sync::Msg),
@@ -257,6 +341,7 @@ impl Model {
 
         let m = Model {
             screen: create_signal(Screen::Event),
+            mode: create_signal(Mode::from_storage()),
             khana: KhanaState {
                 event: create_signal(event_info),
                 scores: create_signal(scores),
@@ -314,6 +399,14 @@ pub fn show(model: Model, screen: Screen) {
 pub fn update(model: Model, msg: Msg) {
     match msg {
         Msg::Show(screen) => show(model, screen),
+        Msg::SetMode(m) => {
+            m.save();
+            model.mode.set(m);
+            let current = model.screen.get();
+            if !m.has_screen(current) {
+                show(model, Screen::Home);
+            }
+        }
 
         Msg::LoadDemo => {
             crate::event::ensure_demo();
@@ -717,6 +810,7 @@ fn view_content(model: Model) -> View {
 
 fn view_navbar(model: Model) -> View {
     let has_event = !model.khana.event.with(|e| e.is_null());
+    let mode = model.mode.get();
     // Screens that need a current event: hidden/disabled until one is picked.
     // (Event itself stays enabled so the first event can be created.)
     let needs_event = [
@@ -728,15 +822,20 @@ fn view_navbar(model: Model) -> View {
         Screen::Chat,
         Screen::Entries,
     ];
-    // Top tabs: always visible.
-    let top_tabs = [
+    // Top tabs: always visible, filtered by mode.
+    let all_top_tabs = [
         (Screen::Home, "fa fa-home"),
         (Screen::Stopwatch, "fa fa-stopwatch"),
         (Screen::Results, "fa fa-trophy"),
         (Screen::Chat, "fa fa-comments"),
     ];
-    // Burger menu items: admin/less-frequent screens.
-    let burger_items = [
+    let top_tabs: Vec<_> = all_top_tabs
+        .iter()
+        .filter(|(s, _)| mode.has_screen(*s))
+        .copied()
+        .collect();
+    // Burger menu items: admin/less-frequent screens, filtered by mode.
+    let all_burger_items = [
         (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Event config"),
         (Screen::Entries, "fa fa-users", "Entries"),
@@ -747,6 +846,11 @@ fn view_navbar(model: Model) -> View {
         (Screen::Help, "fa fa-question", "Help"),
         (Screen::KhanaRules, "fa fa-book", "Rules"),
     ];
+    let burger_items: Vec<_> = all_burger_items
+        .iter()
+        .filter(|(s, _, _)| mode.has_screen(*s))
+        .copied()
+        .collect();
     let mut brand: Vec<View> = vec![];
     for (screen, icon) in top_tabs {
         let active = model.screen.get() == screen;
@@ -796,6 +900,23 @@ fn view_navbar(model: Model) -> View {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") {
                 (brand)
+                // Mode picker dropdown.
+                div(class="navbar-item has-dropdown is-hoverable") {
+                    a(class="navbar-link") {
+                        span { (mode.label()) }
+                    }
+                    div(class="navbar-dropdown") {
+                        (Mode::ALL.iter().map(|&m| {
+                            let is_active = m == mode;
+                            let cls = if is_active { "navbar-item is-active" } else { "navbar-item" };
+                            view! {
+                                a(class=cls, on:click=move |_| { update(model, Msg::SetMode(m)); }) {
+                                    (m.label())
+                                }
+                            }
+                        }).collect::<Vec<_>>())
+                    }
+                }
                 (move || {
                     let open = model.screens.home.burger_open.get();
                     let cls = if open { "navbar-burger is-active" } else { "navbar-burger" };
@@ -846,5 +967,45 @@ mod tests {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));
         }
         assert_eq!(Screen::from_name("bogus"), None);
+    }
+
+    #[test]
+    fn mode_visible_screens_contains_all() {
+        // Every screen should appear in at least one mode.
+        for screen in [
+            Screen::Home,
+            Screen::Events,
+            Screen::Help,
+            Screen::KhanaRules,
+            Screen::Results,
+            Screen::Stage,
+            Screen::Start,
+            Screen::Finish,
+            Screen::Event,
+            Screen::Entries,
+            Screen::Chat,
+            Screen::Stopwatch,
+            Screen::Accounts,
+        ] {
+            assert!(
+                Mode::ALL.iter().any(|m| m.has_screen(screen)),
+                "{screen:?} not visible in any mode"
+            );
+        }
+    }
+
+    #[test]
+    fn mode_label_round_trips() {
+        for &m in &Mode::ALL {
+            let label = m.label();
+            let expected = match m {
+                Mode::Testing => "Testing",
+                Mode::Organiser => "Organiser",
+                Mode::Spectator => "Spectator",
+                Mode::Official => "Official",
+                Mode::Competitor => "Competitor",
+            };
+            assert_eq!(label, expected);
+        }
     }
 }
