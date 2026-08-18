@@ -1043,6 +1043,14 @@ async fn finalize_rooms(
     space: &Room,
     timing: &Room,
 ) -> Result<(), String> {
+    // Ensure new joiners see the full event history.
+    let history_content =
+        ruma::events::room::history_visibility::RoomHistoryVisibilityEventContent::new(
+            ruma::events::room::history_visibility::HistoryVisibility::WorldReadable,
+        );
+    let _ = space.send_state_event(history_content.clone()).await;
+    let _ = timing.send_state_event(history_content).await;
+
     // Link space <-> timing room.
     let via = vec![server_name(client)];
     space
@@ -1070,10 +1078,31 @@ async fn finalize_rooms(
         .await
         .map_err(|e| e.to_string())?;
 
-    // The setup manifest itself is not sent here: `publish_wasm` enqueues it
-    // (replacing any superseded draft setup) and it flushes once the timing
-    // room is joined — so the room gets exactly one setup, never draft history
-    // and never a duplicate.
+    // Invite event admins to both rooms and grant admin power levels.
+    for admin_id in &event.event_admins {
+        let Ok(user_id) = admin_id.parse::<ruma::OwnedUserId>() else {
+            continue;
+        };
+        let _ = space.invite_user_by_id(&user_id).await;
+        let _ = timing.invite_user_by_id(&user_id).await;
+    }
+    // Grant admin PL to all event admins on both rooms.
+    let admin_power = ruma::int!(100);
+    let mut pl_updates: Vec<(ruma::OwnedUserId, ruma::Int)> = Vec::new();
+    for id in &event.event_admins {
+        if let Ok(uid) = id.parse::<ruma::OwnedUserId>() {
+            pl_updates.push((uid, admin_power));
+        }
+    }
+    if !pl_updates.is_empty() {
+        let refs: Vec<(&ruma::UserId, ruma::Int)> = pl_updates
+            .iter()
+            .map(|(uid, lvl)| (uid.as_ref(), *lvl))
+            .collect();
+        let _ = space.update_power_levels(refs.clone()).await;
+        let _ = timing.update_power_levels(refs).await;
+    }
+
     Ok(())
 }
 

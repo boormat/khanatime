@@ -804,6 +804,7 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
         let owner = event.owner.clone().unwrap_or_default();
         let space_alias = event.space_alias().unwrap_or_default();
         let timing_alias = event.timing_alias().unwrap_or_default();
+        let already_published = event.space_id.is_some();
         let hs_count = event.event_homeservers.len();
         let hs_label = if hs_count == 1 {
             event
@@ -814,6 +815,7 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
         } else {
             format!("{} homeservers", hs_count)
         };
+        let admin_count = event.event_admins.len();
         let mut parts: Vec<View> = Vec::new();
         parts.push(view! { p { strong { (name) } } });
         if !slug.is_empty() {
@@ -826,6 +828,20 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
         }
         if !owner.is_empty() {
             parts.push(view! { p { "Owner: " code { (owner) } } });
+        }
+        if admin_count > 0 {
+            let admins = event.event_admins.join(", ");
+            parts.push(view! { p { "Admins: " code { (admins) } " (invited + admin PL)" } });
+        }
+        parts.push(
+            view! { p { "History: " code { "world_readable" } " (new joiners see everything)" } },
+        );
+        if already_published {
+            parts.push(view! {
+                div(class="notification is-warning is-light mt-3") {
+                    p { strong { "Already published." } " Room already exists — will join the existing room instead of creating a new one." }
+                }
+            });
         }
         view! { (parts) }
     };

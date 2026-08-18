@@ -1,17 +1,12 @@
 # Event Admin Accounts + Accounts Page
 
-> Status: future change, not yet implemented.
-> Related: `docs/plan/multi-transport.md`, `docs/plan/layout-navigation.md`,
-> `docs/plan/car-photos.md`.
->
-> **Stale references (2026-08-18):** This document references EventInfo fields
-> that have been removed (`entry_open`, `entry_close`, `stripe_link`, `cost`,
-> `max_entries`, `info_links`, `officials`, `entries_enabled`). The current
-> EventInfo struct has been simplified.
+> Status: **core infrastructure live**, publish flow partially wired.
+> Related: `docs/plan/multi-transport.md`, `docs/plan/car-photos.md`.
 
-## 1. Homeserver + Account model
+## 1. Homeserver + Account model ✅ DONE
 
-### HomeserverConfig
+Types defined in `services/matrix.rs`. localStorage migration wired in
+`Model::init()`.
 
 ```rust
 pub struct HomeserverConfig {
@@ -21,11 +16,9 @@ pub struct HomeserverConfig {
     pub reg: RegistrationMode,
     pub element_link: String,
 }
-```
 
-### Account
+pub enum AccountType { Personal, EventShared, ClubShared }
 
-```rust
 pub struct Account {
     pub homeserver: String,
     pub user_id: String,
@@ -36,16 +29,6 @@ pub struct Account {
     pub event_uid: Option<String>,
 }
 
-pub enum AccountType {
-    Personal,
-    EventShared,
-    ClubShared,
-}
-```
-
-### Contact
-
-```rust
 pub struct Contact {
     pub user_id: String,
     pub name: String,
@@ -62,65 +45,36 @@ pub struct Contact {
 | `kt_accounts` | `Vec<Account>` |
 | `kt_contacts` | `Vec<Contact>` |
 
-Migration: read `kt_sync_sessions` → extract homeservers → convert sessions to
-accounts.
-
 ---
 
-## 2. EventInfo changes
+## 2. EventInfo changes ✅ DONE
 
-### Removed (this change)
+Removed 8 dead fields (`entry_open`, `entry_close`, `stripe_link`, `cost`,
+`max_entries`, `info_links`, `officials`, `entries_enabled`).
 
-`homeserver`, `reg`, `space_id`, `space_alias`, `timing_id`, `timing_alias`,
-`parent_room`, `element_link` — all redundant or moved elsewhere.
-
-### Added (this change)
-
-| Field | Type | Notes |
-|---|---|---|
-| `event_homeservers` | `Vec<String>` | Homeservers this event publishes to |
-| `event_admins` | `Vec<String>` | Flat list of Matrix user IDs (authorization) |
-| `owner` | `Option<String>` | Creator's personal user ID |
-| `parent_rooms` | `Vec<String>` | Parent room aliases/IDs (one per HS) |
-
-### Final EventInfo
+Added `event_homeservers`, `event_admins`, `owner`, `parent_rooms`.
+Removed `homeserver`, `reg`, `space_alias`, `timing_alias`, `parent_room`,
+`element_link`. Kept `space_id`, `timing_id`.
 
 ```rust
 pub struct EventInfo {
-    // ---- core ----
     pub name: String,
     pub stages: Vec<Stage>,
     pub classes: Vec<String>,
     pub entries: Vec<Entry>,
-
-    // ---- identity ----
     pub uid: String,
     pub id: String,
     pub sponsoring_club: String,
     pub year: String,
     pub event_date: String,
-    pub entry_open: String,
-    pub entry_close: String,
-    pub stripe_link: String,
-    pub cost: String,
-    pub max_entries: Option<u32>,
-    pub info_links: Vec<String>,
     pub organisers: Vec<Official>,
-    pub officials: Vec<Official>,
     pub status: EventStatus,
-
-    // ---- Matrix ----
-    #[serde(default)]
     pub event_homeservers: Vec<String>,
-    #[serde(default)]
     pub event_admins: Vec<String>,
-    #[serde(default)]
     pub owner: Option<String>,
-
-    // ---- optional config ----
-    #[serde(default)]
+    pub space_id: Option<String>,
+    pub timing_id: Option<String>,
     pub parent_rooms: Vec<String>,
-    pub entries_enabled: bool,
 }
 ```
 
@@ -133,44 +87,58 @@ pub struct Invite {
     pub sid: String,
     pub tid: String,
     pub reg: RegistrationMode,
-    /// Admin account credentials (for official QR only).
-    #[serde(default)]
     pub admin_user: Option<String>,
-    #[serde(default)]
     pub admin_pass: Option<String>,
 }
 ```
 
 ---
 
-## 3. Publish flow
+## 3. Publish flow — IN PROGRESS
 
-1. Confirmation dialog shows accounts, rooms, and invites
-2. Create admin accounts on each homeserver
-3. Create rooms — warn if alias already taken, option to continue
-4. Invite owner — skip silently if already member
-5. Publish setup manifest — warn if already published
+- [x] Confirmation dialog shows errors OR summary (single button)
+- [x] Owner check blocks publish when missing
+- [x] history_visibility: world_readable on room creation
+- [ ] Warn if alias already taken, show in confirm modal
+- [ ] Invite event_admins + grant admin PL after rooms created
 
-Each step handles "already exists" gracefully. No recovery tracking.
+### Publish steps
+
+1. Owner account creates the space (owner is automatically a member)
+2. Owner account creates the timing room (owner is automatically a member)
+3. Link space ↔ timing room
+4. Set history_visibility to world_readable on both rooms
+5. For each event_admin: invite to space + timing room, grant admin PL
+6. Publish event setup manifest to the timing room
+
+### Room ownership model
+
+| Role | Who | What |
+|---|---|---|
+| Owner | Admin account (`event.owner`) | Creates rooms, is room creator |
+| Event admins | `event.event_admins` | Invited to rooms, granted admin PL |
+| Organisers | `event.organisers` | Invited to rooms/chats |
 
 ---
 
-## 4. Accounts page (burger menu)
+## 4. Accounts page ✅ DONE
 
-- Homeservers list with accounts grouped under each
-- Contacts list (with phone number)
-- Create account / Login existing / Add homeserver / Add contact
-- Share QR for accounts and contacts
+Homeservers list with accounts grouped under each. Contacts list (with phone
+number). Create account / Login existing / Add homeserver / Add contact modals.
+Share QR for accounts and contacts. QR scan button.
 
 ---
 
-## 5. QR sharing
+## 5. QR sharing ✅ DONE
 
 | QR type | Payload |
 |---|---|
 | Account | `khanatime_account:{homeserver, user_id, password, description, account_type}` |
 | Contact | `khanatime_contact:{user_id, name, description, phone}` |
 | Official invite | Existing invite URL + admin_user + admin_pass |
+
+Personal account QR shows loud warning. Shared account QR shows no warning.
+Accounts can be shared as contacts (no passwords).
 
 ---
 
@@ -184,8 +152,6 @@ Each step handles "already exists" gracefully. No recovery tracking.
 ## 7. Backlog
 
 - **Signing keys for event admins/contacts** — per-admin key pairs, public
-  keys in event manifest, message signatures for tamper-proofing. For
-  inter-club or untrusted environments.
-- **EventInfo field cleanup** — review `uid`/`id` consolidation, move
-  `event_date`/`entry_open`/`entry_close`/`stripe_link`/`cost`/`max_entries`
-  /`entries_enabled`/`organisers`/`officials` to separate config or simplify.
+  keys in event manifest, message signatures for tamper-proofing.
+- **EventInfo field cleanup** — review `uid`/`id` consolidation.
+- **Bugs.md removal** — accidentally committed.
