@@ -37,6 +37,34 @@ https://boormat.github.io/khanatime/ — run it from the Actions tab. It is
 gated on the `check` job (`scripts/check.sh`), so a release can't ship
 unlinted code.
 
+## Worktrees
+
+For larger changes, or when the main branch has concurrent activity,
+use a git worktree to isolate the work:
+
+```bash
+# Create a worktree on a feature branch
+git worktree add ../khanatime-feature-name -b feature/feature-name
+
+# Work in the worktree
+cd ../khanatime-feature-name
+# ... make changes, run check.sh, commit ...
+
+# When done, merge or rebase back to main
+cd ../khanatime
+git merge feature/feature-name
+# or
+git rebase main  # (from the worktree)
+
+# Clean up the worktree
+git worktree remove ../khanatime-feature-name
+```
+
+The agent should offer to create a temp worktree when:
+- The change touches 5+ files
+- There are uncommitted changes on main
+- The user asks for it explicitly
+
 ## Framework notes
 
 - **Sycamore 0.9** reactive framework.
@@ -222,6 +250,24 @@ the app.
   `amend`/`void`) is planned — read `docs/plan/multi-transport.md` and its
   Phase 1 detail `docs/plan/identity-amendments.md` before touching the wire
   format (`timing_event.rs`) or sync plumbing.
-- Navigation/layout rework (burger menu, unified stopwatch, COC event status,
-  About page) is planned — see `docs/plan/layout-navigation.md` before
-  restructuring `Screen`/`view_navbar` or the timing pages.
+- Navigation/layout rework: app mode picker added (see `docs/plan/app-mode-and-qr-signing.md`);
+  burger menu, unified stopwatch, COC event status, About page still planned —
+  see `docs/plan/layout-navigation.md` before restructuring `Screen`/`view_navbar`
+  or the timing pages.
+
+## Post-plan checklist
+
+After completing a multi-file change or feature:
+
+1. **Dead code audit**: `cargo clippy --all-targets -- -D warnings` and
+   `cargo clippy --target wasm32-unknown-unknown -- -D warnings`. Remove or
+   `#[allow(dead_code)]` (with justification) any new dead code.
+2. **Redundancy check**: Search for duplicate functions, orphaned helpers,
+   and test helpers that no longer test anything.
+3. **Stale docs**: Grep for removed concepts in comments and doc strings.
+   Update or remove.
+4. **Stale plans**: Check if `docs/plan/` files reference work that is now
+   complete. Mark them done or remove.
+5. **Test coverage**: Verify `cargo test` passes. Check that new code paths
+   have test coverage and broken tests are fixed or removed.
+6. **Formatting**: Run `cargo fmt` before committing.
