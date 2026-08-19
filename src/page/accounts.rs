@@ -136,16 +136,16 @@ fn view_homeservers(model: crate::Model) -> View {
             let a_user3 = a.user_id.clone();
             account_rows.push(view! {
                 div(class="notification is-light") {
-                    div(class="is-flex is-align-items-center is-justify-content-space-between") {
+                    div(class="is-flex is-align-items-center is-flex-wrap-wrap", style="gap: 0.5rem;") {
                         div {
                             p { (a_user.clone()) }
                             p(class="is-size-7 has-text-grey") { (desc_text) }
                         }
-                        div(class="is-flex is-align-items-center") {
+                        div(class="is-flex is-align-items-center is-flex-wrap-wrap", style="gap: 0.35rem;") {
                             (if active {
                                 view! { span(class="tag is-success is-small ml-2") { "active" } }
                             } else { view! {} })
-                            div(class="buttons has-addons is-small ml-2") {
+                            div(class="buttons has-addons") {
                                 button(
                                     class="button is-small is-link",
                                     disabled=active,
@@ -170,7 +170,7 @@ fn view_homeservers(model: crate::Model) -> View {
                                 ) { "Forget" }
                             }
                             button(
-                                class="button is-small is-info is-outlined ml-2",
+                                class="button is-info is-outlined",
                                 title="Share account credentials via QR",
                                 on:click=move |_| {
                                     sm.show_qr.set(Some(QrTarget::Account {
@@ -182,7 +182,7 @@ fn view_homeservers(model: crate::Model) -> View {
                                 span(class="icon is-small") { i(class="fa fa-qrcode") }
                             }
                             button(
-                                class="button is-small is-light ml-2",
+                                class="button is-light",
                                 title="Share as contact (no password)",
                                 on:click=move |_| {
                                     sm.show_qr.set(Some(QrTarget::Contact(a_user3.clone())));
@@ -241,15 +241,15 @@ fn view_signing_key(model: crate::Model) -> View {
                 view! {
                     p {
                         span(class="tag is-info is-medium") { (fp) }
-                        span(style="margin-left:0.5em; color: #888;") { "device fingerprint" }
+                        span(class="ml-2 has-text-grey") { "device fingerprint" }
                     }
                 }
             } else {
                 view! {
-                    p(style="color: #888;") { "No signing key generated yet. It will be created on first use." }
+                    p(class="has-text-grey") { "No signing key generated yet. It will be created on first use." }
                 }
             })
-            p(style="margin-top:0.5em; color: #666; font-size:0.85em;") {
+            p(class="mt-2 has-text-grey is-size-7") {
                 (format!("{} key(s) in trust registry", registry_count))
             }
         }
@@ -283,14 +283,14 @@ fn view_contacts(model: crate::Model) -> View {
         let c_uid2 = c.user_id.clone();
         items.push(view! {
             div(class="notification is-light") {
-                div(class="is-flex is-align-items-center is-justify-content-space-between") {
+                div(class="is-flex is-align-items-center is-flex-wrap-wrap", style="gap: 0.5rem;") {
                     div {
                         p { (c.user_id) }
                         p(class="is-size-7 has-text-grey") { (label) (phone_text) }
                     }
-                    div(class="buttons is-small") {
+                    div(class="buttons") {
                         button(
-                            class="button is-small is-info is-outlined",
+                            class="button is-info is-outlined",
                             title="Share contact via QR",
                             on:click=move |_| {
                                 sm.show_qr.set(Some(QrTarget::Contact(c_uid.clone())));
@@ -299,7 +299,7 @@ fn view_contacts(model: crate::Model) -> View {
                             span(class="icon is-small") { i(class="fa fa-qrcode") }
                         }
                         button(
-                            class="button is-small is-danger is-outlined",
+                            class="button is-danger is-outlined",
                             title="Remove contact",
                             on:click=move |_| {
                                 crate::services::matrix::remove_contact(&c_uid2);
