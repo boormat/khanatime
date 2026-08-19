@@ -2348,117 +2348,287 @@ pub struct QuickParse {
 /// - Double-space: move to next field
 /// - Triple+-space: skip next field(s) — each extra space beyond 2 skips one more.
 ///
+/// State machine: states are the fields being parsed. Transitions are driven
+/// by consecutive space count (1 = stay/accumulate, ≥2 = advance field).
+///
 /// Defaults for skipped fields:
 /// - Car: auto-assign
 /// - Description: copy from Vehicle
 ///
 /// Returns `cursor_field` indicating where the next character will go.
 fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<QuickParse, String> {
-    // Check for trailing spaces BEFORE any processing — these determine cursor field.
-    let trailing_space_count = input.len() - input.trim_end().len();
-    let ends_with_space = trailing_space_count > 0;
-    let input = input.trim_start();
-
-    // --- Phase 1: scan the raw input to find tokens and their field positions ---
-    // Field positions: 0=Car/Name, 1=Classes, 2=Vehicle, 3=Description, 4=Shared
-    struct Token<'a> {
-        field: usize,
-        text: &'a str,
+    // --- State machine: states are the fields being parsed ---
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Car,
+        Name,
+        Classes,
+        Vehicle,
+        Description,
+        Shared,
+        Done,
     }
-    let mut tokens: Vec<Token<'_>> = vec![];
-    let mut field_pos = 0;
+
+    // Initial state: first char determines whether we start with a car number
+    // (digit) or a name (letter).  Input is trimmed before calling.
+    let input = input.trim_start();
+    let mut state = match input.bytes().next() {
+        Some(b'0'..=b'9') => State::Car,
+        Some(b) if b.is_ascii_alphabetic() => State::Name,
+        _ => return Err(String::new()),
+    };
+
+    let mut token = String::new();
+    let mut car = String::new();
+    let mut name = String::new();
+    let mut classes_raw = String::new();
+    let mut vehicle_raw = String::new();
+    let mut description_raw = String::new();
+    let mut shared_raw = String::new();
+
+    // Flush the current token into the field's accumulator.
+    let flush = |token: &mut String,
+                 state: State,
+                 car: &mut String,
+                 name: &mut String,
+                 classes: &mut String,
+                 vehicle: &mut String,
+                 desc: &mut String,
+                 shared: &mut String| {
+        if token.is_empty() {
+            return;
+        }
+        let t = std::mem::take(token);
+        match state {
+            State::Car => {
+                if !car.is_empty() {
+                    car.push(' ');
+                }
+                car.push_str(&t);
+            }
+            State::Name => {
+                if !name.is_empty() {
+                    name.push(' ');
+                }
+                name.push_str(&t);
+            }
+            State::Classes => {
+                if !classes.is_empty() {
+                    classes.push(' ');
+                }
+                classes.push_str(&t);
+            }
+            State::Vehicle => {
+                if !vehicle.is_empty() {
+                    vehicle.push(' ');
+                }
+                vehicle.push_str(&t);
+            }
+            State::Description => {
+                if !desc.is_empty() {
+                    desc.push(' ');
+                }
+                desc.push_str(&t);
+            }
+            State::Shared => {
+                if !shared.is_empty() {
+                    shared.push(' ');
+                }
+                shared.push_str(&t);
+            }
+            State::Done => {}
+        }
+    };
+
+    // Advance the state forward by one field.  Returns the new state.
+    fn advance(s: State) -> State {
+        match s {
+            State::Car => State::Name,
+            State::Name => State::Classes,
+            State::Classes => State::Vehicle,
+            State::Vehicle => State::Description,
+            State::Description => State::Shared,
+            State::Shared | State::Done => State::Done,
+        }
+    }
+
     let bytes = input.as_bytes();
     let len = bytes.len();
     let mut i = 0;
 
     while i < len {
         if bytes[i] == b' ' {
-            // Count consecutive spaces
+            // Count consecutive spaces.
             let start = i;
             while i < len && bytes[i] == b' ' {
                 i += 1;
             }
-            let space_count = i - start;
-            if space_count >= 2 {
-                // Separator: advance field position
-                field_pos += space_count - 1;
+            let spaces = i - start;
+
+            match state {
+                State::Car => {
+                    flush(
+                        &mut token,
+                        state,
+                        &mut car,
+                        &mut name,
+                        &mut classes_raw,
+                        &mut vehicle_raw,
+                        &mut description_raw,
+                        &mut shared_raw,
+                    );
+                    // Single space: car number is one word → Name.
+                    // ≥2 spaces: skip Name, advance (spaces-1) times from Car.
+                    if spaces == 1 {
+                        state = State::Name;
+                    } else {
+                        // Car → (spaces-1) advances.  Car→Name is 1, so
+                        // advance (spaces-1) more from Name.
+                        state = State::Name;
+                        for _ in 1..spaces {
+                            state = advance(state);
+                        }
+                    }
+                }
+                State::Name => {
+                    if spaces >= 2 {
+                        flush(
+                            &mut token,
+                            state,
+                            &mut car,
+                            &mut name,
+                            &mut classes_raw,
+                            &mut vehicle_raw,
+                            &mut description_raw,
+                            &mut shared_raw,
+                        );
+                        state = State::Classes;
+                        for _ in 2..spaces {
+                            state = advance(state);
+                        }
+                    } else {
+                        token.push(' ');
+                    }
+                }
+                State::Classes => {
+                    if spaces >= 2 {
+                        flush(
+                            &mut token,
+                            state,
+                            &mut car,
+                            &mut name,
+                            &mut classes_raw,
+                            &mut vehicle_raw,
+                            &mut description_raw,
+                            &mut shared_raw,
+                        );
+                        state = State::Vehicle;
+                        for _ in 2..spaces {
+                            state = advance(state);
+                        }
+                    } else {
+                        token.push(' ');
+                    }
+                }
+                State::Vehicle => {
+                    if spaces >= 2 {
+                        flush(
+                            &mut token,
+                            state,
+                            &mut car,
+                            &mut name,
+                            &mut classes_raw,
+                            &mut vehicle_raw,
+                            &mut description_raw,
+                            &mut shared_raw,
+                        );
+                        state = State::Description;
+                        for _ in 2..spaces {
+                            state = advance(state);
+                        }
+                    } else {
+                        token.push(' ');
+                    }
+                }
+                State::Description => {
+                    if spaces >= 2 {
+                        flush(
+                            &mut token,
+                            state,
+                            &mut car,
+                            &mut name,
+                            &mut classes_raw,
+                            &mut vehicle_raw,
+                            &mut description_raw,
+                            &mut shared_raw,
+                        );
+                        state = State::Shared;
+                        for _ in 2..spaces {
+                            state = advance(state);
+                        }
+                    } else {
+                        token.push(' ');
+                    }
+                }
+                State::Shared | State::Done => {
+                    if spaces >= 2 {
+                        flush(
+                            &mut token,
+                            state,
+                            &mut car,
+                            &mut name,
+                            &mut classes_raw,
+                            &mut vehicle_raw,
+                            &mut description_raw,
+                            &mut shared_raw,
+                        );
+                        state = State::Done;
+                    } else {
+                        token.push(' ');
+                    }
+                }
             }
-            // Single space within field: no advancement
         } else {
-            // Start of a token
-            let tok_start = i;
-            while i < len && bytes[i] != b' ' {
-                i += 1;
-            }
-            let tok_text = &input[tok_start..i];
-            if !tok_text.is_empty() {
-                tokens.push(Token {
-                    field: field_pos,
-                    text: tok_text,
-                });
-            }
+            token.push(bytes[i] as char);
+            i += 1;
         }
     }
-
-    // --- Phase 2: determine cursor field (deferred to after Phase 3) ---
-    // We need to know if the last field-0 token was a class or name,
-    // which requires class matching. Cursor field is computed below.
-
-    // --- Phase 3: process tokens into fields ---
-    if tokens.is_empty() {
-        return Err(String::new());
+    // Flush trailing token.
+    let mut extra_warning = None;
+    if state == State::Done && !token.is_empty() {
+        extra_warning = Some(format!("Extra text ignored: \"{}\"", token));
     }
+    flush(
+        &mut token,
+        state,
+        &mut car,
+        &mut name,
+        &mut classes_raw,
+        &mut vehicle_raw,
+        &mut description_raw,
+        &mut shared_raw,
+    );
 
-    // Collect field-0 tokens (car/name/classes before any double-space)
-    let field0_tokens: Vec<&str> = tokens
-        .iter()
-        .filter(|t| t.field == 0)
-        .map(|t| t.text)
-        .collect();
+    // --- Post-process each field ---
 
-    // Parse car number from the start of field 0
-    let first_joined = field0_tokens.join(" ");
-    let mut car_end = 0;
-    let chars: Vec<char> = first_joined.chars().collect();
-    while car_end < chars.len() && chars[car_end].is_ascii_digit() {
-        car_end += 1;
-    }
-    if car_end > 0 {
-        while car_end < chars.len() && chars[car_end].is_ascii_alphabetic() {
-            car_end += 1;
-        }
-    }
-
-    let (car, after_car) = if car_end > 0 && car_end < chars.len() && chars[car_end] == ' ' {
-        let car = crate::event::normalize_car_number(&first_joined[..car_end])?;
-        (car, first_joined[car_end..].trim().to_string())
-    } else if car_end > 0 && car_end == first_joined.len() {
-        let car = crate::event::normalize_car_number(&first_joined)?;
-        (car, String::new())
+    // Car: validate and normalise (digits + optional uppercase letters).
+    let car = if car.is_empty() {
+        String::new()
     } else {
-        (String::new(), first_joined.clone())
+        crate::event::normalize_car_number(&car)?
     };
 
-    // Smart detection: split remaining field-0 words into name vs classes
-    let mut name_words: Vec<String> = vec![];
-    let mut field0_classes: Vec<String> = vec![];
+    // Name: title-case each word.
+    let name = name
+        .split_whitespace()
+        .map(title_case)
+        .collect::<Vec<_>>()
+        .join(" ");
 
-    if !after_car.is_empty() {
-        for word in after_car.split_whitespace() {
-            if let Ok(resolved) = resolve_class(word, &event.classes) {
-                field0_classes.push(resolved);
-            } else {
-                name_words.push(title_case(word));
-            }
-        }
-    }
-
-    let name = name_words.join(" ");
-
+    // Duplicate checks.
     if name.is_empty() && car.is_empty() {
         return Err(String::new());
     }
-
     if !car.is_empty() && event.entries.iter().any(|e| e.car == car) {
         return Err(format!("Car number {car} already exists."));
     }
@@ -2466,100 +2636,41 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
         return Err(format!("Driver '{name}' already exists."));
     }
 
-    // Process remaining tokens by field (field 1+)
-    let mut vehicle_raw = String::new();
-    let mut description_raw = String::new();
-    let mut shared_raw = String::new();
-    let mut extra_warning = None;
-
-    for tok in &tokens {
-        if tok.field == 0 {
-            continue; // already processed
-        }
-        match tok.field {
-            1 => {
-                // Classes from double-space separated field
-                if let Ok(resolved) = resolve_class(tok.text, &event.classes) {
-                    field0_classes.push(resolved);
-                } else {
-                    extra_warning = Some(format!("Unknown class '{}'", tok.text));
-                }
-            }
-            2 => {
-                if !vehicle_raw.is_empty() {
-                    vehicle_raw.push(' ');
-                }
-                vehicle_raw.push_str(tok.text);
-            }
-            3 => {
-                if !description_raw.is_empty() {
-                    description_raw.push(' ');
-                }
-                description_raw.push_str(tok.text);
-            }
-            4 => {
-                if !shared_raw.is_empty() {
-                    shared_raw.push(' ');
-                }
-                shared_raw.push_str(tok.text);
-            }
-            _ => {
-                extra_warning = Some(format!("Extra text ignored: \"{}\"", tok.text));
+    // Classes: resolve each space-separated token against the event's class list.
+    let mut classes = Vec::new();
+    for word in classes_raw.split_whitespace() {
+        match resolve_class(word, &event.classes) {
+            Ok(resolved) => classes.push(resolved),
+            Err(_) => {
+                extra_warning = Some(format!("Unknown class '{word}'"));
             }
         }
     }
 
-    // --- Cursor field computation ---
-    // Determine the field of the last token for cursor position.
-    let last_token_field = if let Some(last) = tokens.last() {
-        if last.field == 0 {
-            // Field 0: check if last word was a class via smart detection
-            let last_field0_word = field0_tokens.last().copied().unwrap_or("");
-            if resolve_class(last_field0_word, &event.classes).is_ok() {
-                1 // class
-            } else {
-                0 // name
-            }
-        } else {
-            last.field
-        }
-    } else {
-        0
-    };
-
-    // Cursor field: where the next character will go.
-    // Trailing spaces: each space beyond 1 advances one field.
-    // 1 space = stay on current (with special cases), 2 = next, 3 = skip 1, etc.
-    // Special cases:
-    // - After first class (field0_classes <= 1) with single space, stay on classes
-    // - After vehicle with single space, stay on vehicle
-    let cursor_field = if ends_with_space {
-        let advance = trailing_space_count.saturating_sub(1);
-        if last_token_field == 1 && field0_classes.len() <= 1 && trailing_space_count < 2 {
-            1 // stay on classes for more
-        } else if last_token_field == 2 && trailing_space_count < 2 {
-            2 // stay on vehicle for more text (single space)
-        } else {
-            (last_token_field + advance).min(4)
-        }
-    } else {
-        last_token_field.min(4)
-    };
-
-    // --- Phase 4: apply defaults for skipped fields ---
-    let mut defaulted = Vec::new();
-
-    // Vehicle: no default, just empty
+    // Vehicle: format (short words → UPPERCASE, long → title case).
     let vehicle = if vehicle_raw.is_empty() {
         String::new()
     } else {
         format_vehicle(&vehicle_raw)
     };
 
-    // Description: default is copy from Vehicle if skipped
+    // --- Cursor field ---
+    // The state machine's final state tells us where the cursor is.
+    // Spaces (including trailing) have already advanced the state.
+    let cursor_field = match state {
+        State::Car => 0,
+        State::Name => 0,
+        State::Classes => 1,
+        State::Vehicle => 2,
+        State::Description => 3,
+        State::Shared | State::Done => 4,
+    };
+
+    // --- Defaults for skipped fields ---
+    let mut defaulted = Vec::new();
+
     let description = if description_raw.is_empty() {
         if !vehicle.is_empty() && cursor_field > 3 {
-            // Description was skipped — copy from Vehicle
             defaulted.push("Description");
             Some(vehicle.clone())
         } else {
@@ -2569,17 +2680,15 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
         Some(description_raw)
     };
 
-    // Shared: no default, just empty
     let shared = if shared_raw.is_empty() {
         None
     } else {
         Some(shared_raw)
     };
 
-    // Car: default is auto-assign if no number was typed
     let car = if car.is_empty() {
         defaulted.push("Car");
-        String::new() // auto-assigned later in DoThing handler
+        String::new()
     } else {
         car
     };
@@ -2595,7 +2704,7 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
             },
             description,
             shared,
-            classes: field0_classes,
+            classes,
             passenger: None,
         },
         cursor_field,
@@ -2900,5 +3009,72 @@ mod tests {
         let qp = parse_quick_entry("123 john  o  wrx   b", &ev).unwrap();
         assert_eq!(qp.cursor_field, 4); // shared
         assert_eq!(qp.entry.shared.as_deref(), Some("b"));
+    }
+
+    // --- Bug fixes: class words in field 0 must NOT eat names ---
+
+    #[test]
+    fn name_not_eaten_as_class() {
+        let ev = test_event();
+        let qp = parse_quick_entry("1 Female  Outright", &ev).unwrap();
+        assert_eq!(qp.entry.car, "1");
+        assert_eq!(qp.entry.name, "Female");
+        assert_eq!(qp.entry.classes, vec!["Outright"]);
+    }
+
+    #[test]
+    fn name_prefix_not_eaten() {
+        let ev = test_event();
+        let qp = parse_quick_entry("1 F  Outright", &ev).unwrap();
+        assert_eq!(qp.entry.car, "1");
+        assert_eq!(qp.entry.name, "F");
+        assert_eq!(qp.entry.classes, vec!["Outright"]);
+    }
+
+    #[test]
+    fn name_matching_class_not_eaten() {
+        let ev = test_event();
+        let qp = parse_quick_entry("1 Out  Outright", &ev).unwrap();
+        assert_eq!(qp.entry.car, "1");
+        assert_eq!(qp.entry.name, "Out");
+        assert_eq!(qp.entry.classes, vec!["Outright"]);
+    }
+
+    #[test]
+    fn name_with_class_prefix_not_eaten() {
+        let ev = test_event();
+        let qp = parse_quick_entry("1 foobar  Female", &ev).unwrap();
+        assert_eq!(qp.entry.car, "1");
+        assert_eq!(qp.entry.name, "Foobar");
+        assert_eq!(qp.entry.classes, vec!["Female"]);
+    }
+
+    #[test]
+    fn cursor_stays_on_name_field() {
+        let ev = test_event();
+        let qp = parse_quick_entry("1 john Out", &ev).unwrap();
+        assert_eq!(qp.cursor_field, 0); // name, not classes
+    }
+
+    #[test]
+    fn round_trip_serialize_parse() {
+        let ev = test_event();
+        let entry = crate::event::Entry {
+            car: "7B".into(),
+            name: "Alice Wang".into(),
+            vehicle: Some("Mazda RX8".into()),
+            description: Some("Rego ABC".into()),
+            shared: Some("Shared".into()),
+            classes: vec!["Outright".into(), "Junior".into()],
+            passenger: None,
+        };
+        let text = serialize_entry_for_edit(&entry);
+        let qp = parse_quick_entry(&text, &ev).unwrap();
+        assert_eq!(qp.entry.car, "7B");
+        assert_eq!(qp.entry.name, "Alice Wang");
+        assert_eq!(qp.entry.classes, vec!["Outright", "Junior"]);
+        assert_eq!(qp.entry.vehicle.as_deref(), Some("Mazda RX8"));
+        assert_eq!(qp.entry.description.as_deref(), Some("Rego ABC"));
+        assert_eq!(qp.entry.shared.as_deref(), Some("Shared"));
     }
 }
