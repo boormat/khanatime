@@ -13,7 +13,7 @@ pub fn car_chips(entries: Vec<crate::event::Entry>, digits: Signal<String>) -> V
             let car_set = car.clone();
             view! {
                 button(
-                    class="button is-small is-light",
+                    class="button is-light",
                     on:click=move |_| digits.set(car_set.clone()),
                 ) {
                     span(class="kt-car-tag has-text-weight-semibold") { (car) }
@@ -24,7 +24,7 @@ pub fn car_chips(entries: Vec<crate::event::Entry>, digits: Signal<String>) -> V
         .collect();
     chips.push(view! {
         button(
-            class="button is-small is-warning",
+            class="button is-warning",
             on:click=move |_| digits.set("?".to_string()),
         ) {
             span(class="kt-car-tag has-text-weight-semibold") { "?" }
@@ -84,7 +84,7 @@ pub fn car_chips_with_runs(
                 let badge = format!("({remaining}r)");
                 view! {
                     button(
-                        class="button is-small is-light",
+                        class="button is-light",
                         on:click=move |_| digits.set(car_set.clone()),
                     ) {
                         span(class="kt-car-tag has-text-weight-semibold") { (car) }
@@ -106,7 +106,7 @@ pub fn car_chips_with_runs(
         p(class="help has-text-weight-semibold mb-1") { "Unknown" }
         div(class="field is-grouped is-grouped-multiline") {
             button(
-                class="button is-small is-warning",
+                class="button is-warning",
                 on:click=move |_| digits.set("?".to_string()),
             ) {
                 span(class="kt-car-tag has-text-weight-semibold") { "?" }
@@ -127,7 +127,7 @@ pub fn test_chips(count: u8, current: Signal<u8>) -> View {
             view! {
                 button(
                     class=format!(
-                        "button is-small {}",
+                        "button {}",
                         if active { "is-primary" } else { "is-light" }
                     ),
                     on:click=move |_| current.set(t),

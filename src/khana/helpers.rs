@@ -449,7 +449,7 @@ fn view_scan_modal(model: crate::Model) -> View {
             }
             div(class="kt-modal-topbar") {
                 button(
-                    class="button is-light is-small",
+                    class="button is-light",
                     on:click=move |_| crate::update(model, crate::Msg::ScanStop),
                 ) {
                     span(class="icon is-small") { i(class="fa fa-times") }

@@ -262,3 +262,9 @@
     padding: 0.25em 0.4em;
   }
 }
+
+// Disabled buttons: keep the default cursor instead of not-allowed (Sway
+// lacks the not-allowed cursor theme, so the pointer vanishes).
+.button[disabled] {
+  cursor: default;
+}

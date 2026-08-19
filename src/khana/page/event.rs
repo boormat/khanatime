@@ -2102,7 +2102,7 @@ fn view_stage_list(model: crate::Model) -> View {
         div {
             (if editing {
                 view! {
-                    div(class="columns is-vcentered is-hidden-mobile") {
+                    div(class="columns is-vcentered") {
                         div(class="column is-1") { strong { "No." } }
                         div(class="column is-4") { strong { "Name" } }
                         div(class="column is-2") { strong { "Total runs" } }

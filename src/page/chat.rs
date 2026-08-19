@@ -98,16 +98,16 @@ pub fn view(model: crate::Model) -> View {
             }
             div(class="field is-grouped") {
                 div(class="control") {
-                    button(class="button is-small", on:click=move |_| expand_all(chat), title="Expand all") { "++" }
+                    button(class="button", on:click=move |_| expand_all(chat), title="Expand all") { "++" }
                 }
                 div(class="control") {
-                    button(class="button is-small", on:click=move |_| fold_all(chat), title="Fold all") { "--" }
+                    button(class="button", on:click=move |_| fold_all(chat), title="Fold all") { "--" }
                 }
                 div(class="control") {
                     (move || {
                         let label = if chat.reverse.get() { "Newest first" } else { "Oldest first" };
                         view! {
-                            button(class="button is-small", on:click=move |_| toggle_reverse(chat), title="Toggle order") {
+                            button(class="button", on:click=move |_| toggle_reverse(chat), title="Toggle order") {
                                 (label)
                             }
                         }
