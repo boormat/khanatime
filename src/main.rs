@@ -63,13 +63,36 @@ fn main() {
         if !sso_callback {
             // A join link overrides the persisted session: consume the query,
             // show Home (conn status visible) and start the join.
-            let joined = {
+            let handled = {
                 #[cfg(target_arch = "wasm32")]
                 {
                     if let Some(link) = join::from_location() {
                         join::consume();
                         app::show(model, Screen::Home);
                         crate::update(model, Msg::Join(link));
+                        true
+                    } else if let Some((hs, user, pass)) = join::from_location_account() {
+                        join::consume();
+                        crate::update(
+                            model,
+                            Msg::ImportAccount {
+                                homeserver: hs,
+                                user_id: user,
+                                password: pass,
+                            },
+                        );
+                        true
+                    } else if let Some((uid, name, desc, phone)) = join::from_location_contact() {
+                        join::consume();
+                        crate::update(
+                            model,
+                            Msg::ImportContact {
+                                user_id: uid,
+                                name,
+                                description: desc,
+                                phone,
+                            },
+                        );
                         true
                     } else {
                         false
@@ -80,7 +103,7 @@ fn main() {
                     false
                 }
             };
-            if !joined {
+            if !handled {
                 app::show(model, initial_screen());
                 #[cfg(target_arch = "wasm32")]
                 sync::resume_on_load(model);

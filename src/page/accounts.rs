@@ -646,21 +646,28 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                         }
                         crate::services::matrix::StoredAuth::OAuth { .. } => String::new(),
                     };
-                    let data = format!(
-                        "khanatime_account:{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "homeserver": a.homeserver,
-                            "user_id": a.user_id,
-                            "password": pass,
-                        }))
-                        .unwrap_or_default()
-                    );
+                    let app_base = web_sys::window()
+                        .and_then(|w| {
+                            let origin = w.location().origin().ok()?;
+                            let path = w.location().pathname().ok()?;
+                            Some(format!("{origin}{path}"))
+                        })
+                        .unwrap_or_default();
+                    let data = url::form_urlencoded::byte_serialize(
+                        format!(
+                            "type=account&homeserver={}&user_id={}&password={}",
+                            &a.homeserver, &a.user_id, &pass,
+                        )
+                        .as_bytes(),
+                    )
+                    .collect::<String>();
+                    let url = format!("{app_base}?{data}");
                     let warn = if *personal {
                         Some("This QR contains your personal account credentials including password. Only share with trusted people in person.".to_string())
                     } else {
                         None
                     };
-                    (format!("Account — {}", a.user_id), data, warn)
+                    (format!("Account — {}", a.user_id), url, warn)
                 }
                 None => ("No active account".into(), String::new(), None),
             }
@@ -668,32 +675,38 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
         QrTarget::Contact(uid) => {
             // First check contacts, then check accounts (share as contact, no password).
             let contacts = crate::services::matrix::load_contacts();
+            let app_base = web_sys::window()
+                .and_then(|w| {
+                    let origin = w.location().origin().ok()?;
+                    let path = w.location().pathname().ok()?;
+                    Some(format!("{origin}{path}"))
+                })
+                .unwrap_or_default();
             if let Some(c) = contacts.iter().find(|c| c.user_id == *uid) {
-                let data = format!(
-                    "khanatime_contact:{}",
-                    serde_json::to_string(&serde_json::json!({
-                        "user_id": c.user_id,
-                        "name": c.name,
-                        "description": c.description,
-                        "phone": c.phone,
-                    }))
-                    .unwrap_or_default()
+                let phone_param = c
+                    .phone
+                    .as_deref()
+                    .map(|p| format!("&phone={p}"))
+                    .unwrap_or_default();
+                let qs = format!(
+                    "type=contact&user_id={}&name={}&description={}{phone_param}",
+                    &c.user_id, &c.name, &c.description,
                 );
-                (format!("Contact — {}", c.user_id), data, None)
+                let data = url::form_urlencoded::byte_serialize(qs.as_bytes()).collect::<String>();
+                let url = format!("{app_base}?{data}");
+                (format!("Contact — {}", c.user_id), url, None)
             } else {
                 // Not in contacts — check accounts for sharing as contact.
                 let accounts = crate::services::matrix::load_accounts();
                 if let Some(a) = accounts.iter().find(|a| a.user_id == *uid) {
-                    let data = format!(
-                        "khanatime_contact:{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "user_id": a.user_id,
-                            "name": a.user_id,
-                            "description": a.description,
-                        }))
-                        .unwrap_or_default()
+                    let qs = format!(
+                        "type=contact&user_id={}&name={}&description={}",
+                        &a.user_id, &a.user_id, &a.description,
                     );
-                    (format!("Contact — {}", a.user_id), data, None)
+                    let data =
+                        url::form_urlencoded::byte_serialize(qs.as_bytes()).collect::<String>();
+                    let url = format!("{app_base}?{data}");
+                    (format!("Contact — {}", a.user_id), url, None)
                 } else {
                     ("Contact not found".into(), String::new(), None)
                 }
