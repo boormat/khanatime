@@ -330,6 +330,7 @@ fn handle_scan_string(model: Model, text: &str) {
                 name: val["name"].as_str().unwrap_or_default().to_string(),
                 description: val["description"].as_str().unwrap_or_default().to_string(),
                 phone: val["phone"].as_str().map(|s| s.to_string()),
+                signing_key: None,
             };
             if !contact.user_id.is_empty() {
                 crate::services::matrix::save_contact(&contact);

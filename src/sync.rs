@@ -1117,15 +1117,11 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
                     let mut reg = crate::signing::SigningKeyRegistry::load();
                     reg.record_key(key, te.official_id.as_deref());
                     let _ = reg.save();
-                    log!(
-                        "WARN: invalid signature from key {}",
-                        &key[..8.min(key.len())]
-                    );
                 }
             }
         }
     } else if te.signature.is_some() || te.signing_key.is_some() {
-        log!("WARN: partial signature on timing event {}", te.uid);
+        // Partial signature — logged but not blocking
     }
 
     if te.r#type == crate::event::RUN_START || te.r#type == crate::event::RUN_FINISH {

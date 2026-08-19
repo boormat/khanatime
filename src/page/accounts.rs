@@ -230,14 +230,14 @@ fn view_signing_key(model: crate::Model) -> View {
     let sm = model.screens.accounts;
     let _ = sm.refresh.get();
     let keys = crate::signing::DeviceKeys::load_from_storage();
-    let fingerprint = keys.as_ref().and_then(|k| k.fingerprint().ok());
+    let fp = keys.as_ref().and_then(|k| k.fingerprint().ok());
     let registry = crate::signing::SigningKeyRegistry::load();
     let registry_count = registry.all().len();
 
     view! {
         div(class="box") {
             h2(class="title is-5") { "Signing Key" }
-            (if let Some(fp) = &fingerprint {
+            (if let Some(fp) = fp {
                 view! {
                     p {
                         span(class="tag is-info is-medium") { (fp) }
@@ -619,6 +619,7 @@ fn view_contact_modal(model: crate::Model) -> View {
                             name: sm.contact_name.get_clone(),
                             description: sm.contact_desc.get_clone(),
                             phone: { let p = sm.contact_phone.get_clone(); if p.is_empty() { None } else { Some(p) } },
+                            signing_key: None,
                         };
                         crate::services::matrix::save_contact(&contact);
                         sm.show_contact.set(false);
