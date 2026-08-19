@@ -1,3 +1,5 @@
+pub mod signing;
+
 // Vec of str to strings.
 // let a= stringify(["a", "b", "c"]);
 pub fn stringify<const N: usize>(a: [&str; N]) -> [String; N] {

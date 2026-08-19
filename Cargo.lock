@@ -1549,6 +1549,7 @@ name = "khanatime"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ed25519-dalek",
  "futures",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -1559,6 +1560,7 @@ dependencies = [
  "miniz_oxide",
  "pulldown-cmark",
  "qrcode",
+ "rand_core 0.6.4",
  "ruma",
  "serde",
  "serde_json",

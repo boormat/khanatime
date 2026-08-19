@@ -9,6 +9,7 @@ mod page;
 #[cfg(target_arch = "wasm32")]
 mod qr_scan;
 mod services;
+pub mod signing;
 mod sync;
 
 pub use app::{ConnState, Model, Msg, Screen};

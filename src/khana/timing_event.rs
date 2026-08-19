@@ -34,6 +34,15 @@ pub struct TimingEvent {
     /// UIDs of the start/stop observations this finish is based on (audit trail).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
+
+    // ---- signing (added at source, transport never touches) ----
+    /// Base64 Ed25519 public key of the device that created this observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    /// Base64 Ed25519 signature of the canonical payload (all fields except
+    /// `signing_key` and `signature`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 impl TimingEvent {
@@ -64,6 +73,8 @@ impl TimingEvent {
             official_id: None,
             comment: None,
             refs: vec![],
+            signing_key: None,
+            signature: None,
         }
     }
 
@@ -162,6 +173,32 @@ impl TimingEvent {
     pub fn from_matrix_content(content: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(content.get(Self::CONTENT_KEY)?.clone()).ok()
     }
+
+    /// Sign this timing event with the device key.  Sets `signing_key` and
+    /// `signature` fields.
+    pub fn sign_with(
+        &mut self,
+        device_keys: &crate::signing::DeviceKeys,
+    ) -> Result<(), crate::signing::SigningError> {
+        let (sig, key) = crate::signing::sign_payload(self, device_keys)?;
+        self.signature = Some(sig);
+        self.signing_key = Some(key);
+        Ok(())
+    }
+
+    /// Verify this timing event's signature.  Returns Ok if valid, Err if
+    /// invalid or unsigned.
+    pub fn verify_signature(&self) -> Result<(), crate::signing::SigningError> {
+        let sig = self
+            .signature
+            .as_ref()
+            .ok_or(crate::signing::SigningError::NoPrivateKey)?;
+        let key = self
+            .signing_key
+            .as_ref()
+            .ok_or(crate::signing::SigningError::NoPrivateKey)?;
+        crate::signing::verify_payload(self, sig, key)
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +221,8 @@ mod tests {
             official_id: None,
             comment: None,
             refs: vec![],
+            signing_key: None,
+            signature: None,
         }
     }
 

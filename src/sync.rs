@@ -1102,6 +1102,32 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         return; // plain chat / results-snapshot messages: log-only
     };
 
+    // --- signing verification (non-blocking, TOFU) ---
+    if let (Some(sig), Some(key)) = (&te.signature, &te.signing_key) {
+        match crate::signing::verify_payload(&te, sig, key) {
+            Ok(()) => {
+                // Valid signature — record key in trust registry
+                let mut reg = crate::signing::SigningKeyRegistry::load();
+                reg.record_key(key, te.official_id.as_deref());
+                let _ = reg.save();
+            }
+            Err(_) => {
+                // Invalid signature — record key as suspicious
+                if let Some(key) = &te.signing_key {
+                    let mut reg = crate::signing::SigningKeyRegistry::load();
+                    reg.record_key(key, te.official_id.as_deref());
+                    let _ = reg.save();
+                    log!(
+                        "WARN: invalid signature from key {}",
+                        &key[..8.min(key.len())]
+                    );
+                }
+            }
+        }
+    } else if te.signature.is_some() || te.signing_key.is_some() {
+        log!("WARN: partial signature on timing event {}", te.uid);
+    }
+
     if te.r#type == crate::event::RUN_START || te.r#type == crate::event::RUN_FINISH {
         // Mirror the remote run into local state (run numbering,
         // pending-starts) so Start/Finish screens stay live.

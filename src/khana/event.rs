@@ -166,6 +166,15 @@ pub struct EventInfo {
     /// Parent room aliases/IDs this event links into (one per homeserver).
     #[serde(default)]
     pub parent_rooms: Vec<String>,
+
+    // ---- signing ----
+    /// Base64 Ed25519 public key of the event owner, distributed in the setup
+    /// manifest so participants can verify message signatures offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    /// Base64 Ed25519 signature of the canonical event payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
 }
 
 /// How a scanned invite should authenticate on its homeserver.
@@ -303,6 +312,18 @@ pub struct ResultView {
                                            // can probably remove the Index map so we can sort by a separate vec of refs?
 }
 
+/// A signed results snapshot broadcast for the audit trail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResultSnapshot {
+    pub event_id: String,
+    pub ts: i64,
+    pub scores: Vec<ScoreData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
 // results to render
 #[derive(Debug, Clone)]
 pub struct ResultRow {
@@ -392,6 +413,8 @@ impl Default for EventInfo {
             space_id: None,
             timing_id: None,
             parent_rooms: vec![],
+            signing_key: None,
+            signature: None,
         }
     }
 }
@@ -2043,6 +2066,8 @@ mod tests {
             official_id: Some("u".into()),
             comment: None,
             refs: vec![],
+            signing_key: None,
+            signature: None,
         };
         let r = record_from_timing(&te);
         assert_eq!(r.uid, "ABCDEFGHJK");

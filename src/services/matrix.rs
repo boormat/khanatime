@@ -199,6 +199,9 @@ pub struct Contact {
     pub description: String,
     #[serde(default)]
     pub phone: Option<String>,
+    /// Base64 Ed25519 public key of the primary device (optional link).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
 }
 
 fn storage() -> Option<web_sys::Storage> {
@@ -1341,12 +1344,26 @@ pub async fn send_result(
     event: &crate::event::EventInfo,
     scores: &[crate::event::ScoreData],
 ) -> Result<(), String> {
-    let body = serde_json::json!({
-        "event_id": event.id,
-        "ts": js_sys::Date::now() as i64,
-        "scores": scores,
-    });
-    let body = format!("{}{}", TimingEvent::RESULT_PREFIX, body);
+    let mut snapshot = crate::event::ResultSnapshot {
+        event_id: event.id.clone(),
+        ts: js_sys::Date::now() as i64,
+        scores: scores.to_vec(),
+        signing_key: None,
+        signature: None,
+    };
+    if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
+        if keys.can_sign() {
+            if let Ok((sig, key)) = crate::signing::sign_payload(&snapshot, &keys) {
+                snapshot.signature = Some(sig);
+                snapshot.signing_key = Some(key);
+            }
+        }
+    }
+    let body = format!(
+        "{}{}",
+        TimingEvent::RESULT_PREFIX,
+        serde_json::to_string(&snapshot).unwrap()
+    );
     send_chat(room, &body).await.map(|_| ())
 }
 

@@ -180,6 +180,8 @@ mod tests {
             official_id: None,
             comment: None,
             refs: vec![],
+            signing_key: None,
+            signature: None,
         }
     }
 
@@ -347,6 +349,8 @@ mod tests {
             official_id: None,
             comment: None,
             refs: vec![],
+            signing_key: None,
+            signature: None,
         }
     }
 

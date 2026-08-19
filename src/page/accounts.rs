@@ -70,6 +70,7 @@ pub fn view(model: crate::Model) -> View {
         div(class="section") {
             h1(class="title is-4") { "Accounts" }
             (view_homeservers(model))
+            (view_signing_key(model))
             (view_contacts(model))
             (view_action_buttons(model))
             (if sm.show_create.get() { view_create_modal(model) } else { view! {} })
@@ -217,6 +218,46 @@ fn view_homeservers(model: crate::Model) -> View {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn view_homeservers(_model: crate::Model) -> View {
+    view! {}
+}
+
+// ---------------------------------------------------------------------------
+// Signing key section
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+fn view_signing_key(model: crate::Model) -> View {
+    let sm = model.screens.accounts;
+    let _ = sm.refresh.get();
+    let keys = crate::signing::DeviceKeys::load_from_storage();
+    let fingerprint = keys.as_ref().and_then(|k| k.fingerprint().ok());
+    let registry = crate::signing::SigningKeyRegistry::load();
+    let registry_count = registry.all().len();
+
+    view! {
+        div(class="box") {
+            h2(class="title is-5") { "Signing Key" }
+            (if let Some(fp) = &fingerprint {
+                view! {
+                    p {
+                        span(class="tag is-info is-medium") { (fp) }
+                        span(style="margin-left:0.5em; color: #888;") { "device fingerprint" }
+                    }
+                }
+            } else {
+                view! {
+                    p(style="color: #888;") { "No signing key generated yet. It will be created on first use." }
+                }
+            })
+            p(style="margin-top:0.5em; color: #666; font-size:0.85em;") {
+                (format!("{} key(s) in trust registry", registry_count))
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_signing_key(_model: crate::Model) -> View {
     view! {}
 }
 

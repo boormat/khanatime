@@ -1,6 +1,20 @@
 use sycamore::prelude::*;
 
 // ---------------------------------------------------------------------------
+// Signing helper
+// ---------------------------------------------------------------------------
+
+/// Sign a TimingEvent with the device key (if available).  Errors are silent —
+/// the message is sent unsigned if signing fails.
+fn sign_timing_event(te: &mut crate::khana::timing_event::TimingEvent) {
+    if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
+        if keys.can_sign() {
+            let _ = te.sign_with(&keys);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
@@ -19,7 +33,7 @@ pub fn enqueue_run(model: crate::Model, run: &crate::khana::event::RunRecord) {
     model.khana.runs.update(|runs| {
         crate::khana::event::add_run(runs, run.clone());
     });
-    let te = crate::khana::timing_event::TimingEvent {
+    let mut te = crate::khana::timing_event::TimingEvent {
         r#type: run.r#type.clone(),
         event_id: uid,
         uid: run.uid.clone(),
@@ -33,7 +47,10 @@ pub fn enqueue_run(model: crate::Model, run: &crate::khana::event::RunRecord) {
         official_id: run.official_id.clone(),
         comment: run.comment.clone(),
         refs: run.refs.clone(),
+        signing_key: None,
+        signature: None,
     };
+    sign_timing_event(&mut te);
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     crate::sync::flush_pending(model);
@@ -56,6 +73,7 @@ pub fn enqueue_ktime(
     let mut te = crate::khana::timing_event::TimingEvent::finish(&uid, test, car, time, vec![]);
     te.official_id = Some(model.sync.identity.get_clone());
     te.comment = comment;
+    sign_timing_event(&mut te);
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     let run = crate::khana::event::record_from_timing(&te);
@@ -84,6 +102,7 @@ pub fn enqueue_amend(
     let mut te = crate::khana::timing_event::TimingEvent::amend(&uid, target_uid, test, car, time);
     te.official_id = Some(model.sync.identity.get_clone());
     te.comment = comment;
+    sign_timing_event(&mut te);
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     model.khana.runs.update(|runs| {
@@ -112,6 +131,7 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) 
     }
     let mut te = crate::khana::timing_event::TimingEvent::void(&uid, target_uid, test, car);
     te.official_id = Some(model.sync.identity.get_clone());
+    sign_timing_event(&mut te);
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     model.khana.runs.update(|runs| {
