@@ -551,26 +551,15 @@ fn view_entry(
         let car_tag = car.clone();
         let pref_tag = preferred.clone();
         if !car_tag.is_empty() {
-            view! {
-                span(class="tag is-black") {
-                    i(class="fa fa-car", style="width: 20px")
-                    (car_tag)
-                }
-            }
+            crate::view::car_tag(&car_tag)
         } else if !pref_tag.is_empty() {
             view! {
-                span(class="tag is-light", title="preferred \u{2014} not yet assigned") {
-                    i(class="fa fa-pen", style="width: 20px")
-                    (pref_tag)
+                span(class="tag is-light kt-car-tag", title="preferred \u{2014} not yet assigned") {
+                    i(class="fa fa-pen") { " " } (pref_tag)
                 }
             }
         } else {
-            view! {
-                span(class="tag is-light") {
-                    i(class="fa fa-car", style="width: 20px")
-                    "?"
-                }
-            }
+            crate::view::car_tag("")
         }
     };
 

@@ -16,7 +16,7 @@ pub fn car_chips(entries: Vec<crate::event::Entry>, digits: Signal<String>) -> V
                     class="button is-small is-light",
                     on:click=move |_| digits.set(car_set.clone()),
                 ) {
-                    span(class="has-text-weight-semibold") { ("#") (car) }
+                    span(class="kt-car-tag has-text-weight-semibold") { (car) }
                     span(class="ml-2") { (name) }
                 }
             }
@@ -27,7 +27,7 @@ pub fn car_chips(entries: Vec<crate::event::Entry>, digits: Signal<String>) -> V
             class="button is-small is-warning",
             on:click=move |_| digits.set("?".to_string()),
         ) {
-            span(class="has-text-weight-semibold") { "#?" }
+            span(class="kt-car-tag has-text-weight-semibold") { "?" }
             span(class="ml-2") { "Unknown" }
         }
     });
@@ -87,7 +87,7 @@ pub fn car_chips_with_runs(
                         class="button is-small is-light",
                         on:click=move |_| digits.set(car_set.clone()),
                     ) {
-                        span(class="has-text-weight-semibold") { ("#") (car) }
+                        span(class="kt-car-tag has-text-weight-semibold") { (car) }
                         span(class="ml-2") { (name) }
                         span(class="tag is-small ml-1 is-link is-light") { (badge) }
                     }
@@ -109,7 +109,7 @@ pub fn car_chips_with_runs(
                 class="button is-small is-warning",
                 on:click=move |_| digits.set("?".to_string()),
             ) {
-                span(class="has-text-weight-semibold") { "#?" }
+                span(class="kt-car-tag has-text-weight-semibold") { "?" }
                 span(class="ml-2") { "Unknown" }
                 span(class="tag is-small ml-1 is-light") { (u_badge) }
             }

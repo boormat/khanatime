@@ -385,7 +385,7 @@ fn view_row(model: crate::Model, rr: &ResultRow) -> View {
         .collect::<Vec<View>>();
     view! {
         tr(class="is-together-print") {
-            td { (car) }
+            td { (crate::view::car_tag(&car)) }
             td { (name) }
             (columns)
         }

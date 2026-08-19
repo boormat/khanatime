@@ -25,7 +25,64 @@ pub fn show_ktimetime(time: &KTimeTime) -> View {
 }
 
 pub fn car_number(car: String) -> View {
-    view! { span(class="label label-default") { (car) } }
+    car_tag(&car)
+}
+
+/// Car number tag with fa-car icon — consistent across all views.
+pub fn car_tag(car: &str) -> View {
+    if car.is_empty() {
+        view! { span(class="tag is-light kt-car-tag") { i(class="fa fa-car") { " ?" } } }
+    } else {
+        let c = car.to_string();
+        view! { span(class="tag is-black kt-car-tag") { i(class="fa fa-car") { " " } (c) } }
+    }
+}
+
+/// Class tag — consistent styling for class badges.
+pub fn class_tag(class: &str) -> View {
+    let c = class.to_string();
+    view! { span(class="tag is-info is-light is-small") { (c) } }
+}
+
+/// Entrant summary line — car + name + classes (for lists).
+pub fn entrant_summary(car: &str, name: &str, classes: &[String]) -> View {
+    let tags: Vec<View> = classes.iter().map(|c| class_tag(c)).collect();
+    let n = name.to_string();
+    let car_view = car_tag(car);
+    view! {
+        span(class="kt-entrant-line") {
+            (car_view)
+            span { (n) }
+            (tags)
+        }
+    }
+}
+
+/// Entrant detail line — car + name + vehicle · shared (for full view).
+pub fn entrant_detail(car: &str, name: &str, vehicle: &str, shared: &str) -> View {
+    let mut info = Vec::new();
+    if !vehicle.is_empty() {
+        info.push(vehicle.to_string());
+    }
+    if !shared.is_empty() {
+        info.push(format!("Shared: {}", shared));
+    }
+    let n = name.to_string();
+    let info_text = info.join(" \u{00b7} ");
+    let car_view = car_tag(car);
+    let has_info = !info_text.is_empty();
+    view! {
+        span(class="kt-entrant-line") {
+            (car_view)
+            span { (n) }
+            (if has_info {
+                let t = info_text.clone();
+                view! { span(class="has-text-grey is-size-7") { (t) } }
+            } else {
+                view! {}
+            })
+        }
+    }
 }
 
 /// Batch-edit confirmation modal: a diff list with Send / Keep editing /

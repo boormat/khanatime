@@ -259,7 +259,7 @@ fn view_pending(model: crate::Model) -> View {
                     .iter()
                     .map(|r| {
                         let rr = r.clone();
-                        let disp = format!("#{}", r.car);
+                        let disp = r.car.clone();
                         let age = fmt_age(now - r.ts);
                         let is_selected = r.car == model.screens.finish.car.get_clone();
                         view! {
@@ -296,14 +296,16 @@ fn view_selected(model: crate::Model) -> View {
                     let ds = elapsed_ds(start.ts, js_sys::Date::now() as i64);
                     let age = fmt_age(js_sys::Date::now() as i64 - start.ts);
                     view! {
-                        div(class="notification is-primary is-light") {
-                            ("#") (car) (" — started ") (age) (" — elapsed ") (fmt_ds(ds)) (" s")
+                        div(class="notification is-primary is-light kt-entrant-line") {
+                            (crate::view::car_tag(&car))
+                            span { " \u{2014} started " (age) " \u{2014} elapsed " (fmt_ds(ds)) " s" }
                         }
                     }
                 }
                 None => view! {
-                    div(class="notification is-light") {
-                        ("#") (car) (" — no pending start; enter the elapsed time or select one above.")
+                    div(class="notification is-light kt-entrant-line") {
+                        (crate::view::car_tag(&car))
+                        span { " \u{2014} no pending start; enter the elapsed time or select one above." }
                     }
                 },
             }

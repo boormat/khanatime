@@ -1266,11 +1266,9 @@ fn view_quick_add(model: crate::Model) -> View {
                                         .filter(|c| !c.is_empty())
                                         .collect();
                                     let predicted = crate::event::next_free_number(&used);
-                                    let msg = format!("#{predicted}\u{26A1}");
-                                    tags.push(view! { span(class="tag is-warning is-light") { (msg) } });
+                                    tags.push(view! { span(class="tag is-warning is-light kt-car-tag") { i(class="fa fa-car") { " " } (predicted) " \u{26A1}" } });
                                 } else {
-                                    let c = format!("#{}", entry.car);
-                                    tags.push(view! { span(class="tag is-black") { (c) } });
+                                    tags.push(crate::view::car_tag(&entry.car));
                                 }
 
                                 // Name (link-blue)
@@ -1435,14 +1433,6 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
             let desc = e.description.clone().unwrap_or_default();
             let shared = e.shared.clone().unwrap_or_default();
 
-            // Car tag
-            let car_tag_text = car.clone();
-            let car_tag: View = if car.is_empty() {
-                view! { span(class="tag is-light") { "?" } }
-            } else {
-                view! { span(class="tag is-black") { (car_tag_text) } }
-            };
-
             // Class checkboxes (if editing) or class tags (if viewing)
             let class_display: Vec<View> = if editing {
                 event_classes
@@ -1469,10 +1459,7 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
             } else {
                 classes
                     .iter()
-                    .map(|cl| {
-                        let cl = cl.clone();
-                        view! { span(class="tag is-info is-light mr-1") { (cl) } }
-                    })
+                    .map(|cl| crate::view::class_tag(cl))
                     .collect()
             };
 
@@ -1509,31 +1496,32 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                 view! { span { (name) } }
             };
 
+            // Build info line: vehicle · description · shared
+            let mut info_parts: Vec<String> = vec![];
+            if !vehicle.is_empty() {
+                info_parts.push(vehicle);
+            }
+            if !desc.is_empty() {
+                info_parts.push(desc);
+            }
+            if !shared.is_empty() {
+                info_parts.push(format!("Shared: {}", shared));
+            }
+            let info_line: View = if info_parts.is_empty() {
+                view! {}
+            } else {
+                view! { span(class="has-text-grey is-size-7") { (info_parts.join(" \u{00b7} ")) } }
+            };
+
             view! {
                 li {
-                    div(class="field is-grouped is-grouped-multiline is-vcentered") {
-                        div(class="control") { (car_tag) }
-                        div(class="control") { (name_click) }
-                    }
-                    div(class="field is-grouped is-grouped-multiline is-vcentered") {
+                    div(class="kt-entrant-line") {
+                        (crate::view::car_tag(&car))
+                        (name_click)
                         (class_display)
+                        (delete_btn)
                     }
-                    (if !vehicle.is_empty() || !desc.is_empty() || !shared.is_empty() {
-                        let mut parts: Vec<String> = vec![];
-                        if !vehicle.is_empty() {
-                            parts.push(format!("Vehicle: {}", vehicle));
-                        }
-                        if !desc.is_empty() {
-                            parts.push(format!("Desc: {}", desc));
-                        }
-                        if !shared.is_empty() {
-                            parts.push(format!("Shared: {}", shared));
-                        }
-                        view! { p(class="help") { (parts.join("  ")) } }
-                    } else {
-                        view! {}
-                    })
-                    (delete_btn)
+                    (info_line)
                 }
             }
         })

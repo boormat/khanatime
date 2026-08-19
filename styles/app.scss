@@ -124,6 +124,22 @@
   overflow-y: auto;
 }
 
+// Car number tag — monospace, bold, consistent across all views.
+.kt-car-tag {
+  font-family: monospace;
+  font-weight: 600;
+  min-width: 4em;
+  text-align: center;
+}
+
+// Entrant info line — flex row for car + name + classes + details.
+.kt-entrant-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 // Full-screen overlays for the QR exporter and the camera scanner.
 .kt-modal {
   position: fixed;

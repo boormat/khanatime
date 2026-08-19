@@ -614,8 +614,9 @@ fn view_pending_one(model: crate::Model, idx: usize) -> View {
                 let penalty_view = penalty::view(model, sm.penalty, time_ds);
                 view! {
                     h3(class="title is-6") { "Confirm finish" }
-                    p(class="notification is-primary is-light") {
-                        ("#") (car) (" — ") (elapsed_str)
+                    p(class="notification is-primary is-light kt-entrant-line") {
+                        (crate::view::car_tag(&car))
+                        span { " \u{2014} " (elapsed_str) }
                     }
                     (attached_events)
                     (penalty_view)
