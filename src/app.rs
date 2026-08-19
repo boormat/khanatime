@@ -306,6 +306,19 @@ pub enum Msg {
     DeleteEvent(String),
     /// Close the current event and return to the no-event picker.
     ClearEvent,
+    /// Import an account shared via URL QR.
+    ImportAccount {
+        homeserver: String,
+        user_id: String,
+        password: String,
+    },
+    /// Import a contact shared via URL QR.
+    ImportContact {
+        user_id: String,
+        name: String,
+        description: String,
+        phone: Option<String>,
+    },
 }
 
 impl Model {
@@ -584,6 +597,74 @@ pub fn update(model: Model, msg: Msg) {
                         .set("That doesn't look like a valid join link.".to_string());
                 }
             }
+        }
+        Msg::ImportAccount {
+            homeserver,
+            user_id,
+            password,
+        } => {
+            #[cfg(target_arch = "wasm32")]
+            if !homeserver.is_empty() && !user_id.is_empty() {
+                let account = crate::services::matrix::Account {
+                    homeserver,
+                    user_id,
+                    description: String::new(),
+                    account_type: crate::services::matrix::AccountType::EventShared,
+                    kind: crate::services::matrix::StoredAuth::Matrix {
+                        device_id: String::new(),
+                        access_token: String::new(),
+                        refresh_token: None,
+                        password,
+                    },
+                    active: false,
+                    event_uid: None,
+                };
+                crate::services::matrix::save_account(&account);
+                model
+                    .screens
+                    .accounts
+                    .refresh
+                    .set(model.screens.accounts.refresh.get() + 1);
+                model
+                    .screens
+                    .accounts
+                    .feedback
+                    .set("Account imported.".into());
+                show(model, Screen::Accounts);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = (homeserver, user_id, password);
+        }
+        Msg::ImportContact {
+            user_id,
+            name,
+            description,
+            phone,
+        } => {
+            #[cfg(target_arch = "wasm32")]
+            if !user_id.is_empty() {
+                let contact = crate::services::matrix::Contact {
+                    user_id,
+                    name,
+                    description,
+                    phone,
+                    signing_key: None,
+                };
+                crate::services::matrix::save_contact(&contact);
+                model
+                    .screens
+                    .accounts
+                    .refresh
+                    .set(model.screens.accounts.refresh.get() + 1);
+                model
+                    .screens
+                    .accounts
+                    .feedback
+                    .set("Contact imported.".into());
+                show(model, Screen::Accounts);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = (user_id, name, description, phone);
         }
     }
 }

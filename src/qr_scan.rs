@@ -247,6 +247,59 @@ fn spawn_detect_loop(
 /// chunked frame joins the session (and triggers import once complete); a
 /// whole parcel imports directly.
 fn handle_scan_string(model: Model, text: &str) {
+    // Try parsing as a URL or bare query string for typed imports.
+    let params: std::collections::HashMap<String, String> = {
+        let query = if let Ok(url) = url::Url::parse(text) {
+            url.query().unwrap_or("").to_string()
+        } else {
+            text.strip_prefix('?').unwrap_or(text).to_string()
+        };
+        url::form_urlencoded::parse(query.as_bytes())
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect()
+    };
+    if let Some(ty) = params.get("type").map(String::as_str) {
+        match ty {
+            "account" => {
+                if let (Some(homeserver), Some(user_id)) =
+                    (params.get("homeserver"), params.get("user_id"))
+                {
+                    let password = params.get("password").cloned().unwrap_or_default();
+                    model.sync.scan_active.set(false);
+                    stop_scan();
+                    crate::update(
+                        model,
+                        crate::Msg::ImportAccount {
+                            homeserver: homeserver.clone(),
+                            user_id: user_id.clone(),
+                            password,
+                        },
+                    );
+                    return;
+                }
+            }
+            "contact" => {
+                if let Some(user_id) = params.get("user_id") {
+                    let name = params.get("name").cloned().unwrap_or_default();
+                    let description = params.get("description").cloned().unwrap_or_default();
+                    let phone = params.get("phone").cloned().filter(|s| !s.is_empty());
+                    model.sync.scan_active.set(false);
+                    stop_scan();
+                    crate::update(
+                        model,
+                        crate::Msg::ImportContact {
+                            user_id: user_id.clone(),
+                            name,
+                            description,
+                            phone,
+                        },
+                    );
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
     let complete_invite = crate::event::Invite::from_url(text).filter(|inv| {
         !inv.homeserver.is_empty()
             && !inv.event.is_empty()
@@ -289,60 +342,6 @@ fn handle_scan_string(model: Model, text: &str) {
     if crate::services::qr::unpack_parcel(text).is_ok() {
         finish_scan(model, text);
         return;
-    }
-    // Account QR: import a shared account from another device.
-    if let Some(json) = text.strip_prefix("khanatime_account:") {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
-            let homeserver = val["homeserver"].as_str().unwrap_or_default().to_string();
-            let user_id = val["user_id"].as_str().unwrap_or_default().to_string();
-            let password = val["password"].as_str().unwrap_or_default().to_string();
-            let description = val["description"].as_str().unwrap_or_default().to_string();
-            if !homeserver.is_empty() && !user_id.is_empty() {
-                let account = crate::services::matrix::Account {
-                    homeserver,
-                    user_id,
-                    description,
-                    account_type: crate::services::matrix::AccountType::EventShared,
-                    kind: crate::services::matrix::StoredAuth::Matrix {
-                        device_id: String::new(),
-                        access_token: String::new(),
-                        refresh_token: None,
-                        password,
-                    },
-                    active: false,
-                    event_uid: None,
-                };
-                crate::services::matrix::save_account(&account);
-                model
-                    .screens
-                    .accounts
-                    .refresh
-                    .set(model.screens.accounts.refresh.get() + 1);
-            }
-        }
-        model.sync.scan_active.set(false);
-        stop_scan();
-    } else if let Some(json) = text.strip_prefix("khanatime_contact:") {
-        // Contact QR: import a contact from another device.
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json) {
-            let contact = crate::services::matrix::Contact {
-                user_id: val["user_id"].as_str().unwrap_or_default().to_string(),
-                name: val["name"].as_str().unwrap_or_default().to_string(),
-                description: val["description"].as_str().unwrap_or_default().to_string(),
-                phone: val["phone"].as_str().map(|s| s.to_string()),
-                signing_key: None,
-            };
-            if !contact.user_id.is_empty() {
-                crate::services::matrix::save_contact(&contact);
-                model
-                    .screens
-                    .accounts
-                    .refresh
-                    .set(model.screens.accounts.refresh.get() + 1);
-            }
-        }
-        model.sync.scan_active.set(false);
-        stop_scan();
     }
 }
 

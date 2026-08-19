@@ -26,6 +26,55 @@ pub fn from_location() -> Option<Invite> {
     Some(inv)
 }
 
+/// Parse `type=account` from the URL query string, returning
+/// `(homeserver, user_id, password)` if present.
+#[cfg(target_arch = "wasm32")]
+pub fn from_location_account() -> Option<(String, String, String)> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let q = search.strip_prefix('?').unwrap_or(&search);
+    let params: std::collections::HashMap<String, String> = q
+        .split('&')
+        .filter_map(|pair| {
+            let mut kv = pair.splitn(2, '=');
+            let k = kv.next()?.to_string();
+            let v = kv.next()?.to_string();
+            Some((k, v))
+        })
+        .collect();
+    if params.get("type").map(String::as_str) != Some("account") {
+        return None;
+    }
+    let homeserver = params.get("homeserver")?.clone();
+    let user_id = params.get("user_id")?.clone();
+    let password = params.get("password").cloned().unwrap_or_default();
+    Some((homeserver, user_id, password))
+}
+
+/// Parse `type=contact` from the URL query string, returning
+/// `(user_id, name, description, phone)` if present.
+#[cfg(target_arch = "wasm32")]
+pub fn from_location_contact() -> Option<(String, String, String, Option<String>)> {
+    let search = web_sys::window()?.location().search().ok()?;
+    let q = search.strip_prefix('?').unwrap_or(&search);
+    let params: std::collections::HashMap<String, String> = q
+        .split('&')
+        .filter_map(|pair| {
+            let mut kv = pair.splitn(2, '=');
+            let k = kv.next()?.to_string();
+            let v = kv.next()?.to_string();
+            Some((k, v))
+        })
+        .collect();
+    if params.get("type").map(String::as_str) != Some("contact") {
+        return None;
+    }
+    let user_id = params.get("user_id")?.clone();
+    let name = params.get("name").cloned().unwrap_or_default();
+    let description = params.get("description").cloned().unwrap_or_default();
+    let phone = params.get("phone").cloned().filter(|s| !s.is_empty());
+    Some((user_id, name, description, phone))
+}
+
 /// Clear the join query from the URL so a refresh / navigation doesn't re-join.
 #[cfg(target_arch = "wasm32")]
 pub fn consume() {
@@ -41,5 +90,17 @@ pub fn consume() {
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 pub fn from_location() -> Option<Invite> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub fn from_location_account() -> Option<(String, String, String)> {
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub fn from_location_contact() -> Option<(String, String, String, Option<String>)> {
     None
 }
