@@ -39,6 +39,22 @@ pub fn start_scan(model: Model) {
     });
 }
 
+/// Start the camera scanner in preview mode: detected text is stored in
+/// `scan_preview` instead of being auto-imported.  Used by the QR page to show
+/// a confirmation modal before importing.
+pub fn start_scan_preview(model: Model) {
+    model.sync.scan_preview.set(None);
+    stop_scan();
+    model.sync.scan_active.set(true);
+    model
+        .sync
+        .scan_status
+        .set("Scanning — point at a QR code…".to_string());
+    wasm_bindgen_futures::spawn_local(async move {
+        run_scan(model).await;
+    });
+}
+
 async fn run_scan(model: Model) {
     let Some(window) = web_sys::window() else {
         model.sync.scan_active.set(false);
@@ -247,6 +263,18 @@ fn spawn_detect_loop(
 /// chunked frame joins the session (and triggers import once complete); a
 /// whole parcel imports directly.
 fn handle_scan_string(model: Model, text: &str) {
+    // Preview mode: scan_preview is Some("") sentinel from start_scan_preview.
+    // Store the detected text and stop so the QR page can show confirmation.
+    if model
+        .sync
+        .scan_preview
+        .with(|p| p.as_ref().map(String::is_empty).unwrap_or(false))
+    {
+        model.sync.scan_preview.set(Some(text.to_string()));
+        model.sync.scan_active.set(false);
+        stop_scan();
+        return;
+    }
     // Try parsing as a URL or bare query string for typed imports.
     let params: std::collections::HashMap<String, String> = {
         let query = if let Ok(url) = url::Url::parse(text) {

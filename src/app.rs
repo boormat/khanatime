@@ -15,6 +15,7 @@ pub enum Screen {
     Home,
     Events,
     Accounts,
+    Qr,
     Help,
     KhanaRules,
     Results,
@@ -34,6 +35,7 @@ impl Screen {
             Screen::Home => "home",
             Screen::Events => "events",
             Screen::Accounts => "accounts",
+            Screen::Qr => "qr",
             Screen::Help => "help",
             Screen::KhanaRules => "rules",
             Screen::Results => "results",
@@ -52,6 +54,7 @@ impl Screen {
             "home" => Screen::Home,
             "events" => Screen::Events,
             "accounts" => Screen::Accounts,
+            "qr" => Screen::Qr,
             "help" => Screen::Help,
             "rules" => Screen::KhanaRules,
             "results" => Screen::Results,
@@ -139,19 +142,19 @@ impl Mode {
         use Screen::*;
         match self {
             Mode::Testing => &[
-                Home, Events, Accounts, Help, KhanaRules, Results, Stage, Start, Finish, Event,
+                Home, Events, Accounts, Qr, Help, KhanaRules, Results, Stage, Start, Finish, Event,
                 Entries, Chat, Stopwatch,
             ],
             Mode::Organiser => &[
-                Home, Events, Accounts, Event, Start, Finish, Stage, Stopwatch, Results, Entries,
-                Chat, Help, KhanaRules,
+                Home, Events, Accounts, Qr, Event, Start, Finish, Stage, Stopwatch, Results,
+                Entries, Chat, Help, KhanaRules,
             ],
-            Mode::Spectator => &[Home, Results],
+            Mode::Spectator => &[Home, Qr, Results],
             Mode::Official => &[
-                Home, Events, Start, Finish, Stage, Stopwatch, Results, Entries, Chat, Help,
+                Home, Events, Qr, Start, Finish, Stage, Stopwatch, Results, Entries, Chat, Help,
                 KhanaRules,
             ],
-            Mode::Competitor => &[Home, Events, Results, Entries, Help, KhanaRules],
+            Mode::Competitor => &[Home, Events, Qr, Results, Entries, Help, KhanaRules],
         }
     }
 
@@ -217,6 +220,8 @@ pub struct SyncState {
     pub parcel_qr_total: Signal<usize>,
     /// Camera scan session is live.
     pub scan_active: Signal<bool>,
+    /// Camera scan in preview mode: stores detected text instead of auto-importing.
+    pub scan_preview: Signal<Option<String>>,
     /// Status/feedback line for the scan panel.
     pub scan_status: Signal<String>,
     /// Which export variant to produce (full event vs timing-only).
@@ -234,6 +239,7 @@ pub struct Screens {
     pub home: page::home::Model,
     pub events: page::events::Model,
     pub accounts: page::accounts::Model,
+    pub qr: page::qr::Model,
     pub setup: crate::khana::page::event::Model,
     pub stage: crate::khana::page::stage::StageModel,
     pub start: crate::khana::page::start::Model,
@@ -284,6 +290,8 @@ pub enum Msg {
     VoidObservation(String),
     /// Start the camera QR scanner.
     ScanStart,
+    /// Start the camera QR scanner in preview mode (stores result, no auto-import).
+    ScanStartPreview,
     /// Stop the camera QR scanner.
     ScanStop,
     /// Pause/resume the animated QR export display.
@@ -374,6 +382,7 @@ impl Model {
                 parcel_mode: create_signal(ParcelMode::default()),
                 pending_join: create_signal(None),
                 scan_active: create_signal(false),
+                scan_preview: create_signal(None),
                 scan_status: create_signal(String::new()),
                 parcel_qr_paused: create_signal(false),
             },
@@ -384,6 +393,7 @@ impl Model {
                 home: page::home::init(),
                 events: page::events::init(),
                 accounts: page::accounts::init(),
+                qr: page::qr::init(),
                 setup: crate::khana::page::event::init(),
                 stage: crate::khana::page::stage::init(),
                 start: crate::khana::page::start::init(),
@@ -559,6 +569,12 @@ pub fn update(model: Model, msg: Msg) {
         Msg::ScanStart => {
             #[cfg(target_arch = "wasm32")]
             crate::qr_scan::start_scan(model);
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = model;
+        }
+        Msg::ScanStartPreview => {
+            #[cfg(target_arch = "wasm32")]
+            crate::qr_scan::start_scan_preview(model);
             #[cfg(not(target_arch = "wasm32"))]
             let _ = model;
         }
@@ -886,6 +902,7 @@ fn view_content(model: Model) -> View {
                 Screen::Home => page::home::view(model),
                 Screen::Events => page::events::view(model),
                 Screen::Accounts => page::accounts::view(model),
+                Screen::Qr => page::qr::view(model),
                 Screen::Help => page::help::view(),
                 Screen::KhanaRules => crate::khana::page::khana_rule::view(),
                 Screen::Stage => crate::khana::page::stage::view(model),
@@ -936,6 +953,7 @@ fn view_navbar(model: Model) -> View {
         (Screen::Start, "fa fa-flag", "Start flag"),
         (Screen::Finish, "fa fa-flag-checkered", "Finish flag"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
+        (Screen::Qr, "fa fa-qrcode", "QR Import"),
         (Screen::Help, "fa fa-question", "Help"),
         (Screen::KhanaRules, "fa fa-book", "Rules"),
     ];
@@ -1055,6 +1073,7 @@ mod tests {
             Screen::Chat,
             Screen::Stopwatch,
             Screen::Accounts,
+            Screen::Qr,
         ];
         for screen in all {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));
@@ -1079,6 +1098,7 @@ mod tests {
             Screen::Chat,
             Screen::Stopwatch,
             Screen::Accounts,
+            Screen::Qr,
         ] {
             assert!(
                 Mode::ALL.iter().any(|m| m.has_screen(screen)),

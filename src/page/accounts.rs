@@ -418,9 +418,9 @@ fn view_action_buttons(model: crate::Model) -> View {
                 span { "Add contact" }
             }
             button(class="button is-light", on:click=move |_| {
-                crate::update(model, crate::Msg::ScanStart);
+                crate::update(model, crate::Msg::Show(crate::Screen::Qr));
             }) {
-                span(class="icon") { i(class="fa fa-camera") }
+                span(class="icon") { i(class="fa fa-qrcode") }
                 span { "Scan QR" }
             }
         }
