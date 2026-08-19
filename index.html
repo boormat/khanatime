@@ -18,6 +18,10 @@
 
     <link rel="manifest" href="./manifest.json">
     <base data-trunk-public-url />
+
+    <!-- QR scanning: jsQR fallback for browsers without BarcodeDetector (Brave, Firefox) -->
+    <script data-trunk src="public/js/jsqr.min.js"></script>
+    <script data-trunk src="public/js/qr-shim.js"></script>
     <!-- 
     <script>
         // register ServiceWorker

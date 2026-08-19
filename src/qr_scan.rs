@@ -1,11 +1,11 @@
 //! Camera QR scanning for parcel import (wasm only).
 //!
 //! Uses the browser's `BarcodeDetector` (Chrome/Edge/Android) over a live
-//! `getUserMedia` video feed.  Decoded `khanatime_qr:` / `khanatime_parcel:`
+//! `getUserMedia` video feed.  Falls back to a jsQR shim when `BarcodeDetector`
+//! is missing (Brave, Firefox).  Decoded `khanatime_qr:` / `khanatime_parcel:`
 //! strings are accumulated; once a chunked parcel's frames are all present the
 //! parcel is re-joined and imported through the same path as pasting
-//! (`sync::import_parcel_text`).  Feature-detects `BarcodeDetector` and falls
-//! back to a message (paste instead) where it's missing (e.g. Firefox).
+//! (`sync::import_parcel_text`).
 
 use crate::Model;
 use std::cell::RefCell;
@@ -60,36 +60,55 @@ async fn run_scan(model: Model) {
         model.sync.scan_active.set(false);
         return;
     };
-    // Feature-detect BarcodeDetector.
-    let ctor = match js_sys::Reflect::get(&window, &"BarcodeDetector".into()) {
-        Ok(v) if !v.is_undefined() && !v.is_null() => v,
+
+    // Feature-detect BarcodeDetector, fall back to jsQR shim.
+    let use_jsqr;
+    let detector;
+    let detect_fn;
+
+    match js_sys::Reflect::get(&window, &"BarcodeDetector".into()) {
+        Ok(v) if !v.is_undefined() && !v.is_null() => {
+            // Native BarcodeDetector available (Chrome/Edge/Android).
+            use_jsqr = false;
+            let opts = js_sys::Object::new();
+            let formats = js_sys::Array::of1(&"qr_code".into());
+            let _ = js_sys::Reflect::set(&opts, &"formats".into(), &formats);
+            let ctor_fn: js_sys::Function = v.unchecked_into();
+            match js_sys::Reflect::construct(&ctor_fn, &js_sys::Array::of1(&opts)) {
+                Ok(d) => {
+                    detector = d;
+                    detect_fn = js_sys::Reflect::get(&detector, &"detect".into())
+                        .unwrap()
+                        .unchecked_into();
+                }
+                Err(_) => {
+                    model.sync.scan_active.set(false);
+                    model.sync.scan_status.set(
+                        "QR scanning unavailable here — paste the parcel instead.".to_string(),
+                    );
+                    return;
+                }
+            }
+        }
         _ => {
-            model.sync.scan_active.set(false);
-            model
-                .sync
-                .scan_status
-                .set("QR scanning needs Chrome/Edge — paste the parcel instead.".to_string());
-            return;
+            // BarcodeDetector missing — check for jsQR shim (Brave, Firefox).
+            match js_sys::Reflect::get(&window, &"scanQRFromVideo".into()) {
+                Ok(v) if !v.is_undefined() && !v.is_null() => {
+                    use_jsqr = true;
+                    detector = JsValue::undefined();
+                    detect_fn = v.unchecked_into();
+                }
+                _ => {
+                    model.sync.scan_active.set(false);
+                    model.sync.scan_status.set(
+                        "QR scanning not supported in this browser — paste the parcel instead."
+                            .to_string(),
+                    );
+                    return;
+                }
+            }
         }
-    };
-    let opts = js_sys::Object::new();
-    let formats = js_sys::Array::of1(&"qr_code".into());
-    let _ = js_sys::Reflect::set(&opts, &"formats".into(), &formats);
-    let ctor_fn: js_sys::Function = ctor.unchecked_into();
-    let detector = match js_sys::Reflect::construct(&ctor_fn, &js_sys::Array::of1(&opts)) {
-        Ok(d) => d,
-        Err(_) => {
-            model.sync.scan_active.set(false);
-            model
-                .sync
-                .scan_status
-                .set("QR scanning unavailable here.".to_string());
-            return;
-        }
-    };
-    let detect_fn: js_sys::Function = js_sys::Reflect::get(&detector, &"detect".into())
-        .unwrap()
-        .unchecked_into();
+    }
 
     let nav = window.navigator();
     let Ok(media) = nav.media_devices() else {
@@ -158,13 +177,14 @@ async fn run_scan(model: Model) {
             .scan_status
             .set("Camera has no video track — try the other camera.".to_string());
     } else {
+        let backend = if use_jsqr { "jsQR" } else { "native" };
         model.sync.scan_status.set(format!(
-            "Camera on ({n} track{s}) — point at the QR.",
+            "Camera on ({n} track{s}, {backend}) — point at the QR.",
             s = if n == 1 { "" } else { "s" }
         ));
     }
 
-    let interval = spawn_detect_loop(model, detector, detect_fn, stream.clone());
+    let interval = spawn_detect_loop(model, detector, detect_fn, stream.clone(), use_jsqr);
     SCAN.with(|s| {
         *s.borrow_mut() = Some(ScanSession {
             stream,
@@ -196,6 +216,7 @@ fn spawn_detect_loop(
     detector: JsValue,
     detect_fn: js_sys::Function,
     stream: web_sys::MediaStream,
+    use_jsqr: bool,
 ) -> i32 {
     let window = web_sys::window().expect("window");
     let tick = std::cell::Cell::new(0u32);
@@ -230,21 +251,35 @@ fn spawn_detect_loop(
             let _ = video.play();
         }
         wasm_bindgen_futures::spawn_local(async move {
-            let args = js_sys::Array::of1(&video);
-            let Ok(promise) = detect_fn.apply(&detector, &args) else {
-                return;
-            };
-            let promise: js_sys::Promise = promise.unchecked_into();
-            let Ok(value) = wasm_bindgen_futures::JsFuture::from(promise).await else {
-                return;
-            };
-            let codes = value.unchecked_into::<js_sys::Array>();
-            for i in 0..codes.length() {
-                let raw = js_sys::Reflect::get(&codes.get(i), &"rawValue".into())
-                    .ok()
-                    .and_then(|v| v.as_string());
-                if let Some(text) = raw {
-                    handle_scan_string(model, &text);
+            if use_jsqr {
+                // jsQR shim path: call window.scanQRFromVideo(video) → string|null.
+                let arg = video.into();
+                let Ok(result) = detect_fn.call1(&JsValue::undefined(), &arg) else {
+                    return;
+                };
+                if let Some(text) = result.as_string() {
+                    if !text.is_empty() {
+                        handle_scan_string(model, &text);
+                    }
+                }
+            } else {
+                // Native BarcodeDetector path: detector.detect(video) → array of results.
+                let args = js_sys::Array::of1(&video);
+                let Ok(promise) = detect_fn.apply(&detector, &args) else {
+                    return;
+                };
+                let promise: js_sys::Promise = promise.unchecked_into();
+                let Ok(value) = wasm_bindgen_futures::JsFuture::from(promise).await else {
+                    return;
+                };
+                let codes = value.unchecked_into::<js_sys::Array>();
+                for i in 0..codes.length() {
+                    let raw = js_sys::Reflect::get(&codes.get(i), &"rawValue".into())
+                        .ok()
+                        .and_then(|v| v.as_string());
+                    if let Some(text) = raw {
+                        handle_scan_string(model, &text);
+                    }
                 }
             }
         });
@@ -338,7 +373,6 @@ fn handle_scan_string(model: Model, text: &str) {
         model.sync.scan_active.set(false);
         stop_scan();
         crate::update(model, crate::Msg::Join(inv));
-        return;
     }
     if let Ok(frame) = crate::services::qr::unpack_frame(text) {
         let complete = SCAN.with(|sc| {
@@ -369,7 +403,6 @@ fn handle_scan_string(model: Model, text: &str) {
     }
     if crate::services::qr::unpack_parcel(text).is_ok() {
         finish_scan(model, text);
-        return;
     }
 }
 

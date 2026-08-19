@@ -8,7 +8,7 @@
 
 ```bash
 # Dev server (Trunk, auto-reload on save)
-trunk serve -p 8082
+trunk serve -p 8080
 
 # HTTPS dev server — OIDC/SSO testing against matrix.org (needs the /etc/hosts
 # alias khanatime.test; see the script header for one-time sudo setup)
@@ -39,35 +39,31 @@ unlinted code.
 
 ## Worktrees
 
-For anything except trivial changes, the main repo existing changes, 
-use a git worktree to isolate the work.  
-On completion, Fast forward merge the back to main repo dir.
-If it cannot fast forward, rebase the worktree, and retest and fix.
-If there is local changes in the main repo, prompt the user to help.
+For anything except trivial changes, work in an isolated git worktree. The
+agent MUST default to a worktree; only edit the main repo directly for trivial
+single-line fixes. **All git integration (commit / merge / rebase / push /
+worktree cleanup) is performed by the user, never by the agent** — the global
+opencode config (`~/.config/opencode/opencode.jsonc`) denies those commands,
+and that is intentional.
 
-Worktrees can be in ~/work/
+Use the `using-git-worktrees` skill to create and work inside the worktree
+(convention: `~/work/<abbrev>-<slug>` on branch `feature/<slug>`, where
+`<abbrev>` is the repo-name abbreviation, e.g. `khanatime`). The skill owns
+creation/isolation only; it never commits or merges.
 
-```bash
-# Create a worktree on a feature branch
-git worktree add ~/work/khanatime-feature-name -b feature/feature-name
+### Testing workflow (MANDATORY)
 
-# Work in the worktree
-cd ~/work/khanatime-feature-name
-# ... make changes, run check.sh, commit ...
+1. Create worktree via the skill, make changes, run `./scripts/check.sh`
+2. **Stop main server**: `pkill -f "trunk serve"`
+3. **Start worktree server**: `scripts/serve_https.sh start` (runs on port 8080)
+4. **STOP and wait** for user to test and approve
+5. **Hand back to the user**: report the change is ready and give the merge +
+   cleanup commands for the user to run from the main repo:
+   `git merge --no-ff feature/<slug>` then
+   `git worktree remove ~/work/khanatime-<slug>`. The agent must NOT run these
+   itself.
 
-# When done, in the main repo, FF merge
-git merge --no-ff feature/feature-name
-# If not rebase in the worktree
-git rebase main  # (in the worktree)
-
-# Clean up the worktree
-git worktree remove ~/work/khanatime-feature-name
-```
-
-The agent MUST default to using a worktree for any change. Only edit the
-main repo dir directly for trivial single-line fixes. Always create the
-worktree before starting work — never commit or build on main while there
-are uncommitted changes.
+Never merge to main until the user says "looks good" or approves the changes.
 
 ## Framework notes
 
@@ -252,6 +248,7 @@ the app.
   burger menu, unified stopwatch, COC event status, About page still planned —
   see `docs/plan/layout-navigation.md` before restructuring `Screen`/`view_navbar`
   or the timing pages.
+- Bug reports go in `docs/bugs.md` (not at the repo root).
 
 ## Post-plan checklist
 

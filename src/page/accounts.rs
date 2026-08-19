@@ -735,7 +735,7 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                     let data = url::form_urlencoded::byte_serialize(
                         format!(
                             "type=account&homeserver={}&user_id={}&password={}",
-                            &a.homeserver, &a.user_id, &pass,
+                            a.homeserver, a.user_id, pass,
                         )
                         .as_bytes(),
                     )
@@ -769,7 +769,7 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                     .unwrap_or_default();
                 let qs = format!(
                     "type=contact&user_id={}&name={}&description={}{phone_param}",
-                    &c.user_id, &c.name, &c.description,
+                    c.user_id, c.name, c.description,
                 );
                 let data = url::form_urlencoded::byte_serialize(qs.as_bytes()).collect::<String>();
                 let url = format!("{app_base}?{data}");
@@ -780,7 +780,7 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
                 if let Some(a) = accounts.iter().find(|a| a.user_id == *uid) {
                     let qs = format!(
                         "type=contact&user_id={}&name={}&description={}",
-                        &a.user_id, &a.user_id, &a.description,
+                        a.user_id, a.user_id, a.description,
                     );
                     let data =
                         url::form_urlencoded::byte_serialize(qs.as_bytes()).collect::<String>();
