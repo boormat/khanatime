@@ -1090,6 +1090,13 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
     {
         if let Some(incoming) = crate::event::from_setup_body(&msg.body) {
+            // Verify setup manifest signature (non-blocking, TOFU)
+            if let (Some(sig), Some(key)) = (&incoming.signature, &incoming.signing_key) {
+                let mut reg = crate::signing::SigningKeyRegistry::load();
+                reg.record_key(key, None);
+                let _ = reg.save();
+                let _ = crate::signing::verify_payload(&incoming, sig, key);
+            }
             model.khana.event.update(|e| {
                 crate::event::merge_setup(e, &incoming);
             });

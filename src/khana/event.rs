@@ -1539,11 +1539,24 @@ pub fn ensure_demo() {
 }
 
 /// The `khanatime_setup:` manifest body for an event.
+///
+/// Signs the EventInfo with the device key if not already signed.
 pub fn setup_body(ev: &EventInfo) -> String {
+    let mut ev = ev.clone();
+    if ev.signature.is_none() {
+        if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
+            if keys.can_sign() {
+                if let Ok((sig, key)) = crate::signing::sign_payload(&ev, &keys) {
+                    ev.signature = Some(sig);
+                    ev.signing_key = Some(key);
+                }
+            }
+        }
+    }
     format!(
         "{}{}",
         crate::timing_event::TimingEvent::SETUP_PREFIX,
-        serde_json::to_string(ev).unwrap()
+        serde_json::to_string(&ev).unwrap()
     )
 }
 
