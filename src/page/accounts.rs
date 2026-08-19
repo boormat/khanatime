@@ -231,27 +231,87 @@ fn view_signing_key(model: crate::Model) -> View {
     let _ = sm.refresh.get();
     let keys = crate::signing::DeviceKeys::load_from_storage();
     let fp = keys.as_ref().and_then(|k| k.fingerprint().ok());
+    let pub_key_b64 = keys.as_ref().map(|k| k.ed25519_public_key.clone());
     let registry = crate::signing::SigningKeyRegistry::load();
-    let registry_count = registry.all().len();
+
+    // Build fingerprint + export sub-view
+    let key_view = if let Some(fp) = fp {
+        let pk = pub_key_b64.unwrap_or_default();
+        view! {
+            p {
+                span(class="tag is-info is-medium") { (fp) }
+                span(class="ml-2 has-text-grey") { "device fingerprint" }
+            }
+            button(
+                class="button is-small is-link is-outlined mt-2",
+                title="Copy public key to clipboard",
+                on:click=move |_| {
+                    let nav = web_sys::window().unwrap().navigator().clipboard();
+                    let _ = nav.write_text(&pk);
+                },
+            ) {
+                span(class="icon is-small") { i(class="fa fa-copy") }
+                span { "Export Public Key" }
+            }
+        }
+    } else {
+        view! {
+            p(class="has-text-grey") { "No signing key generated yet. It will be created on first use." }
+        }
+    };
+
+    // Build trust registry sub-view
+    let reg_view = if registry.all().is_empty() {
+        view! {}
+    } else {
+        let mut reg_items: Vec<View> = Vec::new();
+        for rec in registry.all() {
+            let key_fp = crate::signing::DeviceKeys::from_public_key(
+                String::new(),
+                String::new(),
+                rec.public_key.clone(),
+            )
+            .fingerprint()
+            .unwrap_or_else(|_| "?".into());
+            let status_class = match rec.status {
+                crate::signing::KeyTrustStatus::Verified => "is-success",
+                crate::signing::KeyTrustStatus::Unverified => "is-warning",
+                crate::signing::KeyTrustStatus::Rejected => "is-danger",
+            };
+            let status_label = match rec.status {
+                crate::signing::KeyTrustStatus::Verified => "Verified",
+                crate::signing::KeyTrustStatus::Unverified => "Unverified",
+                crate::signing::KeyTrustStatus::Rejected => "Rejected",
+            };
+            let uid_text = rec.user_id.clone().unwrap_or_else(|| "unknown".into());
+            let linked = rec.contact_id.clone().unwrap_or_default();
+            let linked_text = if linked.is_empty() {
+                view! {}
+            } else {
+                view! { span(class="is-size-7 has-text-grey ml-2") { (format!("linked to {linked}")) } }
+            };
+            reg_items.push(view! {
+                div(class="notification is-light is-flex is-align-items-center is-justify-content-space-between py-2 px-3 mb-2") {
+                    div {
+                        span(class="tag is-small mr-1") { (key_fp) }
+                        span(class="tag is-small") { (uid_text) }
+                        span(class={format!("tag is-small ml-1 {status_class}")}) { (status_label) }
+                        (linked_text)
+                    }
+                }
+            });
+        }
+        view! {
+            h3(class="title is-6 mt-4") { "Trust Registry" }
+            (reg_items)
+        }
+    };
 
     view! {
         div(class="box") {
             h2(class="title is-5") { "Signing Key" }
-            (if let Some(fp) = fp {
-                view! {
-                    p {
-                        span(class="tag is-info is-medium") { (fp) }
-                        span(class="ml-2 has-text-grey") { "device fingerprint" }
-                    }
-                }
-            } else {
-                view! {
-                    p(class="has-text-grey") { "No signing key generated yet. It will be created on first use." }
-                }
-            })
-            p(class="mt-2 has-text-grey is-size-7") {
-                (format!("{} key(s) in trust registry", registry_count))
-            }
+            (key_view)
+            (reg_view)
         }
     }
 }
@@ -279,6 +339,16 @@ fn view_contacts(model: crate::Model) -> View {
             Some(p) => format!(" · {}", p),
             None => String::new(),
         };
+        let key_text = c.signing_key.as_ref().map(|k| {
+            crate::signing::DeviceKeys::from_public_key(String::new(), String::new(), k.clone())
+                .fingerprint()
+                .unwrap_or_else(|_| "?".into())
+        });
+        let key_view = if let Some(kfp) = key_text {
+            view! { p(class="is-size-7 has-text-info") { "key: " (kfp) } }
+        } else {
+            view! {}
+        };
         let c_uid = c.user_id.clone();
         let c_uid2 = c.user_id.clone();
         items.push(view! {
@@ -287,6 +357,7 @@ fn view_contacts(model: crate::Model) -> View {
                     div {
                         p { (c.user_id) }
                         p(class="is-size-7 has-text-grey") { (label) (phone_text) }
+                        (key_view)
                     }
                     div(class="buttons") {
                         button(

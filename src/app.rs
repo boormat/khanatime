@@ -741,7 +741,19 @@ pub fn enqueue_setup(model: Model) {
     if id.is_empty() {
         return;
     }
-    let ev = model.khana.event.get_clone();
+    let mut ev = model.khana.event.get_clone();
+    // Sign at save — the event's signing fields are populated here, not at
+    // publish time, so setup manifests are always signed.
+    if ev.signature.is_none() {
+        if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
+            if keys.can_sign() {
+                if let Ok((sig, key)) = crate::signing::sign_payload(&ev, &keys) {
+                    ev.signature = Some(sig);
+                    ev.signing_key = Some(key);
+                }
+            }
+        }
+    }
     let body = format!(
         "{}{}",
         crate::timing_event::TimingEvent::SETUP_PREFIX,
