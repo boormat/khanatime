@@ -64,10 +64,10 @@ git rebase main  # (in the worktree)
 git worktree remove ~/work/khanatime-feature-name
 ```
 
-The agent should offer to create a temp worktree when:
-- The change touches more than 10 lines or 3 files
-- There are uncommitted changes on main
-- The user asks for it explicitly
+The agent MUST default to using a worktree for any change. Only edit the
+main repo dir directly for trivial single-line fixes. Always create the
+worktree before starting work — never commit or build on main while there
+are uncommitted changes.
 
 ## Framework notes
 
