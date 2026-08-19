@@ -136,60 +136,56 @@ fn view_homeservers(model: crate::Model) -> View {
             let a_user3 = a.user_id.clone();
             account_rows.push(view! {
                 div(class="notification is-light") {
-                    div(class="is-flex is-align-items-center is-justify-content-space-between") {
-                        div {
-                            p { (a_user.clone()) }
-                            p(class="is-size-7 has-text-grey") { (desc_text) }
+                    p(class="has-text-weight-semibold") { (a_user.clone()) }
+                    p(class="is-size-7 has-text-grey mb-2") { (desc_text) }
+                    div(class="is-flex is-flex-wrap-wrap is-align-items-center", style="gap: 0.35rem;") {
+                        (if active {
+                            view! { span(class="tag is-success is-small") { "active" } }
+                        } else { view! {} })
+                        div(class="buttons has-addons") {
+                            button(
+                                class="button is-link",
+                                disabled=active,
+                                on:click=move |_| {
+                                    crate::update(model, crate::Msg::Conn(crate::sync::Msg::Relogin(a_hs.clone())));
+                                },
+                            ) { "Login" }
+                            button(
+                                class="button is-light",
+                                disabled=!active,
+                                on:click=move |_| {
+                                    crate::update(model, crate::Msg::Conn(crate::sync::Msg::Logout));
+                                },
+                            ) { "Logout" }
+                            button(
+                                class="button is-danger is-outlined",
+                                disabled=active,
+                                on:click=move |_| {
+                                    crate::services::matrix::remove_account(&a_hs2, &a_user2);
+                                    sm.refresh.set(sm.refresh.get() + 1);
+                                },
+                            ) { "Forget" }
                         }
-                        div(class="is-flex is-align-items-center") {
-                            (if active {
-                                view! { span(class="tag is-success is-small ml-2") { "active" } }
-                            } else { view! {} })
-                            div(class="buttons has-addons is-small ml-2") {
-                                button(
-                                    class="button is-small is-link",
-                                    disabled=active,
-                                    on:click=move |_| {
-                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::Relogin(a_hs.clone())));
-                                    },
-                                ) { "Login" }
-                                button(
-                                    class="button is-small is-light",
-                                    disabled=!active,
-                                    on:click=move |_| {
-                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::Logout));
-                                    },
-                                ) { "Logout" }
-                                button(
-                                    class="button is-small is-danger is-outlined",
-                                    disabled=active,
-                                    on:click=move |_| {
-                                        crate::services::matrix::remove_account(&a_hs2, &a_user2);
-                                        sm.refresh.set(sm.refresh.get() + 1);
-                                    },
-                                ) { "Forget" }
-                            }
-                            button(
-                                class="button is-small is-info is-outlined ml-2",
-                                title="Share account credentials via QR",
-                                on:click=move |_| {
-                                    sm.show_qr.set(Some(QrTarget::Account {
-                                        homeserver: a_hs3.clone(),
-                                        personal: is_personal,
-                                    }));
-                                },
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-qrcode") }
-                            }
-                            button(
-                                class="button is-small is-light ml-2",
-                                title="Share as contact (no password)",
-                                on:click=move |_| {
-                                    sm.show_qr.set(Some(QrTarget::Contact(a_user3.clone())));
-                                },
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-address-card") }
-                            }
+                        button(
+                            class="button is-info is-outlined",
+                            title="Share account credentials via QR",
+                            on:click=move |_| {
+                                sm.show_qr.set(Some(QrTarget::Account {
+                                    homeserver: a_hs3.clone(),
+                                    personal: is_personal,
+                                }));
+                            },
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-qrcode") }
+                        }
+                        button(
+                            class="button is-light",
+                            title="Share as contact (no password)",
+                            on:click=move |_| {
+                                sm.show_qr.set(Some(QrTarget::Contact(a_user3.clone())));
+                            },
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-address-card") }
                         }
                     }
                 }
@@ -241,15 +237,15 @@ fn view_signing_key(model: crate::Model) -> View {
                 view! {
                     p {
                         span(class="tag is-info is-medium") { (fp) }
-                        span(style="margin-left:0.5em; color: #888;") { "device fingerprint" }
+                        span(class="ml-2 has-text-grey") { "device fingerprint" }
                     }
                 }
             } else {
                 view! {
-                    p(style="color: #888;") { "No signing key generated yet. It will be created on first use." }
+                    p(class="has-text-grey") { "No signing key generated yet. It will be created on first use." }
                 }
             })
-            p(style="margin-top:0.5em; color: #666; font-size:0.85em;") {
+            p(class="mt-2 has-text-grey is-size-7") {
                 (format!("{} key(s) in trust registry", registry_count))
             }
         }
@@ -283,31 +279,27 @@ fn view_contacts(model: crate::Model) -> View {
         let c_uid2 = c.user_id.clone();
         items.push(view! {
             div(class="notification is-light") {
-                div(class="is-flex is-align-items-center is-justify-content-space-between") {
-                    div {
-                        p { (c.user_id) }
-                        p(class="is-size-7 has-text-grey") { (label) (phone_text) }
+                p(class="has-text-weight-semibold") { (c.user_id) }
+                p(class="is-size-7 has-text-grey mb-2") { (label) (phone_text) }
+                div(class="buttons") {
+                    button(
+                        class="button is-info is-outlined",
+                        title="Share contact via QR",
+                        on:click=move |_| {
+                            sm.show_qr.set(Some(QrTarget::Contact(c_uid.clone())));
+                        },
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-qrcode") }
                     }
-                    div(class="buttons is-small") {
-                        button(
-                            class="button is-small is-info is-outlined",
-                            title="Share contact via QR",
-                            on:click=move |_| {
-                                sm.show_qr.set(Some(QrTarget::Contact(c_uid.clone())));
-                            },
-                        ) {
-                            span(class="icon is-small") { i(class="fa fa-qrcode") }
-                        }
-                        button(
-                            class="button is-small is-danger is-outlined",
-                            title="Remove contact",
-                            on:click=move |_| {
-                                crate::services::matrix::remove_contact(&c_uid2);
-                                sm.refresh.set(sm.refresh.get() + 1);
-                            },
-                        ) {
-                            span(class="icon is-small") { i(class="fa fa-trash") }
-                        }
+                    button(
+                        class="button is-danger is-outlined",
+                        title="Remove contact",
+                        on:click=move |_| {
+                            crate::services::matrix::remove_contact(&c_uid2);
+                            sm.refresh.set(sm.refresh.get() + 1);
+                        },
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-trash") }
                     }
                 }
             }
