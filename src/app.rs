@@ -728,6 +728,8 @@ fn push_screen_hash(screen: Screen) {
 fn listen_for_history(model: Model) {
     use wasm_bindgen::JsCast;
     let on_nav = move |_: web_sys::Event| {
+        // Close burger menu on any navigation
+        model.screens.home.burger_open.set(false);
         let Some(screen) = screen_from_url() else {
             return;
         };
@@ -962,7 +964,9 @@ fn view_navbar(model: Model) -> View {
         .filter(|(s, _, _)| mode.has_screen(*s))
         .copied()
         .collect();
-    let mut brand: Vec<View> = vec![];
+
+    // --- Build brand items (top tabs) ---
+    let mut brand_items: Vec<View> = vec![];
     for (screen, icon) in top_tabs {
         let active = model.screen.get() == screen;
         let disabled = !has_event && needs_event.contains(&screen);
@@ -976,15 +980,42 @@ fn view_navbar(model: Model) -> View {
             class
         };
         if disabled {
-            brand.push(view! { i(class=item_class) });
+            brand_items.push(view! { i(class=item_class) });
         } else {
-            brand.push(view! {
-                i(class=item_class, on:click=move |_| { update(model, Msg::Show(screen)) })
+            brand_items.push(view! {
+                i(class=item_class, on:click=move |_| {
+                    model.screens.home.burger_open.set(false);
+                    update(model, Msg::Show(screen));
+                })
             });
         }
     }
-    // Burger dropdown items.
+
+    // --- Build burger menu items ---
     let mut burger_menu_items: Vec<View> = vec![];
+    // Mode picker in burger (mobile only)
+    {
+        let mode_label = mode.label().to_string();
+        burger_menu_items.push(view! {
+            div(class="navbar-item has-dropdown is-hoverable") {
+                a(class="navbar-link") { span { (mode_label) } }
+                div(class="navbar-dropdown") {
+                    (Mode::ALL.iter().map(|&m| {
+                        let is_active = m == mode;
+                        let cls = if is_active { "navbar-item is-active" } else { "navbar-item" };
+                        view! {
+                            a(class=cls, on:click=move |_| {
+                                update(model, Msg::SetMode(m));
+                                model.screens.home.burger_open.set(false);
+                            }) {
+                                (m.label())
+                            }
+                        }
+                    }).collect::<Vec<_>>())
+                }
+            }
+        });
+    }
     for (screen, icon, label) in burger_items {
         let disabled = !has_event && needs_event.contains(&screen);
         let label_owned = label.to_string();
@@ -998,8 +1029,8 @@ fn view_navbar(model: Model) -> View {
         } else {
             burger_menu_items.push(view! {
                 a(class="navbar-item", on:click=move |_| {
-                    update(model, Msg::Show(screen));
                     model.screens.home.burger_open.set(false);
+                    update(model, Msg::Show(screen));
                 }) {
                     span(class="icon") { i(class=icon) }
                     span { (label) }
@@ -1007,47 +1038,60 @@ fn view_navbar(model: Model) -> View {
             });
         }
     }
+
+    // --- Mode picker for desktop (hidden on mobile) ---
+    let mode_picker_desktop = view! {
+        div(class="navbar-item has-dropdown is-hoverable is-hidden-mobile") {
+            a(class="navbar-link") {
+                span { (mode.label()) }
+            }
+            div(class="navbar-dropdown") {
+                (Mode::ALL.iter().map(|&m| {
+                    let is_active = m == mode;
+                    let cls = if is_active { "navbar-item is-active" } else { "navbar-item" };
+                    view! {
+                        a(class=cls, on:click=move |_| { update(model, Msg::SetMode(m)); }) {
+                            (m.label())
+                        }
+                    }
+                }).collect::<Vec<_>>())
+            }
+        }
+    };
+
+    // --- Burger toggle button ---
+    let burger_button = move || {
+        let open = model.screens.home.burger_open.get();
+        let cls = if open {
+            "navbar-burger is-active"
+        } else {
+            "navbar-burger"
+        };
+        view! {
+            a(
+                class=cls,
+                on:click=move |_| {
+                    let cur = model.screens.home.burger_open.get();
+                    model.screens.home.burger_open.set(!cur);
+                },
+            ) {
+                span {}
+                span {}
+                span {}
+            }
+        }
+    };
+
+    // --- Assemble: navbar-brand + navbar-menu as SIBLINGS ---
     view! {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") {
-                (brand)
-                // Mode picker dropdown.
-                div(class="navbar-item has-dropdown is-hoverable") {
-                    a(class="navbar-link") {
-                        span { (mode.label()) }
-                    }
-                    div(class="navbar-dropdown") {
-                        (Mode::ALL.iter().map(|&m| {
-                            let is_active = m == mode;
-                            let cls = if is_active { "navbar-item is-active" } else { "navbar-item" };
-                            view! {
-                                a(class=cls, on:click=move |_| { update(model, Msg::SetMode(m)); }) {
-                                    (m.label())
-                                }
-                            }
-                        }).collect::<Vec<_>>())
-                    }
-                }
-                (move || {
-                    let open = model.screens.home.burger_open.get();
-                    let cls = if open { "navbar-burger is-active" } else { "navbar-burger" };
-                    view! {
-                        a(
-                            class=cls,
-                            on:click=move |_| {
-                                let cur = model.screens.home.burger_open.get();
-                                model.screens.home.burger_open.set(!cur);
-                            },
-                        ) {
-                            span {}
-                            span {}
-                            span {}
-                        }
-                    }
-                })
-                div(class=if model.screens.home.burger_open.get() { "navbar-menu is-active" } else { "navbar-menu" }) {
-                    div(class="navbar-end") { (burger_menu_items) }
-                }
+                (brand_items)
+                (mode_picker_desktop)
+                (burger_button)
+            }
+            div(class=if model.screens.home.burger_open.get() { "navbar-menu is-active" } else { "navbar-menu" }) {
+                div(class="navbar-end") { (burger_menu_items) }
             }
         }
     }

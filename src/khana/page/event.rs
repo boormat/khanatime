@@ -81,6 +81,8 @@ pub struct Model {
     /// car of the entry being edited (click-to-edit); used to preserve
     /// the entry when the edited text is re-submitted via quick-add.
     pub editing_entry_car: Signal<Option<String>>,
+    /// Backup of the entry removed for editing — restored if the user cancels.
+    pub editing_entry_backup: Signal<Option<crate::event::Entry>>,
     /// Publish confirmation dialog.
     pub show_publish_confirm: Signal<bool>,
 }
@@ -103,6 +105,7 @@ pub fn init() -> Model {
         show_entrants: create_signal(crate::event::load_collapse("entrants", false)),
         quick_add: crate::input::init(),
         editing_entry_car: create_signal(None),
+        editing_entry_backup: create_signal(None),
         show_publish_confirm: create_signal(false),
     }
 }
@@ -274,6 +277,7 @@ pub fn update(model: crate::Model, msg: Msg) {
                             ev.entries.push(entry);
                         }
                     });
+                    em.editing_entry_backup.set(None);
                     em.feedback.set(format!("Added #{} {}.", car, name));
                     crate::input::input_clear(em.quick_add);
                 }
@@ -285,6 +289,14 @@ pub fn update(model: crate::Model, msg: Msg) {
             }
         }
         Msg::QuickAdd(InputMsg::CancelEdit) => {
+            // Restore the entry that was removed for editing
+            if let Some(entry) = model.screens.setup.editing_entry_backup.take() {
+                model.screens.setup.edit_event.update(|e| {
+                    if let Some(ref mut ev) = e {
+                        ev.entries.push(entry);
+                    }
+                });
+            }
             crate::input::input_clear(model.screens.setup.quick_add);
             model.screens.setup.editing_entry_car.set(None);
         }
@@ -293,6 +305,7 @@ pub fn update(model: crate::Model, msg: Msg) {
             let mut ev = em.edit_event.get_clone().unwrap_or_default();
             if let Some(pos) = ev.entries.iter().position(|e| e.car == car) {
                 let entry = ev.entries.remove(pos);
+                em.editing_entry_backup.set(Some(entry.clone()));
                 let text = serialize_entry_for_edit(&entry);
                 let car = entry.car.clone();
                 let name = entry.name.clone();
@@ -400,6 +413,7 @@ fn send_batch(model: crate::Model) {
     em.confirm_warning.set(String::new());
     em.edit_base.set(None);
     em.editing_entry_car.set(None);
+    em.editing_entry_backup.set(None);
     em.pre_create.set(None);
     em.saved.set("Saved.".to_string());
 }
@@ -496,6 +510,7 @@ fn discard_edits(model: crate::Model) {
     em.confirm_warning.set(String::new());
     em.edit_base.set(None);
     em.editing_entry_car.set(None);
+    em.editing_entry_backup.set(None);
     crate::input::input_clear(em.quick_add);
     let prev = em.pre_create.get_clone();
     em.pre_create.set(None);
