@@ -53,15 +53,52 @@ creation/isolation only; it never commits or merges.
 
 ### Testing workflow (MANDATORY)
 
-1. Create worktree via the skill, make changes, run `./scripts/check.sh`
-2. **Stop main server**: `pkill -f "trunk serve"`
-3. **Start worktree server**: `scripts/serve_https.sh start` (runs on port 8080)
+1. Create worktree, make changes, run `./scripts/check.sh`
+2. **Mark worktree ready**: `touch ~/work/khanatime-<feature>/test-me-please`
+3. **Tell user**: "Ready to test **khanatime-<feature>** — run `scripts/test.sh`"
 4. **STOP and wait** for user to test and approve
-5. **Hand back to the user**: report the change is ready and give the merge +
-   cleanup commands for the user to run from the main repo:
-   `git merge --no-ff feature/<slug>` then
-   `git worktree remove ~/work/khanatime-<slug>`. The agent must NOT run these
-   itself.
+5. **After approval**: commit, squash-merge, clean up (see below)
+
+### Agent testing (quick serve)
+
+Agents can test their worktree with a random port and pid file:
+
+```bash
+mise run serve start khanatime-<feature>   # start serving
+mise run serve status                      # check what's running
+mise run serve stop khanatime-<feature>    # stop serving
+```
+
+The script allocates a random port, writes PID to `.serve.pid` in the
+worktree, and shows the port in output. Kill with `kill $(cat .serve.pid)`.
+
+### Merge workflow (after user approval)
+
+**Goal:** No merge commits in main — only fast-forward merges.
+
+1. Commit changes in worktree
+2. In main repo, try `git merge --ff-only feature/<name>`
+3. **If FF succeeds:** skip to step 6 (cleanup)
+4. **If FF fails (diverged):** squash the branch
+   ```bash
+   # In worktree:
+   git branch baseline                          # save original
+   git reset --soft main                        # move HEAD to main, keep changes staged
+   git commit -m "original message"             # recommit as single commit
+   git diff baseline                            # verify identical tree content
+   # If diff is empty (identical):
+   git branch -d baseline
+   # In main repo:
+   git merge --ff-only feature/<name>           # now FF works
+   ```
+5. **If diff shows differences:** tell user there's an issue, ask to retest
+6. Tell user: "Done! Please `git pull` in the main repo"
+7. Clean up:
+   ```bash
+   git worktree remove ~/work/khanatime-<feature>
+   git branch -d feature/<name>
+   ```
+8. Verify all tasks are complete
 
 Never merge to main until the user says "looks good" or approves the changes.
 

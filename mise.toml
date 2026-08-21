@@ -1,0 +1,23 @@
+[tools]
+mkcert = "latest"
+"github:kunobi-ninja/kache" = "latest"
+rust = { version = "latest", profile = "default" }
+
+[env]
+RUSTC_WRAPPER = "kache"
+
+[tasks.bootstrap]
+description = "Setup local SSL with mkcert and a hostname to keep Matrix SSO happy"
+run = """
+if ! grep -q "dev.local" /etc/hosts; then
+  echo "127.0.0.1 dev.local" | sudo tee -a /etc/hosts
+fi
+
+mkcert -install
+mkcert -cert-file scripts/sslcerts/cert.pem -key-file scripts/sslcerts/key.pem localhost 127.0.0.1 khanatime.test
+rustup target add wasm32-unknown-unknown
+"""
+
+[tasks.serve]
+description = "Serve a worktree for agent testing (random port, pid file)"
+file = "mise-tasks/serve"
