@@ -202,6 +202,7 @@ pub fn view(model: crate::Model) -> View {
                 Some(parsed) => view_confirm_modal(model, parsed),
                 None => view! {},
             })
+            (crate::khana::helpers::view_handoff(model))
         }
     }
 }

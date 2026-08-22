@@ -93,6 +93,7 @@ pub fn view(model: crate::Model) -> View {
     view! {
         div {
             h1(class="title") { "Chat" }
+            (crate::page::home::view_comms(model))
             p(class="help") {
                 "Transaction log of the event's timing room — every message the server still holds, oldest first. Click a line to pretty-print its raw JSON."
             }

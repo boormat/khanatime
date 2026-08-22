@@ -26,6 +26,7 @@ pub enum Screen {
     Entries,
     Chat,
     Stopwatch,
+    Timing,
 }
 
 impl Screen {
@@ -46,6 +47,7 @@ impl Screen {
             Screen::Entries => "entries",
             Screen::Chat => "chat",
             Screen::Stopwatch => "stopwatch",
+            Screen::Timing => "timing",
         }
     }
 
@@ -65,6 +67,7 @@ impl Screen {
             "entries" => Screen::Entries,
             "chat" => Screen::Chat,
             "stopwatch" => Screen::Stopwatch,
+            "timing" => Screen::Timing,
             _ => return None,
         })
     }
@@ -81,6 +84,7 @@ impl Screen {
                 | Screen::Event
                 | Screen::Entries
                 | Screen::Chat
+                | Screen::Timing
         )
     }
 }
@@ -143,16 +147,16 @@ impl Mode {
         match self {
             Mode::Testing => &[
                 Home, Events, Accounts, Qr, Help, KhanaRules, Results, Stage, Start, Finish, Event,
-                Entries, Chat, Stopwatch,
+                Entries, Chat, Stopwatch, Timing,
             ],
             Mode::Organiser => &[
-                Home, Events, Accounts, Qr, Event, Start, Finish, Stage, Stopwatch, Results,
-                Entries, Chat, Help, KhanaRules,
+                Home, Events, Accounts, Qr, Event, Start, Finish, Stage, Stopwatch, Timing,
+                Results, Entries, Chat, Help, KhanaRules,
             ],
             Mode::Spectator => &[Home, Qr, Results],
             Mode::Official => &[
-                Home, Events, Qr, Start, Finish, Stage, Stopwatch, Results, Entries, Chat, Help,
-                KhanaRules,
+                Home, Events, Qr, Start, Finish, Stage, Stopwatch, Timing, Results, Entries, Chat,
+                Help, KhanaRules,
             ],
             Mode::Competitor => &[Home, Events, Qr, Results, Entries, Help, KhanaRules],
         }
@@ -245,6 +249,7 @@ pub struct Screens {
     pub start: crate::khana::page::start::Model,
     pub finish: crate::khana::page::finish::Model,
     pub stopwatch: crate::khana::page::stopwatch::Model,
+    pub timing: crate::khana::page::timing::Model,
     pub chat: page::chat::Model,
     pub results: crate::khana::page::results::Model,
     pub entry_app: crate::entry_app::Model,
@@ -276,6 +281,7 @@ pub enum Msg {
     StartMsg(crate::khana::page::start::Msg),
     FinishMsg(crate::khana::page::finish::Msg),
     StopwatchMsg(crate::khana::page::stopwatch::Msg),
+    TimingMsg(crate::khana::page::timing::Msg),
     EventMsg(crate::khana::page::event::Msg),
     EventsMsg(page::events::Msg),
     ResultMsg(crate::khana::page::results::Msg),
@@ -399,6 +405,7 @@ impl Model {
                 start: crate::khana::page::start::init(),
                 finish: crate::khana::page::finish::init(),
                 stopwatch: crate::khana::page::stopwatch::init(),
+                timing: crate::khana::page::timing::init(),
                 chat: page::chat::init(),
                 results,
                 entry_app: crate::entry_app::init(),
@@ -542,6 +549,7 @@ pub fn update(model: Model, msg: Msg) {
         Msg::StartMsg(msg) => crate::khana::page::start::update(model, msg),
         Msg::FinishMsg(msg) => crate::khana::page::finish::update(model, msg),
         Msg::StopwatchMsg(msg) => crate::khana::page::stopwatch::update(model, msg),
+        Msg::TimingMsg(msg) => crate::khana::page::timing::update(model, msg),
         Msg::EventMsg(msg) => crate::khana::page::event::update(model, msg),
         Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => crate::khana::page::results::update(model, msg),
@@ -888,7 +896,7 @@ fn view_content(model: Model) -> View {
         Screen::Start,
         Screen::Finish,
         Screen::Stage,
-        Screen::Stopwatch,
+        Screen::Timing,
         Screen::Results,
         Screen::Chat,
         Screen::Entries,
@@ -911,6 +919,7 @@ fn view_content(model: Model) -> View {
                 Screen::Start => crate::khana::page::start::view(model),
                 Screen::Finish => crate::khana::page::finish::view(model),
                 Screen::Stopwatch => crate::khana::page::stopwatch::view(model),
+                Screen::Timing => crate::khana::page::timing::view(model),
                 Screen::Results => crate::khana::page::results::view(model),
                 Screen::Event => crate::khana::page::event::view(model),
                 Screen::Entries => crate::entry_app::view(model),
@@ -929,7 +938,7 @@ fn view_navbar(model: Model) -> View {
         Screen::Start,
         Screen::Finish,
         Screen::Stage,
-        Screen::Stopwatch,
+        Screen::Timing,
         Screen::Results,
         Screen::Chat,
         Screen::Entries,
@@ -937,7 +946,7 @@ fn view_navbar(model: Model) -> View {
     // Top tabs: always visible, filtered by mode.
     let all_top_tabs = [
         (Screen::Home, "fa fa-home"),
-        (Screen::Stopwatch, "fa fa-stopwatch"),
+        (Screen::Timing, "fa fa-stopwatch"),
         (Screen::Results, "fa fa-trophy"),
         (Screen::Chat, "fa fa-comments"),
     ];
@@ -1116,6 +1125,7 @@ mod tests {
             Screen::Entries,
             Screen::Chat,
             Screen::Stopwatch,
+            Screen::Timing,
             Screen::Accounts,
             Screen::Qr,
         ];
@@ -1141,6 +1151,7 @@ mod tests {
             Screen::Entries,
             Screen::Chat,
             Screen::Stopwatch,
+            Screen::Timing,
             Screen::Accounts,
             Screen::Qr,
         ] {

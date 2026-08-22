@@ -87,57 +87,8 @@ fn view_dashboard(model: crate::Model) -> View {
             }
         }
         (move || view_sessions(model))
-        (move || view_event_card(model))
         (move || view_actions(model))
-        (move || view_comms(model))
         (move || view_status_summary(model))
-    }
-}
-
-fn view_event_card(model: crate::Model) -> View {
-    let (id, name, status) = model
-        .khana
-        .event
-        .with(|e| (e.id.clone(), e.name.clone(), e.status.to_string()));
-    let has_event = !id.is_empty();
-    let title = if has_event {
-        name.clone()
-    } else {
-        "No event selected".to_string()
-    };
-    view! {
-        div(class="box") {
-            div(class="level") {
-                div(class="level-left") {
-                    div(class="level-item") {
-                        h2(class="title is-5") {
-                            (title)
-                            (if has_event {
-                                view! { span(class="tag is-light is-pulled-right") { (status) } }
-                            } else {
-                                view! {}
-                            })
-                        }
-                    }
-                }
-                div(class="level-right") {
-                    div(class="level-item") {
-                        button(
-                            class="button is-small is-link is-outlined",
-                            on:click=move |_| crate::update(model, crate::Msg::ClearEvent),
-                        ) {
-                            "Change event"
-                        }
-                        button(
-                            class="button is-small is-link",
-                            on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Event)),
-                        ) {
-                            "Event admin"
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -152,20 +103,7 @@ fn view_sessions(model: crate::Model) -> View {
             let summary = view_account_summary(model);
             view! {
                 div(class="box") {
-                    div(class="is-flex is-align-items-center is-justify-content-space-between") {
-                        div(class="is-flex is-align-items-center") {
-                            (summary)
-                        }
-                        div(class="buttons is-small") {
-                            button(
-                                class="button is-small is-link is-outlined",
-                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Accounts)),
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-gear") }
-                                span { "Manage" }
-                            }
-                        }
-                    }
+                    (summary)
                     (if !logged_in {
                         view_account_footer(model)
                     } else {
@@ -257,7 +195,7 @@ fn view_actions(model: crate::Model) -> View {
     }
 }
 
-fn view_comms(model: crate::Model) -> View {
+pub fn view_comms(model: crate::Model) -> View {
     let conn = model.sync.conn.get_clone();
     let room = model.sync.room.get_clone();
     let (color, text) = match conn {
@@ -530,25 +468,7 @@ fn view_account_footer(model: crate::Model) -> View {
         (pending_view)
         div(class="field is-grouped") {
             (primary)
-            div(class="control") {
-                button(
-                    class="button is-light",
-                    disabled=sm.busy.get(),
-                    on:click=move |_| {
-                        sm.homeserver.set("http://localhost:8008".to_string());
-                        sm.show_add_hs.set(true);
-                    },
-                ) {
-                    span(class="icon is-small") { i(class="fa fa-server") }
-                    span { "Add custom homeserver" }
-                }
-            }
         }
-        (if sm.show_add_hs.get() {
-            view_add_hs_modal(model)
-        } else {
-            view! {}
-        })
         p(class="help") {
             "matrix.org accounts are passwordless (SSO). The localhost dev server registers a new account for you."
         }
@@ -601,6 +521,7 @@ fn view_forget_modal(model: crate::Model) -> View {
 
 /// Username + URL popup for adding a custom homeserver.
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)] // kept for potential future use — "Add homeserver" button removed from homepage
 fn view_add_hs_modal(model: crate::Model) -> View {
     let sm = model.screens.home;
     view! {
