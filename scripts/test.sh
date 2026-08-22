@@ -53,7 +53,7 @@ ensure_ssl_certs() {
 # Run trunk serve from a directory.
 run_trunk() {
     local dir="$1"
-    exec env \
+    env \
         TRUNK_SERVE_DISABLE_ADDRESS_LOOKUP=true \
         TRUNK_SERVE_TLS_CERT_PATH="$dir/scripts/sslcerts/cert.pem" \
         TRUNK_SERVE_TLS_KEY_PATH="$dir/scripts/sslcerts/key.pem" \
@@ -66,7 +66,7 @@ run_trunk() {
 setup_tty() {
     # Save original stty settings and switch to raw mode
     ORIG_STTY=$(stty -g 2>/dev/null || true)
-    stty raw -echo -icanne 2>/dev/null || true
+    stty raw -echo -icanon 2>/dev/null || true
 }
 
 restore_tty() {
@@ -191,9 +191,9 @@ while true; do
             if [ "$selected" -eq "$main_idx" ]; then
                 # Main repo
                 echo ""
-                echo "Pulling latest changes in main repo..."
-                if ! git -C "$MAIN_DIR" pull; then
-                    echo "Pull failed — resolve conflicts manually, then try again."
+                echo "Fast-forwarding working copy to main..."
+                if ! git -C "$MAIN_DIR" merge --ff-only main; then
+                    echo "Fast-forward failed — main has diverged. Resolve manually, then try again."
                     echo "Press any key to continue..."
                     read -r -s -n1
                     setup_tty
