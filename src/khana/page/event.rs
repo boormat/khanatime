@@ -1862,6 +1862,7 @@ fn view_owner_picker(model: crate::Model) -> View {
                     button(
                         class=cls,
                         disabled=!editing,
+                        aria-pressed=if is_on { "true" } else { "false" },
                         on:click=move |_| {
                             em.edit_event.update(|e| {
                                 if let Some(ref mut ev) = e {
@@ -1870,6 +1871,11 @@ fn view_owner_picker(model: crate::Model) -> View {
                             });
                         },
                     ) {
+                        (if is_on {
+                            view! { span(class="icon is-small mr-1") { i(class="fa fa-check") } }
+                        } else {
+                            view! {}
+                        })
                         span { (uid) }
                         span(class="is-size-7 has-text-grey ml-1") { (display_label) }
                     }
@@ -1941,6 +1947,7 @@ fn view_organisers_picker(model: crate::Model) -> View {
                     button(
                         class=cls,
                         disabled=!editing,
+                        aria-pressed=if is_on { "true" } else { "false" },
                         on:click=move |_| {
                             em.edit_event.update(|e| {
                                 if let Some(ref mut ev) = e {
@@ -1958,6 +1965,11 @@ fn view_organisers_picker(model: crate::Model) -> View {
                             });
                         },
                     ) {
+                        (if is_on {
+                            view! { span(class="icon is-small mr-1") { i(class="fa fa-check") } }
+                        } else {
+                            view! {}
+                        })
                         span { (uid_owned) }
                         span(class="is-size-7 has-text-grey ml-1") { (display_owned) }
                     }

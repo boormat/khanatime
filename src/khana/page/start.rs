@@ -119,6 +119,14 @@ pub fn view(model: crate::Model) -> View {
             h1(class="title is-4") { "Start timing" }
             (pad::test_chips(count as u8, sm.test))
             div(class="box") {
+                (move || {
+                    let car = sm.car.get_clone();
+                    if car.is_empty() {
+                        view! {}
+                    } else {
+                        view! { p(class="mb-2") { (crate::view::car_tag(&car)) } }
+                    }
+                })
                 div(class="kt-car-chips") {
                     (move || {
                         let entries = model.khana.event.with(|e| e.entries.clone());

@@ -50,23 +50,23 @@
 
 ## UI/UX Improvements
 
-### U1. Owner/Organisers pickers — confusing state
+### ~~U1. Owner/Organisers pickers — confusing state~~ ✅ DONE
 **File:** `src/khana/page/event.rs` — `view_owner_picker` (line 1778), `view_organisers_picker` (line 1838)
 **Severity:** Medium
 **Detail:** Toggle buttons with no clear visual indication of selected state. Need better styling — e.g. filled vs outlined, checkmark icon, or a different control (dropdown, chips with clear active state).
 
-### U2. Event Diff report — not hardcoded per field
+### ~~U2. Event Diff report — not hardcoded per field~~ ✅ DONE
 **File:** `src/khana/batch.rs` — `event_diff` (line 215)
 **Severity:** Low
 **Detail:** Each field is manually compared with a dedicated `field_diff` call. When fields are added to `EventInfo`, the diff function must be updated manually. Consider comparing serialized JSON forms (diff the `serde_json::Value` trees) or using a derive macro.
 **Note:** JSON diff may lose semantic understanding (e.g. "classes added/removed" vs raw array diff). Hybrid approach: JSON diff for unknown fields, semantic diffs for known structured fields.
 
-### U3. Start/Finish pages — not using consistent car renderers
+### ~~U3. Start/Finish pages — not using consistent car renderers~~ ✅ DONE
 **File:** `src/khana/page/start.rs`, `src/khana/page/finish.rs`
 **Severity:** Low
 **Detail:** Start page uses `pad::car_chips` for selection but doesn't use `car_tag` in its view. Finish page uses `car_tag` in the notification but `car_chips` for selection. Should standardize on `car_tag` for display and `car_chips` for selection.
 
-### U4. Sync View — not showing all message types
+### ~~U4. Sync View — not showing all message types~~ ✅ DONE
 **File:** `src/page/chat.rs` — `line_summary` (line 184)
 **Severity:** Low
 **Detail:** Result snapshots show as just "[result]". Setup messages show as "[setup: name]". Should parse and show more detail. When expanded, should show pretty-printed JSON for all types (currently only timing events get full JSON expansion).
@@ -124,26 +124,21 @@
 
 ## Cross-cutting Concerns
 
-| Item | Related Plan | Status |
-|------|-------------|--------|
-| Burger menu fix | `layout-navigation.md` | Planned but not implemented |
-| Timing page restructure | `layout-navigation.md` | Planned (Stopwatch screen) |
-| Mode selector UX | None | New — needs design |
-| Home page cleanup | `layout-navigation.md` (partial) | Partially planned |
-| Owner/Organisers picker | `event-admin-accounts.md` | Accounts page done, picker UX not |
-| SSO login on Accounts page | `matrix-login.md` | SSO flow exists, button placement TBD |
+| Item | Status |
+|------|--------|
+| Burger menu fix | ✅ DONE (B2) |
+| Timing page restructure | ✅ DONE (F1) |
+| Mode selector UX | ✅ DONE (B3) |
+| Home page cleanup | ✅ DONE (U6) |
+| Owner/Organisers picker | ✅ DONE (U1) |
+| SSO login on Accounts page | Open (not in B/U/V/F list — separate) |
 
 ---
 
 ## Priority Suggestion
 
-**Phase 1 — Critical bugs:**
-- B1 (entry deletion), B2 (burger menu), B3 (mode selector)
+**Phase 1 — Critical bugs:** ✅ Complete (B1–B3)
 
-**Phase 2 — Navigation restructure (builds on `layout-navigation.md`):**
-- F1 (timing page), F2 (timekeeper rename), F3 (results mode)
-- U5 (comms to chat), U6 (home cleanup), U7 (handoff to QR)
+**Phase 2 — Navigation restructure:** ✅ Complete (F1–F3, U5–U7)
 
-**Phase 3 — Validation + polish:**
-- V1 (owner homeserver), V2 (single homeserver), V3 (lock homeserver)
-- U1 (picker UX), U2 (diff report), U3 (car renderers), U4 (sync view)
+**Phase 3 — Validation + polish:** ✅ Complete (V1✅ V2❌dropped V3✅ U1–U4✅)

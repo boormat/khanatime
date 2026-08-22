@@ -6,6 +6,7 @@
 //! messages (or one setup manifest, for the Event Admin page).  Pure + testable.
 
 use crate::event::{Entry, EventInfo, Stage, TimingStyle};
+use serde_json;
 
 /// A staged entry edit (admin edit mode on the Entries page).
 #[derive(Debug, Clone, PartialEq)]
@@ -345,7 +346,84 @@ pub fn event_diff(base: &EventInfo, staged: &EventInfo) -> Vec<String> {
         }
     }
 
+    // Generic JSON diff for any fields not covered by semantic diffs above.
+    json_top_level_diff(&mut lines, base, staged);
+
     lines
+}
+
+/// Generic top-level JSON diff for fields not covered by semantic diffs above.
+/// Ensures new `EventInfo` fields are auto-detected without updating this function.
+fn json_top_level_diff(lines: &mut Vec<String>, base: &EventInfo, staged: &EventInfo) {
+    const HANDLED: &[&str] = &[
+        "sponsoring_club",
+        "name",
+        "year",
+        "event_date",
+        "parent_rooms",
+        "event_homeservers",
+        "owner",
+        "classes",
+        "stages",
+        "entries",
+    ];
+    const SKIP: &[&str] = &[
+        "uid",
+        "id",
+        "space_id",
+        "timing_id",
+        "signing_key",
+        "signature",
+    ];
+
+    let base_json = serde_json::to_value(base).unwrap_or_default();
+    let staged_json = serde_json::to_value(staged).unwrap_or_default();
+
+    if let (Some(base_obj), Some(staged_obj)) = (base_json.as_object(), staged_json.as_object()) {
+        let mut all_keys: Vec<&String> = base_obj.keys().chain(staged_obj.keys()).collect();
+        all_keys.sort();
+        all_keys.dedup();
+
+        for key in all_keys {
+            if HANDLED.contains(&key.as_str()) || SKIP.contains(&key.as_str()) {
+                continue;
+            }
+            let bv = base_obj.get(key);
+            let sv = staged_obj.get(key);
+            if bv != sv {
+                let label = key.replace('_', " ");
+                let before = bv
+                    .map(value_display)
+                    .unwrap_or_else(|| "(none)".to_string());
+                let after = sv
+                    .map(value_display)
+                    .unwrap_or_else(|| "(none)".to_string());
+                lines.push(format!("~ {}: {} → {}", label, before, after));
+            }
+        }
+    }
+}
+
+fn value_display(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => "(none)".to_string(),
+        serde_json::Value::Array(a) => {
+            if a.is_empty() {
+                "(empty)".to_string()
+            } else {
+                format!("[{} items]", a.len())
+            }
+        }
+        serde_json::Value::Object(o) => {
+            if o.is_empty() {
+                "(empty)".to_string()
+            } else {
+                format!("{{{} fields}}", o.len())
+            }
+        }
+        other => other.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -505,5 +583,23 @@ mod tests {
         // no unrelated changes
         assert!(!joined.contains("Year"));
         assert!(event_diff(&base3, &base3).is_empty());
+    }
+
+    #[test]
+    fn event_diff_auto_detects_new_fields() {
+        let mut staged = base();
+        // `organisers` is not in the semantic-handled set — JSON diff should catch it.
+        staged.organisers.push(crate::event::Official {
+            id: "@alice:matrix.org".into(),
+            name: "Alice".into(),
+            role: String::new(),
+            public_key: None,
+        });
+        let lines = event_diff(&base(), &staged);
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("organisers"),
+            "JSON diff should auto-detect organisers change: {joined}"
+        );
     }
 }

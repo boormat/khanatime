@@ -212,7 +212,12 @@ fn line_summary(e: &FeedEntry) -> String {
             .unwrap_or_else(|| "unnamed".to_string());
         format!("[setup: {name}]")
     } else if e.body.starts_with(TimingEvent::RESULT_PREFIX) {
-        "[result]".to_string()
+        let payload = &e.body[TimingEvent::RESULT_PREFIX.len()..];
+        let score_count = serde_json::from_str::<serde_json::Value>(payload)
+            .ok()
+            .and_then(|v| v.get("scores").and_then(|s| s.as_array()).map(|a| a.len()))
+            .unwrap_or(0);
+        format!("[result: {score_count} scores]")
     } else {
         e.body.clone()
     };
