@@ -21,7 +21,7 @@
 **Severity:** High
 **Detail:** The mode picker is a `is-hoverable` dropdown inside `navbar-brand`. On desktop it requires hover (unreliable). On mobile the dropdown doesn't work at all. Need a better approach — possibly a separate settings page or a modal.
 
-### B4. QR scan broken on Brave desktop
+### ~~B4. QR scan broken on Brave desktop~~ ✅ DONE
 **File:** `src/qr_scan.rs` — `run_scan` (line 64)
 **Severity:** Medium
 **Detail:** `BarcodeDetector` feature-detect fails on Brave desktop (Shape Detection API disabled by default for privacy/fingerprinting). Camera works fine (`getUserMedia` OK — Element Web proves it) but QR decoding never starts. Falls back to "paste the parcel" message.
@@ -106,14 +106,14 @@
 
 **See also:** `docs/plan/layout-navigation.md` — this is essentially the Stopwatch screen rework already planned.
 
-### ~~F2. Rename #stage to #timekeeper~~ ✅ DONE
+### F2. Rename #stage to #timekeeper
 **File:** `src/khana/page/stage.rs`
 **Severity:** Medium
 **Detail:** The manual timing page (`#stage`) should be renamed to `#timekeeper`. It needs:
 - A way to view/edit/approve timing messages/events
 - A results table visible in the same view
 
-### ~~F3. Results page: mode picker (live vs official)~~ ✅ DONE
+### F3. Results page: mode picker (live vs official)
 **File:** `src/khana/page/results.rs`
 **Severity:** Medium
 **Detail:** Results page needs a mode toggle:

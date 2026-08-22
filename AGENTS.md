@@ -53,7 +53,7 @@ creation/isolation only; it never commits or merges.
 
 ### Testing workflow (MANDATORY)
 
-1. Create worktree, make changes, run `./scripts/check.sh`
+1. Create worktree, make changes (include `docs/bugs.md` / `docs/plan/` completion marks), run `./scripts/check.sh`
 2. **Mark worktree ready**: `touch ~/work/khanatime-<feature>/test-me-please`
 3. **Tell user**: "Ready to test **khanatime-<feature>** — run `scripts/test.sh`"
 4. **STOP and wait** for user to test and approve
@@ -76,7 +76,7 @@ worktree, and shows the port in output. Kill with `kill $(cat .serve.pid)`.
 
 **Goal:** No merge commits in main — only fast-forward merges.
 
-1. Commit changes in worktree
+1. Commit changes in worktree (include `docs/bugs.md` completion marks in this commit)
 2. In main repo, try `git merge --ff-only feature/<name>`
 3. **If FF succeeds:** skip to step 6 (cleanup)
 4. **If FF fails (diverged):** squash the branch
@@ -101,6 +101,9 @@ worktree, and shows the port in output. Kill with `kill $(cat .serve.pid)`.
 8. Verify all tasks are complete
 
 Never merge to main until the user says "looks good" or approves the changes.
+
+Never edit `docs/bugs.md` in the main repo after merge — the update must ride
+along with the code commit in the worktree.
 
 ## Framework notes
 
@@ -299,7 +302,8 @@ After completing a multi-file change or feature:
 3. **Stale docs**: Grep for removed concepts in comments and doc strings.
    Update or remove.
 4. **Stale plans**: Check if `docs/plan/` files reference work that is now
-   complete. Mark them done or remove.
+   complete. Mark them done or remove. Also mark completed items done in
+   `docs/bugs.md` — both must be in the **same commit** as the code change.
 5. **Test coverage**: Verify `cargo test` passes. Check that new code paths
    have test coverage and broken tests are fixed or removed.
 6. **Formatting**: Run `cargo fmt` before committing.
