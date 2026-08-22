@@ -722,7 +722,7 @@ fn view_header(model: crate::Model) -> View {
                         view! {
                             button(
                                 class="button is-small is-light",
-                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Stage)),
+                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Timekeeper)),
                             ) {
                                 span(class="icon is-small") { i(class="fa fa-keyboard") }
                                 span { "Manual entry" }

@@ -16,6 +16,14 @@ pub enum Msg {
     CollapseAll,
     ExpandAll,
     Sort(SortKey),
+    SetMode(ResultMode),
+}
+
+/// Live results (raw events as they arrive) vs official (computed results).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResultMode {
+    Official,
+    Live,
 }
 
 /// What a results-table column sorts by.
@@ -40,10 +48,9 @@ pub enum SortDir {
 #[derive(Clone, Copy)]
 pub struct Model {
     pub results: Signal<ResultView>,
-    /// Test numbers whose run details are currently collapsed.
     pub collapsed: Signal<BTreeSet<u8>>,
-    /// Current column sort; defaults to car number ascending.
     pub sort: Signal<(SortKey, SortDir)>,
+    pub mode: Signal<ResultMode>,
 }
 
 pub fn init(event: &EventInfo, runs: &[RunRecord]) -> Model {
@@ -52,6 +59,7 @@ pub fn init(event: &EventInfo, runs: &[RunRecord]) -> Model {
         results,
         collapsed: create_signal(BTreeSet::new()),
         sort: create_signal((SortKey::Car, SortDir::Asc)),
+        mode: create_signal(ResultMode::Official),
     }
 }
 
@@ -127,6 +135,9 @@ pub fn update(model: crate::Model, msg: Msg) {
                 }
             });
         }
+        Msg::SetMode(mode) => {
+            model.screens.results.mode.set(mode);
+        }
     }
 }
 
@@ -150,8 +161,14 @@ pub fn view(model: crate::Model) -> View {
     view! {
         (view_publish(model))
         (move || {
-            let results = model.screens.results.results.with(|r| r.clone());
-            view_results(model, &results)
+            let mode = model.screens.results.mode.get();
+            match mode {
+                ResultMode::Official => {
+                    let results = model.screens.results.results.with(|r| r.clone());
+                    view_results(model, &results)
+                }
+                ResultMode::Live => view_live_results(model),
+            }
         })
     }
 }
@@ -167,6 +184,22 @@ fn view_publish(model: crate::Model) -> View {
                     }
                 }
                 div(class="level-right") {
+                    div(class="level-item has-addons") {
+                        button(
+                            class=move || {
+                                let mode = model.screens.results.mode.get();
+                                if mode == ResultMode::Official { "button is-small is-link" } else { "button is-small is-link is-light" }
+                            },
+                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::SetMode(ResultMode::Official))),
+                        ) { "Official" }
+                        button(
+                            class=move || {
+                                let mode = model.screens.results.mode.get();
+                                if mode == ResultMode::Live { "button is-small is-link" } else { "button is-small is-link is-light" }
+                            },
+                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::SetMode(ResultMode::Live))),
+                        ) { "Live" }
+                    }
                     div(class="level-item") {
                         button(
                             class="button is-small",
@@ -252,6 +285,77 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
     }
 }
 
+/// Live results: raw timing observations as they arrive.
+fn view_live_results(model: crate::Model) -> View {
+    use crate::event::{RunRecord, RUN_START, RUN_STOP};
+    let class_btns = {
+        let results = model.screens.results.results.with(|r| r.clone());
+        clasess(model, &results)
+    };
+    view! {
+        div {
+            (class_btns)
+            div(class="table-container") {
+                table(class="table is-bordered is-narrow is-fullwidth") {
+                    thead {
+                        tr {
+                            th { "Test" }
+                            th { "Car" }
+                            th { "Type" }
+                            th { "Time" }
+                            th { "Status" }
+                            th { "Official" }
+                            th { "Timestamp" }
+                        }
+                    }
+                    tbody {
+                        (move || {
+                            let runs: Vec<RunRecord> = model.khana.runs.with(|runs| {
+                                runs.iter()
+                                    .filter(|r| !r.voided)
+                                    .cloned()
+                                    .collect()
+                            });
+                            let mut runs = runs;
+                            runs.sort_by_key(|r| std::cmp::Reverse(r.ts));
+                            let views: Vec<View> = runs.iter().map(|r| {
+                                let type_label = if r.r#type == RUN_START {
+                                    view! { span(class="has-text-success") { "START" } }
+                                } else if r.r#type == RUN_STOP {
+                                    view! { span(class="has-text-danger") { "STOP" } }
+                                } else {
+                                    view! { span(class="has-text-link") { "FINISH" } }
+                                };
+                                let time_text = match r.time_ds {
+                                    Some(ds) => format!("{:.1}", ds as f32 / 10.0),
+                                    None => "\u{2014}".into(),
+                                };
+                                let status_text = r.status.as_deref().unwrap_or("\u{2014}").to_string();
+                                let official_text = r.official_id.as_deref().unwrap_or("\u{2014}").to_string();
+                                let ts = crate::khana::helpers::fmt_log_ts(r.ts);
+                                let car = crate::view::car_tag(&r.car);
+                                let test = r.test;
+                                view! {
+                                    tr {
+                                        td { (test) }
+                                        td { (car) }
+                                        td { (type_label) }
+                                        td { (time_text) }
+                                        td { (status_text) }
+                                        td { (official_text) }
+                                        td(class="has-text-grey is-size-7") { (ts) }
+                                    }
+                                }
+                            }).collect();
+                            view! { (views) }
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Compare two rows for the current sort.  Unranked entries (no score in the
 /// column) always sort last, whatever the direction.  Ties break by car, then
 /// by running order.
@@ -276,7 +380,7 @@ fn cmp_rows(a: &ResultRow, b: &ResultRow, key: SortKey, dir: SortDir) -> Orderin
 }
 
 /// Car numbers compare by their leading digit run (so 2 < 10), then the rest.
-fn cmp_car(a: &ResultRow, b: &ResultRow) -> Ordering {
+pub fn cmp_car(a: &ResultRow, b: &ResultRow) -> Ordering {
     num_car_key(&a.entry.car).cmp(&num_car_key(&b.entry.car))
 }
 

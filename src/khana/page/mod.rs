@@ -4,7 +4,7 @@ pub mod khana_rule;
 pub mod pad;
 pub mod penalty;
 pub mod results;
-pub mod stage;
 pub mod start;
 pub mod stopwatch;
+pub mod timekeeper;
 pub mod timing;

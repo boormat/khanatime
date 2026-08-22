@@ -19,7 +19,7 @@ pub enum Screen {
     Help,
     KhanaRules,
     Results,
-    Stage,
+    Timekeeper,
     Start,
     Finish,
     Event,
@@ -40,7 +40,7 @@ impl Screen {
             Screen::Help => "help",
             Screen::KhanaRules => "rules",
             Screen::Results => "results",
-            Screen::Stage => "stage",
+            Screen::Timekeeper => "timekeeper",
             Screen::Start => "start",
             Screen::Finish => "finish",
             Screen::Event => "event",
@@ -60,7 +60,7 @@ impl Screen {
             "help" => Screen::Help,
             "rules" => Screen::KhanaRules,
             "results" => Screen::Results,
-            "stage" => Screen::Stage,
+            "timekeeper" => Screen::Timekeeper,
             "start" => Screen::Start,
             "finish" => Screen::Finish,
             "event" => Screen::Event,
@@ -77,7 +77,7 @@ impl Screen {
         matches!(
             self,
             Screen::Results
-                | Screen::Stage
+                | Screen::Timekeeper
                 | Screen::Start
                 | Screen::Finish
                 | Screen::Stopwatch
@@ -146,17 +146,17 @@ impl Mode {
         use Screen::*;
         match self {
             Mode::Testing => &[
-                Home, Events, Accounts, Qr, Help, KhanaRules, Results, Stage, Start, Finish, Event,
-                Entries, Chat, Stopwatch, Timing,
+                Home, Events, Accounts, Qr, Help, KhanaRules, Results, Timekeeper, Start, Finish,
+                Event, Entries, Chat, Stopwatch, Timing,
             ],
             Mode::Organiser => &[
-                Home, Events, Accounts, Qr, Event, Start, Finish, Stage, Stopwatch, Timing,
+                Home, Events, Accounts, Qr, Event, Start, Finish, Timekeeper, Stopwatch, Timing,
                 Results, Entries, Chat, Help, KhanaRules,
             ],
             Mode::Spectator => &[Home, Qr, Results],
             Mode::Official => &[
-                Home, Events, Qr, Start, Finish, Stage, Stopwatch, Timing, Results, Entries, Chat,
-                Help, KhanaRules,
+                Home, Events, Qr, Start, Finish, Timekeeper, Stopwatch, Timing, Results, Entries,
+                Chat, Help, KhanaRules,
             ],
             Mode::Competitor => &[Home, Events, Qr, Results, Entries, Help, KhanaRules],
         }
@@ -245,7 +245,7 @@ pub struct Screens {
     pub accounts: page::accounts::Model,
     pub qr: page::qr::Model,
     pub setup: crate::khana::page::event::Model,
-    pub stage: crate::khana::page::stage::StageModel,
+    pub timekeeper: crate::khana::page::timekeeper::TimekeeperModel,
     pub start: crate::khana::page::start::Model,
     pub finish: crate::khana::page::finish::Model,
     pub stopwatch: crate::khana::page::stopwatch::Model,
@@ -277,7 +277,7 @@ pub enum Msg {
     SetEvent(String), // event id to load
     Reload,           // event or score data changed (in storage)
     Conn(crate::sync::Msg),
-    StageMsg(crate::khana::page::stage::StageMsg),
+    TimekeeperMsg(crate::khana::page::timekeeper::TimekeeperMsg),
     StartMsg(crate::khana::page::start::Msg),
     FinishMsg(crate::khana::page::finish::Msg),
     StopwatchMsg(crate::khana::page::stopwatch::Msg),
@@ -401,7 +401,7 @@ impl Model {
                 accounts: page::accounts::init(),
                 qr: page::qr::init(),
                 setup: crate::khana::page::event::init(),
-                stage: crate::khana::page::stage::init(),
+                timekeeper: crate::khana::page::timekeeper::init(),
                 start: crate::khana::page::start::init(),
                 finish: crate::khana::page::finish::init(),
                 stopwatch: crate::khana::page::stopwatch::init(),
@@ -545,7 +545,7 @@ pub fn update(model: Model, msg: Msg) {
             crate::khana::page::results::update(model, crate::khana::page::results::Msg::Reload);
         }
 
-        Msg::StageMsg(msg) => crate::khana::page::stage::update(model, msg),
+        Msg::TimekeeperMsg(msg) => crate::khana::page::timekeeper::update(model, msg),
         Msg::StartMsg(msg) => crate::khana::page::start::update(model, msg),
         Msg::FinishMsg(msg) => crate::khana::page::finish::update(model, msg),
         Msg::StopwatchMsg(msg) => crate::khana::page::stopwatch::update(model, msg),
@@ -696,9 +696,9 @@ pub fn update(model: Model, msg: Msg) {
 pub fn setup_effects(model: Model) {
     // stage command preview: re-parse whenever the input text changes
     create_effect(move || {
-        let input = model.screens.stage.cmd.input.get_clone();
-        let cmd = crate::khana::page::stage::parse_command(&input);
-        model.screens.stage.preview.set(cmd);
+        let input = model.screens.timekeeper.cmd.input.get_clone();
+        let cmd = crate::khana::page::timekeeper::parse_command(&input);
+        model.screens.timekeeper.preview.set(cmd);
     });
     #[cfg(target_arch = "wasm32")]
     listen_for_tab_sync(model);
@@ -895,7 +895,7 @@ fn view_content(model: Model) -> View {
     let needs_event = [
         Screen::Start,
         Screen::Finish,
-        Screen::Stage,
+        Screen::Timekeeper,
         Screen::Timing,
         Screen::Results,
         Screen::Chat,
@@ -915,7 +915,7 @@ fn view_content(model: Model) -> View {
                 Screen::Qr => page::qr::view(model),
                 Screen::Help => page::help::view(),
                 Screen::KhanaRules => crate::khana::page::khana_rule::view(),
-                Screen::Stage => crate::khana::page::stage::view(model),
+                Screen::Timekeeper => crate::khana::page::timekeeper::view(model),
                 Screen::Start => crate::khana::page::start::view(model),
                 Screen::Finish => crate::khana::page::finish::view(model),
                 Screen::Stopwatch => crate::khana::page::stopwatch::view(model),
@@ -937,7 +937,7 @@ fn view_navbar(model: Model) -> View {
     let needs_event = [
         Screen::Start,
         Screen::Finish,
-        Screen::Stage,
+        Screen::Timekeeper,
         Screen::Timing,
         Screen::Results,
         Screen::Chat,
@@ -960,7 +960,7 @@ fn view_navbar(model: Model) -> View {
         (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Event config"),
         (Screen::Entries, "fa fa-users", "Entries"),
-        (Screen::Stage, "fa fa-stopwatch-20", "Manual timing"),
+        (Screen::Timekeeper, "fa fa-stopwatch-20", "Timekeeper"),
         (Screen::Start, "fa fa-flag", "Start flag"),
         (Screen::Finish, "fa fa-flag-checkered", "Finish flag"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
@@ -1118,7 +1118,7 @@ mod tests {
             Screen::Help,
             Screen::KhanaRules,
             Screen::Results,
-            Screen::Stage,
+            Screen::Timekeeper,
             Screen::Start,
             Screen::Finish,
             Screen::Event,
@@ -1144,7 +1144,7 @@ mod tests {
             Screen::Help,
             Screen::KhanaRules,
             Screen::Results,
-            Screen::Stage,
+            Screen::Timekeeper,
             Screen::Start,
             Screen::Finish,
             Screen::Event,

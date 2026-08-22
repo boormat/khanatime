@@ -41,12 +41,10 @@ unlinted code.
 
 For anything except trivial changes, work in an isolated git worktree. The
 agent MUST default to a worktree; only edit the main repo directly for trivial
-single-line fixes. **Git policy:** the agent may create local commits
-(`git add` / `git commit`) on a feature branch once the user has approved the
-tested work — `git add` is allowed and `git commit` is permitted (prompts for
-approval) in the global opencode config (`~/.config/opencode/opencode.jsonc`).
-Merge, rebase, push, and worktree cleanup remain denied and are the user's
-responsibility. Never push or merge to `main`.
+single-line fixes. **All git integration (commit / merge / rebase / push /
+worktree cleanup) is performed by the user, never by the agent** — the global
+opencode config (`~/.config/opencode/opencode.jsonc`) denies those commands,
+and that is intentional.
 
 Use the `using-git-worktrees` skill to create and work inside the worktree
 (convention: `~/work/<abbrev>-<slug>` on branch `feature/<slug>`, where

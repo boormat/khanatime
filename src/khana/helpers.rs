@@ -215,7 +215,7 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
     }
 }
 
-fn fmt_log_ts(ms: i64) -> String {
+pub fn fmt_log_ts(ms: i64) -> String {
     let d = js_sys::Date::new(&js_sys::Number::from(ms as f64).into());
     d.to_string().into()
 }
