@@ -377,6 +377,15 @@ fn save_batch(model: crate::Model) {
     let em = model.screens.setup;
     let committed = model.khana.event.get_clone();
     let staged = em.edit_event.get_clone().unwrap_or_default();
+    // Validation: block if publishing and checks fail (V1, V3, publish_errors).
+    if committed.is_published() || !staged.event_homeservers.is_empty() {
+        let errs = publish_validation_errors(model, &committed, &staged);
+        if !errs.is_empty() {
+            em.feedback
+                .set(format!("Can't publish: {}", errs.join(" ")));
+            return;
+        }
+    }
     let diff = crate::batch::event_diff(&committed, &staged);
     if diff.is_empty() {
         if em.pre_create.get_clone().is_some() {
@@ -524,14 +533,47 @@ fn discard_edits(model: crate::Model) {
     }
 }
 
+/// All reasons `staged` can't be published / saved-and-published.
+/// Used by both the Publish modal and `save_batch` — one source of truth.
+fn publish_validation_errors(
+    model: crate::Model,
+    committed: &crate::event::EventInfo,
+    staged: &crate::event::EventInfo,
+) -> Vec<String> {
+    let scores = model.khana.scores.get_clone();
+    let runs = model.khana.runs.get_clone();
+    let mut errs = crate::event::publish_errors(staged, &scores, &runs);
+    // V3 — homeserver set locked after publish
+    if committed.is_published() && crate::event::homeserver_set_changed(committed, staged) {
+        errs.push("Homeservers cannot be changed after publishing.".into());
+    }
+    // V1 — owner needs a Matrix session on a selected homeserver (wasm-only)
+    #[cfg(target_arch = "wasm32")]
+    if !staged.event_homeservers.is_empty() {
+        if let Some(ref owner) = staged.owner {
+            let ok = crate::services::matrix::load_accounts()
+                .into_iter()
+                .find(|a| a.user_id == *owner)
+                .map(|a| a.homeserver)
+                .map(|hs| {
+                    crate::event::owner_hs_in_event(&hs, &staged.event_homeservers)
+                        && crate::services::matrix::load_session_for(&hs).is_some()
+                })
+                .unwrap_or(false);
+            if !ok {
+                errs.push("Owner has no Matrix session on a selected homeserver.".into());
+            }
+        }
+    }
+    errs
+}
+
 /// Publish the current event to a Matrix space + timing room using the
 /// identity logged in on the Home page.
 fn publish(model: crate::Model) {
     let em = model.screens.setup;
     let event = model.khana.event.get_clone();
-    let scores = model.khana.scores.get_clone();
-    let runs = model.khana.runs.get_clone();
-    let errs = crate::event::publish_errors(&event, &scores, &runs);
+    let errs = publish_validation_errors(model, &event, &event);
     if !errs.is_empty() {
         em.publish_status
             .set(Some(format!("Can't publish: {}", errs.join(" "))));
@@ -792,9 +834,7 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
         return view! {};
     }
     let event = model.khana.event.get_clone();
-    let scores = model.khana.scores.get_clone();
-    let runs = model.khana.runs.get_clone();
-    let errs = crate::event::publish_errors(&event, &scores, &runs);
+    let errs = publish_validation_errors(model, &event, &event);
     let blocked = !errs.is_empty();
     let title = if blocked {
         "Cannot publish"

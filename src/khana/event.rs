@@ -1631,6 +1631,20 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
     errs
 }
 
+/// True when the event's homeserver set differs from `base` (sorted comparison).
+pub fn homeserver_set_changed(base: &EventInfo, staged: &EventInfo) -> bool {
+    let mut a: Vec<String> = base.event_homeservers.clone();
+    let mut b: Vec<String> = staged.event_homeservers.clone();
+    a.sort();
+    b.sort();
+    a != b
+}
+
+/// True when `owner_hs` is among the event's homeservers.
+pub fn owner_hs_in_event(owner_hs: &str, homeservers: &[String]) -> bool {
+    homeservers.iter().any(|h| h == owner_hs)
+}
+
 /// List of known events (ids) that have a transaction log.
 pub fn list_events() -> HashSet<String> {
     crate::log::list_event_ids()
@@ -2847,5 +2861,63 @@ mod tests {
             "http://localhost:8085"
         );
         assert_eq!(element_link_default(""), "");
+    }
+
+    #[test]
+    fn homeserver_set_changed_identical() {
+        let a = EventInfo {
+            event_homeservers: vec!["https://a.com".into(), "https://b.com".into()],
+            ..Default::default()
+        };
+        let b = a.clone();
+        assert!(!homeserver_set_changed(&a, &b));
+    }
+
+    #[test]
+    fn homeserver_set_changed_reordered() {
+        let a = EventInfo {
+            event_homeservers: vec!["https://b.com".into(), "https://a.com".into()],
+            ..Default::default()
+        };
+        let b = EventInfo {
+            event_homeservers: vec!["https://a.com".into(), "https://b.com".into()],
+            ..Default::default()
+        };
+        assert!(!homeserver_set_changed(&a, &b));
+    }
+
+    #[test]
+    fn homeserver_set_changed_added() {
+        let a = EventInfo {
+            event_homeservers: vec!["https://a.com".into()],
+            ..Default::default()
+        };
+        let b = EventInfo {
+            event_homeservers: vec!["https://a.com".into(), "https://b.com".into()],
+            ..Default::default()
+        };
+        assert!(homeserver_set_changed(&a, &b));
+    }
+
+    #[test]
+    fn homeserver_set_changed_removed() {
+        let a = EventInfo {
+            event_homeservers: vec!["https://a.com".into(), "https://b.com".into()],
+            ..Default::default()
+        };
+        let b = EventInfo {
+            event_homeservers: vec!["https://a.com".into()],
+            ..Default::default()
+        };
+        assert!(homeserver_set_changed(&a, &b));
+    }
+
+    #[test]
+    fn owner_hs_in_event_match() {
+        let hs = vec!["https://a.com".into(), "https://b.com".into()];
+        assert!(owner_hs_in_event("https://a.com", &hs));
+        assert!(owner_hs_in_event("https://b.com", &hs));
+        assert!(!owner_hs_in_event("https://c.com", &hs));
+        assert!(!owner_hs_in_event("", &hs));
     }
 }

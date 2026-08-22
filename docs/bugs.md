@@ -31,17 +31,17 @@
 
 ## Validation Issues
 
-### V1. Publish: owner account must match selected homeserver
+### ~~V1. Publish: owner account must match selected homeserver~~ ✅ DONE
 **File:** `src/khana/event.rs` — `publish_errors` (line 1594)
 **Severity:** Medium
 **Detail:** Currently checks owner is set and in organisers list, but doesn't verify the owner has a Matrix session on the selected homeserver. If the owner's account is on matrix.org but the event publishes to a different homeserver, the owner can't be invited/granted admin.
 
-### V2. Publish: only allow one homeserver
+### ~~V2. Publish: only allow one homeserver~~ ❌ DROPPED — keep multi-homeserver (future multi-transport)
 **File:** `src/khana/event.rs` — `publish_errors`
 **Severity:** Medium
 **Detail:** Currently `event_homeservers` is a `Vec<String>` allowing multiple. User wants single-homeserver only. Need to change the picker to radio-style and update validation.
 
-### V3. Publish: reject homeserver change after publish
+### ~~V3. Publish: reject homeserver change after publish~~ ✅ DONE
 **File:** `src/khana/page/event.rs` — homeserver picker (line 1938)
 **Severity:** Medium
 **Detail:** The UI already locks the homeserver picker for published events ("Homeservers cannot be changed after publishing"), but the validation in `publish_errors` doesn't enforce this. The data model should reject the change at the validation level too.
