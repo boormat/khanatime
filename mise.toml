@@ -21,3 +21,7 @@ rustup target add wasm32-unknown-unknown
 [tasks.serve]
 description = "Serve a worktree for agent testing (random port, pid file)"
 file = "mise-tasks/serve"
+
+[tasks.merge]
+description = "Fast-forward merge a feature branch into main, clean up worktree"
+run = "scripts/merge.sh {{arg(name='branch', required=true)}} {{arg(name='dry', required=false)}}"

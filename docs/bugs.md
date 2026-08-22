@@ -71,12 +71,12 @@
 **Severity:** Low
 **Detail:** Result snapshots show as just "[result]". Setup messages show as "[setup: name]". Should parse and show more detail. When expanded, should show pretty-printed JSON for all types (currently only timing events get full JSON expansion).
 
-### U5. Offline/comm status → move to Chat page
+### ~~U5. Offline/comm status → move to Chat page~~ ✅ DONE
 **File:** `src/page/home.rs` — `view_comms` (line 260)
 **Severity:** Low
 **Detail:** The connection status box ("Connected -- room X" / "Not connected") should move from Home to Chat page. Chat is the natural place for transport/connection diagnostics.
 
-### U6. Remove from Homepage: Add homeserver, Manage, Event admins, Change event
+### ~~U6. Remove from Homepage: Add homeserver, Manage, Event admins, Change event~~ ✅ DONE
 **File:** `src/page/home.rs`
 **Severity:** Medium
 **Detail:** These buttons clutter the home page:
@@ -85,7 +85,7 @@
 - "Event admin" button → remove from home (available in burger menu as "Event config")
 - "Change event" button → move to Event config page
 
-### U7. Results: move Offline Handoff to QR page
+### ~~U7. Results: move Offline Handoff to QR page~~ ✅ DONE
 **File:** `src/khana/helpers.rs` — `view_handoff` (line 226)
 **Severity:** Low
 **Detail:** The "Offline handoff" box (QR parcel export/import) is currently on the Results page. Should move to the QR page (`Screen::Qr`). Results page should focus on results only.
@@ -94,7 +94,7 @@
 
 ## Feature Requests — Navigation Restructure
 
-### F1. Timing pages: single #timing entry point with stage picker
+### ~~F1. Timing pages: single #timing entry point with stage picker~~ ✅ DONE
 **File:** New `src/khana/page/timing.rs` (or rework `stopwatch.rs`)
 **Severity:** High (core UX)
 **Detail:** Currently Start, Finish, Stage, Stopwatch are 4 separate screens in the navbar/burger. Replace with a single `#timing` page that:
