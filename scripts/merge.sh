@@ -97,38 +97,38 @@ if $DRY_RUN; then
     echo "  [dry-run] Would squash in worktree: $WT_DIR"
     echo "  [dry-run] Commands:"
     echo "    cd $WT_DIR"
-    echo "    git branch baseline"
+    echo "    ORIG_SHA=\$(git rev-parse HEAD)"
     echo "    git reset --soft main"
     echo "    git commit -m \"<original message>\""
-    echo "    git diff baseline  # verify identical"
-    echo "    git branch -d baseline"
+    echo "    git diff \$ORIG_SHA  # verify identical"
 else
     cd "$WT_DIR"
 
-    # Save the original commit message
+    # Save the original commit message and SHA for diff verification
     ORIG_MSG=$(git log -1 --format="%s" HEAD)
-
-    # Save current state for diff verification
-    git branch baseline
+    ORIG_SHA=$(git rev-parse HEAD)
 
     # Soft-reset to main, recommit as single commit
     git reset --soft main
     git commit -m "$ORIG_MSG"
 
-    # Verify the tree content is identical
-    DIFF=$(git diff baseline 2>/dev/null || true)
+    # Verify the tree content is identical (use SHA, no branch needed)
+    DIFF=$(git diff "$ORIG_SHA" 2>/dev/null || true)
     if [ -n "$DIFF" ]; then
         echo "  ✗ WARNING: tree content differs after squash!"
         echo "  The diff is:"
         echo "$DIFF"
         echo ""
+        # Save the original branch for recovery
+        PREBASE_BRANCH="${BRANCH}_prebase"
+        echo "  Saving original branch as $PREBASE_BRANCH..."
+        git branch "$PREBASE_BRANCH" "$ORIG_SHA" 2>/dev/null || true
+        echo ""
         echo "  Aborting — fix manually or retest."
         git reset --hard HEAD@{1} 2>/dev/null || true
-        git branch -D baseline 2>/dev/null || true
         exit 1
     fi
 
-    git branch -d baseline
     echo "  ✓ Squash complete, tree content verified"
 
     echo ""
