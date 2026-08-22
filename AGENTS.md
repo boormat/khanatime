@@ -280,6 +280,10 @@ the app.
 - Keep domain logic in `event.rs` / `results.rs` (pure, testable), UI in
   `page/`.
 - Don't add new server-side components; Matrix-only.
+- **Use `workdir` not `cd`** in bash tool calls. Permission patterns match
+  against the full command string, so compound `cd /path && <cmd>` chains
+  may not match the expected pattern. Use the `workdir` parameter instead
+  so the command string is just `<cmd>`.
 - Multi-transport timing (QR handoff, dual homeservers, observation ids with
   `amend`/`void`) is planned — read `docs/plan/multi-transport.md` and its
   Phase 1 detail `docs/plan/identity-amendments.md` before touching the wire
