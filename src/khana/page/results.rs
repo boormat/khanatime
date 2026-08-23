@@ -174,74 +174,23 @@ pub fn view(model: crate::Model) -> View {
 }
 
 fn view_publish(model: crate::Model) -> View {
-    let joined = model.sync.room.with(|r| r.is_some());
     view! {
-        div(class="box is-hidden-print") {
-            div(class="level") {
-                div(class="level-left") {
-                    div(class="level-item") {
-                        h2(class="title is-5") { "Results" }
-                    }
-                }
-                div(class="level-right") {
-                    div(class="level-item has-addons") {
-                        button(
-                            class=move || {
-                                let mode = model.screens.results.mode.get();
-                                if mode == ResultMode::Official { "button is-small is-link" } else { "button is-small is-link is-light" }
-                            },
-                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::SetMode(ResultMode::Official))),
-                        ) { "Official" }
-                        button(
-                            class=move || {
-                                let mode = model.screens.results.mode.get();
-                                if mode == ResultMode::Live { "button is-small is-link" } else { "button is-small is-link is-light" }
-                            },
-                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::SetMode(ResultMode::Live))),
-                        ) { "Live" }
-                    }
-                    div(class="level-item") {
-                        button(
-                            class="button is-small",
-                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ExpandAll)),
-                        ) {
-                            span(class="icon") { i(class="fa fa-angle-double-down") }
-                            span { "Expand all" }
-                        }
-                    }
-                    div(class="level-item") {
-                        button(
-                            class="button is-small",
-                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::CollapseAll)),
-                        ) {
-                            span(class="icon") { i(class="fa fa-angle-double-up") }
-                            span { "Collapse all" }
-                        }
-                    }
-                    div(class="level-item") {
-                        button(
-                            class="button",
-                            on:click=move |_| {
-                                if let Some(w) = web_sys::window() {
-                                    let _ = w.print();
-                                }
-                            },
-                        ) {
-                            span(class="icon") { i(class="fa fa-print") }
-                            span { "Print" }
-                        }
-                    }
-                    div(class="level-item") {
-                        button(
-                            class=format!("button {}", if joined { "is-primary" } else { "is-light" }),
-                            disabled=!joined,
-                            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::Publish)),
-                        ) {
-                            span(class="icon") { i(class="fa fa-paper-plane") }
-                            span { "Publish results" }
-                        }
-                    }
-                }
+        div(class="is-hidden-print mb-2") {
+            div(class="buttons has-addons is-small") {
+                button(
+                    class=move || {
+                        let mode = model.screens.results.mode.get();
+                        if mode == ResultMode::Official { "button is-small is-link" } else { "button is-small is-link is-light" }
+                    },
+                    on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::SetMode(ResultMode::Official))),
+                ) { "Official" }
+                button(
+                    class=move || {
+                        let mode = model.screens.results.mode.get();
+                        if mode == ResultMode::Live { "button is-small is-link" } else { "button is-small is-link is-light" }
+                    },
+                    on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::SetMode(ResultMode::Live))),
+                ) { "Live" }
             }
         }
     }
@@ -352,6 +301,20 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
             // Card view (mobile only)
             div(class="kt-results-cards") {
                 (card_views)
+            }
+            // Print button (bottom)
+            div(class="mt-3 is-hidden-print") {
+                button(
+                    class="button is-small",
+                    on:click=move |_| {
+                        if let Some(w) = web_sys::window() {
+                            let _ = w.print();
+                        }
+                    },
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-print") }
+                    span { "Print" }
+                }
             }
         }
     }
@@ -728,7 +691,7 @@ fn cum_or(cum: &Option<Pos>) -> View {
 fn clasess(model: crate::Model, results: &ResultView) -> View {
     let current = results.class.clone();
     let tabs = class_tabs(&results.event);
-    let btns = tabs
+    let mut btns: Vec<View> = tabs
         .iter()
         .map(|class| {
             let class = class.clone();
@@ -737,7 +700,7 @@ fn clasess(model: crate::Model, results: &ResultView) -> View {
             view! {
                 button(
                     class=format!(
-                        "button is-hidden-print {}",
+                        "button is-hidden-print is-small {}",
                         if active { "is-link is-selected" } else { "is-light" }
                     ),
                     on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ShowClass(class.clone()))),
@@ -746,8 +709,27 @@ fn clasess(model: crate::Model, results: &ResultView) -> View {
                 }
             }
         })
-        .collect::<Vec<View>>();
-    view! { (btns) }
+        .collect();
+    // Expand/collapse icons (icon-only, small)
+    btns.push(view! {
+        button(
+            class="button is-small is-hidden-print",
+            title="Expand all",
+            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::ExpandAll)),
+        ) {
+            span(class="icon is-small") { i(class="fa fa-angle-double-down") }
+        }
+    });
+    btns.push(view! {
+        button(
+            class="button is-small is-hidden-print",
+            title="Collapse all",
+            on:click=move |_| crate::update(model, crate::Msg::ResultMsg(Msg::CollapseAll)),
+        ) {
+            span(class="icon is-small") { i(class="fa fa-angle-double-up") }
+        }
+    });
+    view! { div(class="buttons has-addons is-small mb-2") { (btns) } }
 }
 
 fn table_header(model: crate::Model, results: &ResultView) -> View {

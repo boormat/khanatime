@@ -155,11 +155,42 @@ pub fn view(model: crate::Model) -> View {
         div {
             h1(class="title") { "Events" }
             p(class="help") { "Choose how to get an event open." }
+            (view_mode_picker(model))
             (view_current(model))
             (view_published(model))
             (view_plan(model))
             (crate::khana::helpers::view_handoff(model))
             (view_feedback(model))
+        }
+    }
+}
+
+/// Mode picker — compact button row.
+fn view_mode_picker(model: crate::Model) -> View {
+    let mode = model.mode.get();
+    view! {
+        div(class="box") {
+            div(class="field is-grouped is-grouped-multiline") {
+                div(class="control") {
+                    span(class="has-text-weight-semibold is-size-7 mr-2") { "Mode:" }
+                }
+                (crate::app::Mode::ALL.iter().map(|&m| {
+                    let is_active = m == mode;
+                    let cls = if is_active {
+                        "button is-small is-link"
+                    } else {
+                        "button is-small is-light"
+                    };
+                    view! {
+                        button(
+                            class=cls,
+                            on:click=move |_| crate::update(model, crate::Msg::SetMode(m)),
+                        ) {
+                            (m.label())
+                        }
+                    }
+                }).collect::<Vec<_>>())
+            }
         }
     }
 }

@@ -1011,32 +1011,6 @@ fn view_navbar(model: Model) -> View {
         }
     }
 
-    // --- Mode label (RHS, always visible) ---
-    let mode_label = mode.label().to_string();
-    let mode_picker = view! {
-        div(class="navbar-item has-dropdown is-hoverable") {
-            a(class="navbar-link is-arrowless") {
-                span(class="is-size-7") { (mode_label) }
-            }
-            div(class="navbar-dropdown is-right") {
-                div(class="navbar-item has-text-weight-bold is-size-7 has-text-grey") { "Mode" }
-                hr(class="navbar-divider")
-                (Mode::ALL.iter().map(|&m| {
-                    let is_active = m == mode;
-                    let cls = if is_active { "navbar-item is-active" } else { "navbar-item" };
-                    view! {
-                        a(class=cls, on:click=move |_| {
-                            model.screens.home.burger_open.set(false);
-                            update(model, Msg::SetMode(m));
-                        }) {
-                            span { (m.label()) }
-                        }
-                    }
-                }).collect::<Vec<_>>())
-            }
-        }
-    };
-
     // --- More menu items ---
     let mut more_menu_items: Vec<View> = vec![];
     for (screen, icon, label) in all_more_items {
@@ -1073,7 +1047,6 @@ fn view_navbar(model: Model) -> View {
             div(class="navbar-brand") {
                 (more_button)
                 (tab_items)
-                (mode_picker)
             }
             div(class=if model.screens.home.burger_open.get() { "navbar-menu is-active" } else { "navbar-menu" }) {
                 div(class="navbar-start") { (more_menu_items) }
