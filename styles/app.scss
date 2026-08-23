@@ -326,3 +326,23 @@
     box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
   }
 }
+
+// ── Mobile: tighter car chips height ──
+@media screen and (max-width: $tablet - 1px) {
+  .kt-car-chips {
+    max-height: 30vh;
+  }
+}
+
+// ── Results: table on desktop, cards on mobile ──
+@media screen and (max-width: $tablet - 1px) {
+  .kt-results-table {
+    display: none !important;
+  }
+}
+
+@media screen and (min-width: $tablet) {
+  .kt-results-cards {
+    display: none !important;
+  }
+}

@@ -89,6 +89,38 @@ fn view_dashboard(model: crate::Model) -> View {
         (move || view_sessions(model))
         (move || view_actions(model))
         (move || view_status_summary(model))
+        (move || view_event_switcher(model))
+    }
+}
+
+/// Compact event switcher — single line showing current event name with a
+/// "Switch" link to the Events screen.  Only shown when an event is loaded.
+fn view_event_switcher(model: crate::Model) -> View {
+    let event = model.khana.event.get_clone();
+    if event.is_null() {
+        return view! {};
+    }
+    let name = if event.name.is_empty() {
+        "Untitled event".to_string()
+    } else {
+        event.name.clone()
+    };
+    view! {
+        div(class="box") {
+            div(class="level is-mobile") {
+                div(class="level-left") {
+                    span(class="has-text-weight-semibold") { (name) }
+                }
+                div(class="level-right") {
+                    a(class="has-text-link is-size-7", on:click=move |_| {
+                        crate::update(model, crate::Msg::Show(crate::Screen::Events));
+                    }) {
+                        span(class="icon is-small") { i(class="fa fa-arrow-right") }
+                        span { " Switch" }
+                    }
+                }
+            }
+        }
     }
 }
 
