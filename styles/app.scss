@@ -268,3 +268,61 @@
 .button[disabled] {
   cursor: default;
 }
+
+// ── Navbar tab scaling — hide lower-priority tabs at smaller breakpoints ──
+
+// Mobile (< 769px): hide Time and Chat tabs
+@media screen and (max-width: $tablet - 1px) {
+  .navbar .kt-tab-time,
+  .navbar .kt-tab-chat {
+    display: none !important;
+  }
+}
+
+// Tablet (769–1023px): hide Chat tab
+@media screen and (min-width: $tablet) and (max-width: $desktop - 1px) {
+  .navbar .kt-tab-chat {
+    display: none !important;
+  }
+}
+
+// ── Navbar tweaks for the More button and mode label ──
+
+.navbar .navbar-brand .navbar-item {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+// Mode label on RHS: smaller text, subtle
+.navbar .navbar-brand .navbar-link {
+  font-size: 0.75rem;
+}
+
+// More menu: items with icons
+.navbar-menu .navbar-item .icon {
+  margin-right: 0.5rem;
+}
+
+// ── Mobile bottom sheet (kept for potential future use) ──
+@media screen and (max-width: $tablet - 1px) {
+  .kt-more-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 200;
+  }
+
+  .kt-more-sheet {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: $white;
+    border-radius: 12px 12px 0 0;
+    padding: 1rem 0;
+    z-index: 201;
+    max-height: 70vh;
+    overflow-y: auto;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
+  }
+}
