@@ -890,8 +890,6 @@ pub fn view(model: Model) -> View {
 
 fn view_content(model: Model) -> View {
     let screen = model.screen.get();
-    // Event-dependent screens need a current event; without one, fall back to
-    // the Home (sign-in / event picker) view regardless of navigation.
     let needs_event = [
         Screen::Start,
         Screen::Finish,
@@ -901,46 +899,44 @@ fn view_content(model: Model) -> View {
         Screen::Chat,
         Screen::Entries,
     ];
-    let effective = if needs_event.contains(&screen) && model.khana.event.with(|e| e.is_null()) {
-        Screen::Home
-    } else {
-        screen
-    };
+    let no_event = needs_event.contains(&screen) && model.khana.event.with(|e| e.is_null());
+
     view! {
         div(class="container") {
-            (match effective {
-                Screen::Home => page::home::view(model),
-                Screen::Events => page::events::view(model),
-                Screen::Accounts => page::accounts::view(model),
-                Screen::Qr => page::qr::view(model),
-                Screen::Help => page::help::view(),
-                Screen::KhanaRules => crate::khana::page::khana_rule::view(),
-                Screen::Timekeeper => crate::khana::page::timekeeper::view(model),
-                Screen::Start => crate::khana::page::start::view(model),
-                Screen::Finish => crate::khana::page::finish::view(model),
-                Screen::Stopwatch => crate::khana::page::stopwatch::view(model),
-                Screen::Timing => crate::khana::page::timing::view(model),
-                Screen::Results => crate::khana::page::results::view(model),
-                Screen::Event => crate::khana::page::event::view(model),
-                Screen::Entries => crate::entry_app::view(model),
-                Screen::Chat => page::chat::view(model),
+            (if no_event {
+                view! {
+                    div(class="notification is-warning is-light mt-4") {
+                        p { "No event loaded." }
+                        a(class="has-text-link", on:click=move |_| {
+                            crate::update(model, crate::Msg::Show(crate::Screen::Events));
+                        }) { "Pick an event" }
+                    }
+                }
+            } else {
+                match screen {
+                    Screen::Home => page::home::view(model),
+                    Screen::Events => page::events::view(model),
+                    Screen::Accounts => page::accounts::view(model),
+                    Screen::Qr => page::qr::view(model),
+                    Screen::Help => page::help::view(),
+                    Screen::KhanaRules => crate::khana::page::khana_rule::view(),
+                    Screen::Timekeeper => crate::khana::page::timekeeper::view(model),
+                    Screen::Start => crate::khana::page::start::view(model),
+                    Screen::Finish => crate::khana::page::finish::view(model),
+                    Screen::Stopwatch => crate::khana::page::stopwatch::view(model),
+                    Screen::Timing => crate::khana::page::timing::view(model),
+                    Screen::Results => crate::khana::page::results::view(model),
+                    Screen::Event => crate::khana::page::event::view(model),
+                    Screen::Entries => crate::entry_app::view(model),
+                    Screen::Chat => page::chat::view(model),
+                }
             })
         }
     }
 }
 
 fn view_navbar(model: Model) -> View {
-    let has_event = !model.khana.event.with(|e| e.is_null());
     let mode = model.mode.get();
-    let needs_event = [
-        Screen::Start,
-        Screen::Finish,
-        Screen::Timekeeper,
-        Screen::Timing,
-        Screen::Results,
-        Screen::Chat,
-        Screen::Entries,
-    ];
 
     // Tabs in importance order — CSS hides lower-priority ones on small screens.
     let all_tabs = [
@@ -986,33 +982,20 @@ fn view_navbar(model: Model) -> View {
             continue;
         }
         let active = model.screen.get() == screen;
-        let disabled = !has_event && needs_event.contains(&screen);
         let mut cls = format!("navbar-item{css_class}");
         if active {
             cls.push_str(" is-active");
         }
-        if disabled {
-            cls.push_str(" kt-tab-disabled");
-        }
         let icon_cls = format!("{icon} has-text-weight-bold is-size-5");
-        if disabled {
-            tab_items.push(view! {
-                a(class=cls) {
-                    span(class="icon") { i(class=icon_cls) }
-                    span { (label) }
-                }
-            });
-        } else {
-            tab_items.push(view! {
-                a(class=cls, on:click=move |_| {
-                    model.screens.home.burger_open.set(false);
-                    update(model, Msg::Show(screen));
-                }) {
-                    span(class="icon") { i(class=icon_cls) }
-                    span { (label) }
-                }
-            });
-        }
+        tab_items.push(view! {
+            a(class=cls, on:click=move |_| {
+                model.screens.home.burger_open.set(false);
+                update(model, Msg::Show(screen));
+            }) {
+                span(class="icon") { i(class=icon_cls) }
+                span { (label) }
+            }
+        });
     }
 
     // --- More menu items ---
@@ -1021,28 +1004,17 @@ fn view_navbar(model: Model) -> View {
         if !mode.has_screen(screen) {
             continue;
         }
-        let disabled = !has_event && needs_event.contains(&screen);
         let icon_owned = icon.to_string();
         let label_owned = label.to_string();
-        if disabled {
-            let title = label_owned.clone();
-            more_menu_items.push(view! {
-                a(class="navbar-item has-text-grey-light", title=title) {
-                    span(class="icon") { i(class=icon_owned) }
-                    span { (label_owned) }
-                }
-            });
-        } else {
-            more_menu_items.push(view! {
-                a(class="navbar-item", on:click=move |_| {
-                    model.screens.home.burger_open.set(false);
-                    update(model, Msg::Show(screen));
-                }) {
-                    span(class="icon") { i(class=icon_owned) }
-                    span { (label_owned) }
-                }
-            });
-        }
+        more_menu_items.push(view! {
+            a(class="navbar-item", on:click=move |_| {
+                model.screens.home.burger_open.set(false);
+                update(model, Msg::Show(screen));
+            }) {
+                span(class="icon") { i(class=icon_owned) }
+                span { (label_owned) }
+            }
+        });
     }
 
     // --- Assemble ---
