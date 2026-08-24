@@ -288,9 +288,30 @@
 
 // ── Navbar tweaks for the More button and mode label ──
 
-.navbar .navbar-brand .navbar-item {
+// Tabs and More button: light text on is-link (blue) background
+.navbar.is-link .navbar-brand .navbar-item {
+  color: rgba(255, 255, 255, 0.85);
   padding-top: 0.5rem;
   padding-bottom: 0.5rem;
+
+  &:hover,
+  &.is-active {
+    color: $white;
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+
+  .icon {
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  // Disabled: dimmer but still visible (overrides has-text-grey-light)
+  &.kt-tab-disabled {
+    color: rgba(255, 255, 255, 0.4);
+
+    .icon {
+      color: rgba(255, 255, 255, 0.4);
+    }
+  }
 }
 
 // Mode label on RHS: smaller text, subtle
