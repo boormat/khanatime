@@ -994,9 +994,18 @@ fn view_navbar(model: Model) -> View {
         if disabled {
             cls.push_str(" has-text-grey-light");
         }
-        let icon_cls = format!("{icon} has-text-weight-bold is-size-5");
+        let icon_cls = if disabled {
+            format!("{icon} has-text-weight-bold is-size-5 has-text-grey-light")
+        } else {
+            format!("{icon} has-text-weight-bold is-size-5")
+        };
         if disabled {
-            tab_items.push(view! { a(class=cls) { i(class=icon_cls) } });
+            tab_items.push(view! {
+                a(class=cls) {
+                    span(class="icon") { i(class=icon_cls) }
+                    span { (label) }
+                }
+            });
         } else {
             tab_items.push(view! {
                 a(class=cls, on:click=move |_| {
