@@ -937,52 +937,60 @@ fn view_content(model: Model) -> View {
 
 fn view_navbar(model: Model) -> View {
     let mode = model.mode.get();
+    let has_event = !model.khana.event.with(|e| e.is_null());
 
-    // Tabs in importance order — CSS hides lower-priority ones on small screens.
-    let all_tabs = [
-        (Screen::Home, "fa fa-home", ""),
-        (Screen::Timing, "fa fa-stopwatch", "kt-tab-time"),
-        (Screen::Results, "fa fa-trophy", ""),
-        (Screen::Chat, "fa fa-comments", "kt-tab-chat"),
-    ];
-
-    // More menu items: admin/less-frequent screens, filtered by mode.
-    let all_more_items = [
+    // One ordered list of all screens — importance order.
+    // Filtered by mode + event state.
+    let all_items: &[(Screen, &str, &str)] = &[
+        (Screen::Home, "fa fa-home", "Home"),
+        (Screen::Timing, "fa fa-stopwatch", "Time"),
+        (Screen::Results, "fa fa-trophy", "Results"),
+        (Screen::Chat, "fa fa-comments", "Chat"),
         (Screen::Events, "fa fa-folder-open", "Events"),
-        (Screen::Event, "fa fa-screwdriver-wrench", "Event config"),
+        (Screen::Event, "fa fa-screwdriver-wrench", "Config"),
         (Screen::Entries, "fa fa-users", "Entries"),
-        (Screen::Timekeeper, "fa fa-stopwatch-20", "Manual entry"),
+        (Screen::Timekeeper, "fa fa-stopwatch-20", "Manual"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
-        (Screen::Qr, "fa fa-qrcode", "QR Import"),
+        (Screen::Qr, "fa fa-qrcode", "QR"),
         (Screen::Help, "fa fa-question", "Help"),
         (Screen::KhanaRules, "fa fa-book", "Rules"),
     ];
 
-    // --- More button (LHS, always first) ---
-    let more_open = model.screens.home.burger_open.get();
-    let more_cls = if more_open {
-        "navbar-item is-active"
-    } else {
-        "navbar-item"
-    };
-    let more_button = view! {
-        a(class=more_cls, on:click=move |_| {
-            let cur = model.screens.home.burger_open.get();
-            model.screens.home.burger_open.set(!cur);
-        }) {
-            span(class="icon") { i(class="fa fa-bars") }
-        }
+    // Screens that need a current event to function.
+    let needs_event = |s: Screen| {
+        matches!(
+            s,
+            Screen::Start
+                | Screen::Finish
+                | Screen::Timekeeper
+                | Screen::Timing
+                | Screen::Results
+                | Screen::Chat
+                | Screen::Entries
+        )
     };
 
-    // --- Build brand items (bare <i> elements, matching main's structure) ---
+    let filtered: Vec<_> = all_items
+        .iter()
+        .filter(|(s, _, _)| mode.has_screen(*s))
+        .filter(|(s, _, _)| !needs_event(*s) || has_event)
+        .collect();
+
+    // --- Burger toggle ---
+    let burger_open = model.screens.home.burger_open.get();
+    let burger_cls = if burger_open {
+        "navbar-burger is-active"
+    } else {
+        "navbar-burger"
+    };
+
+    // --- Brand: burger + icon-only items ---
     let mut brand_items: Vec<View> = vec![];
-    for (screen, icon, css_class) in all_tabs {
-        if !mode.has_screen(screen) {
-            continue;
-        }
+    for (screen, icon, _) in &filtered {
+        let screen = *screen;
         let active = model.screen.get() == screen;
         let class = format!(
-            "{icon} navbar-item has-text-weight-bold is-size-5 {css_class}{}",
+            "{icon} navbar-item has-text-weight-bold is-size-5{}",
             if active { " is-active" } else { "" },
         );
         brand_items.push(view! {
@@ -993,15 +1001,13 @@ fn view_navbar(model: Model) -> View {
         });
     }
 
-    // --- More menu items ---
-    let mut more_menu_items: Vec<View> = vec![];
-    for (screen, icon, label) in all_more_items {
-        if !mode.has_screen(screen) {
-            continue;
-        }
+    // --- Menu: same items with icon + label ---
+    let mut menu_items: Vec<View> = vec![];
+    for (screen, icon, label) in &filtered {
+        let screen = *screen;
         let icon_owned = icon.to_string();
         let label_owned = label.to_string();
-        more_menu_items.push(view! {
+        menu_items.push(view! {
             a(class="navbar-item", on:click=move |_| {
                 model.screens.home.burger_open.set(false);
                 update(model, Msg::Show(screen));
@@ -1016,11 +1022,21 @@ fn view_navbar(model: Model) -> View {
     view! {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") {
-                (more_button)
+                a(
+                    class=burger_cls,
+                    on:click=move |_| {
+                        let cur = model.screens.home.burger_open.get();
+                        model.screens.home.burger_open.set(!cur);
+                    },
+                ) {
+                    span {}
+                    span {}
+                    span {}
+                }
                 (brand_items)
             }
-            div(class=if model.screens.home.burger_open.get() { "navbar-menu is-active" } else { "navbar-menu" }) {
-                div(class="navbar-start") { (more_menu_items) }
+            div(class=if burger_open { "navbar-menu is-active" } else { "navbar-menu" }) {
+                div(class="navbar-start") { (menu_items) }
             }
         }
     }

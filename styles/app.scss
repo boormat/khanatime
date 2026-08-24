@@ -269,50 +269,28 @@
   cursor: default;
 }
 
-// ── Navbar tab scaling — hide lower-priority tabs at smaller breakpoints ──
+// ── Navbar: overflow hidden on brand, hide items when menu open ──
 
-// Mobile (< 769px): hide Time and Chat tabs
-@media screen and (max-width: $tablet - 1px) {
-  .navbar .kt-tab-time,
-  .navbar .kt-tab-chat {
-    display: none !important;
-  }
+// Overflow hidden on items, but burger stays full size
+.navbar-brand {
+  overflow: hidden;
+  justify-content: flex-start;
 }
 
-// Tablet (769–1023px): hide Chat tab
-@media screen and (min-width: $tablet) and (max-width: $desktop - 1px) {
-  .navbar .kt-tab-chat {
-    display: none !important;
-  }
+// Burger never shrinks — always clickable
+.navbar-brand .navbar-burger {
+  flex-shrink: 0;
+  min-width: 2.5rem;
 }
 
-// ── More menu: items with icons ──
+// When burger menu is open, hide the icon-only brand items
+.navbar.is-active .navbar-brand > i {
+  display: none;
+}
+
+// Menu items: icon + label, consistent spacing
 .navbar-menu .navbar-item .icon {
   margin-right: 0.5rem;
-}
-
-// ── Mobile bottom sheet (kept for potential future use) ──
-@media screen and (max-width: $tablet - 1px) {
-  .kt-more-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 200;
-  }
-
-  .kt-more-sheet {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: $white;
-    border-radius: 12px 12px 0 0;
-    padding: 1rem 0;
-    z-index: 201;
-    max-height: 70vh;
-    overflow-y: auto;
-    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.15);
-  }
 }
 
 // ── Mobile: tighter car chips height ──
