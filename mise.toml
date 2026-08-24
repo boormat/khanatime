@@ -14,6 +14,7 @@ if ! grep -q "dev.local" /etc/hosts; then
 fi
 
 mkcert -install
+mkdir -p scripts/sslcerts
 mkcert -cert-file scripts/sslcerts/cert.pem -key-file scripts/sslcerts/key.pem localhost 127.0.0.1 khanatime.test
 rustup target add wasm32-unknown-unknown
 """
