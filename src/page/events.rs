@@ -157,6 +157,7 @@ pub fn view(model: crate::Model) -> View {
             p(class="help") { "Choose how to get an event open." }
             (view_mode_picker(model))
             (view_current(model))
+            (view_open_events(model))
             (view_published(model))
             (view_plan(model))
             (crate::khana::helpers::view_handoff(model))
@@ -234,6 +235,15 @@ fn view_current(model: crate::Model) -> View {
                         on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Event)),
                     ) {
                         "Event admin"
+                    }
+                }
+                div(class="control") {
+                    button(
+                        class="button is-small is-danger is-outlined",
+                        on:click=move |_| crate::update(model, crate::Msg::ClearEvent),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-xmark") }
+                        span { "Close" }
                     }
                 }
             }
@@ -380,5 +390,187 @@ fn view_feedback(model: crate::Model) -> View {
         view! {}
     } else {
         view! { p(class="help is-danger") { (msg) } }
+    }
+}
+
+// ── Event list (saved on this device) ──
+
+fn view_open_events(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    let _ = sm.refresh.get();
+    let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
+    ids.retain(|id| id != crate::event::DEMO_EVENT_ID);
+    ids.sort();
+    let recent = crate::event::session_recent_event();
+    let mut rows: Vec<View> = vec![view_event_row(
+        model,
+        crate::event::DEMO_EVENT_ID.to_string(),
+        "Khanatime Demo".to_string(),
+        None,
+        None,
+        true,
+        crate::event::DEMO_EVENT_ID == recent,
+    )];
+    for id in ids {
+        let e = crate::event::load_event(&id);
+        let name = if e.name.is_empty() {
+            id.clone()
+        } else {
+            e.name.clone()
+        };
+        let hs_tag = if e.is_published() {
+            Some(crate::page::home::hs_host_port(
+                e.primary_homeserver().unwrap_or_default(),
+            ))
+        } else {
+            None
+        };
+        let is_recent = id == recent;
+        rows.push(view_event_row(
+            model,
+            id,
+            name,
+            hs_tag,
+            Some(e.status.to_string()),
+            false,
+            is_recent,
+        ));
+    }
+    let body = if rows.is_empty() {
+        view! { p(class="help") { "No events on this device yet." } }
+    } else {
+        view! { div(class="mt-2") { (rows) } }
+    };
+    view! {
+        div(class="box") {
+            h2(class="title is-5") {
+                "Saved events"
+                span(class="tag is-light is-pulled-right") { "Device" }
+            }
+            p(class="help") {
+                "Open the demo for training, or an event saved on this device."
+            }
+            (body)
+            (view_delete_modal(model))
+        }
+    }
+}
+
+fn view_event_row(
+    model: crate::Model,
+    id: String,
+    name: String,
+    hs_tag: Option<String>,
+    status: Option<String>,
+    is_demo: bool,
+    is_recent: bool,
+) -> View {
+    let sm = model.screens.home;
+    let open_id = id.clone();
+    let del_id = id.clone();
+    let mut tags: Vec<View> = vec![];
+    if is_recent {
+        tags.push(view! { span(class="tag is-success is-light") { "Recent" } });
+    }
+    if is_demo {
+        tags.push(view! { span(class="tag is-warning is-light") { "Demo" } });
+    }
+    if let Some(hs) = hs_tag {
+        tags.push(view! { span(class="tag is-link is-light") { (hs) } });
+    }
+    if let Some(s) = status {
+        tags.push(view! { span(class="tag is-light") { (s) } });
+    }
+    view! {
+        div(class="field is-grouped is-grouped-multiline mb-2") {
+            div(class="control is-expanded") {
+                span(class="has-text-weight-semibold mr-2") { (name) }
+                (tags)
+            }
+            div(class="control") {
+                button(
+                    class="button is-small is-link",
+                    on:click=move |_| {
+                        if is_demo {
+                            crate::update(model, crate::Msg::LoadDemo);
+                        } else {
+                            let id = open_id.clone();
+                            crate::update(model, crate::Msg::OpenSaved(id));
+                        }
+                    },
+                ) { "Open" }
+            }
+            (if is_demo {
+                view! {
+                    div(class="control") {
+                        button(
+                            class="button is-small is-warning",
+                            on:click=move |_| crate::update(model, crate::Msg::ResetDemo),
+                        ) { "Reset" }
+                    }
+                }
+            } else {
+                view! {
+                    div(class="control") {
+                        button(
+                            class="button is-small is-danger is-light",
+                            on:click=move |_| {
+                                let d = del_id.clone();
+                                sm.delete_target.set(Some(d));
+                            },
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-trash") }
+                        }
+                    }
+                }
+            })
+        }
+    }
+}
+
+fn view_delete_modal(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    let Some(id) = sm.delete_target.get_clone() else {
+        return view! {};
+    };
+    let e = crate::event::load_event(&id);
+    let name = if e.name.is_empty() {
+        id.clone()
+    } else {
+        e.name.clone()
+    };
+    let del_id = id.clone();
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background")
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { "Delete this event?" }
+                    button(class="delete", on:click=move |_| sm.delete_target.set(None))
+                }
+                section(class="modal-card-body") {
+                    p { "This removes the saved event:" }
+                    p(class="has-text-weight-medium") { (name) }
+                    p(class="help") {
+                        "Its data is removed from this device only."
+                    }
+                }
+                footer(class="modal-card-foot") {
+                    button(
+                        class="button is-danger",
+                        on:click=move |_| {
+                            sm.delete_target.set(None);
+                            crate::update(
+                                model,
+                                crate::Msg::DeleteEvent(del_id.clone()),
+                            );
+                        },
+                    ) { "Delete" }
+                    button(class="button", on:click=move |_| sm.delete_target.set(None)) {
+                        "Cancel"
+                    }
+                }
+            }
+        }
     }
 }

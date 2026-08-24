@@ -73,7 +73,6 @@ fn view_no_event(model: crate::Model) -> View {
             }
         }
         (move || view_sessions(model))
-        (move || view_open_events(model))
         (move || view_join_by_url(model))
         (move || view_phone_sync(model))
     }
@@ -574,151 +573,6 @@ fn status_html(state: ConnState) -> View {
     }
 }
 
-/// Picker entry point: opens the Events screen (demo / published / new / saved).
-/// Demo event (always shown) + every other event saved on this device, each
-/// with Open and a destructive action (Reset for the demo, Delete for the
-/// rest).  Published events show their homeserver and the recent one a tag.
-fn view_open_events(model: crate::Model) -> View {
-    // Subscribe to the refresh signal so the list re-renders after a local
-    // event is deleted/reset (list_events() reads storage, not a signal).
-    let sm = model.screens.home;
-    let _ = sm.refresh.get();
-    let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
-    ids.retain(|id| id != crate::event::DEMO_EVENT_ID);
-    ids.sort();
-    let recent = crate::event::session_recent_event();
-    let mut rows: Vec<View> = vec![view_event_row(
-        model,
-        crate::event::DEMO_EVENT_ID.to_string(),
-        "Khanatime Demo".to_string(),
-        None,
-        None,
-        true,
-        crate::event::DEMO_EVENT_ID == recent,
-    )];
-    for id in ids {
-        let e = crate::event::load_event(&id);
-        let name = if e.name.is_empty() {
-            id.clone()
-        } else {
-            e.name.clone()
-        };
-        let hs_tag = if e.is_published() {
-            Some(hs_host_port(e.primary_homeserver().unwrap_or_default()))
-        } else {
-            None
-        };
-        let is_recent = id == recent;
-        rows.push(view_event_row(
-            model,
-            id,
-            name,
-            hs_tag,
-            Some(e.status.to_string()),
-            false,
-            is_recent,
-        ));
-    }
-    let body = if rows.is_empty() {
-        view! { p(class="help") { "No events on this device yet." } }
-    } else {
-        view! { div(class="mt-2") { (rows) } }
-    };
-    view! {
-        div(class="box") {
-            h2(class="title is-5") {
-                "Events"
-                span(class="tag is-light is-pulled-right") { "Device" }
-            }
-            p(class="help") {
-                "Open the demo for training, or an event saved on this device."
-            }
-            (body)
-            (view_delete_modal(model))
-        }
-    }
-}
-
-/// One row in the event list: name + tags (Recent / Demo / homeserver /
-/// status), an Open button (demo creates-if-required), and a destructive
-/// action (Reset for the demo, Delete otherwise).
-fn view_event_row(
-    model: crate::Model,
-    id: String,
-    name: String,
-    hs_tag: Option<String>,
-    status: Option<String>,
-    is_demo: bool,
-    is_recent: bool,
-) -> View {
-    let sm = model.screens.home;
-    let open_id = id.clone();
-    let del_id = id.clone();
-    let mut tags: Vec<View> = vec![];
-    if is_recent {
-        tags.push(view! { span(class="tag is-success is-light") { "Recent" } });
-    }
-    if is_demo {
-        tags.push(view! { span(class="tag is-warning is-light") { "Demo" } });
-    } else if let Some(hs) = hs_tag {
-        tags.push(view! { span(class="tag is-link is-light") { (hs) } });
-    } else if let Some(st) = status {
-        tags.push(view! { span(class="tag is-light") { (st) } });
-    }
-    let tags_view = if tags.is_empty() {
-        view! {}
-    } else {
-        view! { div(class="tags is-pulled-right") { (tags) } }
-    };
-    view! {
-        div(class="field is-grouped") {
-            div(class="control is-expanded") {
-                p(class="has-text-weight-medium") {
-                    (name)
-                    (tags_view)
-                }
-            }
-            div(class="control") {
-                button(
-                    class="button is-small is-link",
-                    on:click=move |_| {
-                        if is_demo {
-                            crate::update(model, crate::Msg::LoadDemo);
-                        } else {
-                            crate::update(model, crate::Msg::OpenSaved(open_id.clone()));
-                        }
-                    },
-                ) {
-                    "Open"
-                }
-            }
-            div(class="control") {
-                (if is_demo {
-                    view! {
-                        button(
-                            class="button is-small is-danger is-outlined",
-                            on:click=move |_| crate::update(model, crate::Msg::ResetDemo),
-                        ) {
-                            span(class="icon is-small") { i(class="fa fa-rotate-left") }
-                            span { "Reset" }
-                        }
-                    }
-                } else {
-                    view! {
-                        button(
-                            class="button is-small is-danger is-outlined",
-                            on:click=move |_| sm.delete_target.set(Some(del_id.clone())),
-                        ) {
-                            span(class="icon is-small") { i(class="fa fa-trash") }
-                            span { "Delete" }
-                        }
-                    }
-                })
-            }
-        }
-    }
-}
-
 /// Import an event from another phone as a QR parcel (no network).
 fn view_phone_sync(model: crate::Model) -> View {
     view! {
@@ -738,49 +592,6 @@ fn view_phone_sync(model: crate::Model) -> View {
                     ) {
                         span(class="icon") { i(class="fa fa-camera") }
                         span { "Phone sync (QR)" }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// "Are you sure?" modal before deleting a saved event.
-fn view_delete_modal(model: crate::Model) -> View {
-    let sm = model.screens.home;
-    let Some(id) = sm.delete_target.get_clone() else {
-        return view! {};
-    };
-    let e = crate::event::load_event(&id);
-    let name = if e.name.is_empty() {
-        id.clone()
-    } else {
-        e.name.clone()
-    };
-    let del_id = id.clone();
-    view! {
-        div(class="modal is-active") {
-            div(class="modal-background")
-            div(class="modal-card") {
-                header(class="modal-card-head") {
-                    p(class="modal-card-title") { "Delete this event?" }
-                    button(class="delete", on:click=move |_| sm.delete_target.set(None))
-                }
-                section(class="modal-card-body") {
-                    p { "This removes the saved event:" }
-                    p(class="has-text-weight-medium") { (name) }
-                    p(class="help") { "Its data is removed from this device only." }
-                }
-                footer(class="modal-card-foot") {
-                    button(
-                        class="button is-danger",
-                        on:click=move |_| {
-                            sm.delete_target.set(None);
-                            crate::update(model, crate::Msg::DeleteEvent(del_id.clone()));
-                        },
-                    ) { "Delete" }
-                    button(class="button", on:click=move |_| sm.delete_target.set(None)) {
-                        "Cancel"
                     }
                 }
             }
