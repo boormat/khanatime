@@ -140,6 +140,18 @@
   flex-wrap: wrap;
 }
 
+// Selected car chip in stopwatch — vertical flex for detail fields.
+.kt-selected-car {
+  padding: 0.5rem 0.75rem;
+  min-width: 8rem;
+}
+
+// Tag badge separator between car-chip groups.
+.kt-runs-separator {
+  font-family: monospace;
+  font-weight: 600;
+}
+
 // Full-screen overlays for the QR exporter and the camera scanner.
 .kt-modal {
   position: fixed;

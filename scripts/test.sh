@@ -11,7 +11,7 @@ set -euo pipefail
 printf '\033[2J\033[H'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAIN_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
+MAIN_DIR="$(git worktree  list --porcelain  | head -n 1 | cut -d' ' -f 2)"
 CERT_DIR="$MAIN_DIR/scripts/sslcerts"
 WORK_BASE="$HOME/work"
 HOST="khanatime.test"
