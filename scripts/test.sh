@@ -150,7 +150,19 @@ fi
 items+=("--- Main repo ($(basename "$MAIN_DIR")) ---")
 main_idx=$((${#items[@]} - 1))
 
+# Default selection: current worktree or main
+cwd="$(pwd -P)"
 selected=0
+for i in "${!worktree_dirs[@]}"; do
+    if [ "$(cd "${worktree_dirs[$i]}" && pwd -P)" = "$cwd" ]; then
+        selected=$i
+        break
+    fi
+done
+# If not in a worktree, check if we're in main
+if [ "$selected" -eq 0 ] && [ "$cwd" = "$(cd "$MAIN_DIR" && pwd -P)" ]; then
+    selected=$main_idx
+fi
 
 # Main loop
 while true; do
