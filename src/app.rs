@@ -940,14 +940,13 @@ fn view_navbar(model: Model) -> View {
 
     // Tabs in importance order — CSS hides lower-priority ones on small screens.
     let all_tabs = [
-        (Screen::Home, "fa fa-home", "Home", ""),
-        (Screen::Timing, "fa fa-stopwatch", "Time", "kt-tab-time"),
-        (Screen::Results, "fa fa-trophy", "Results", ""),
-        (Screen::Chat, "fa fa-comments", "Chat", "kt-tab-chat"),
+        (Screen::Home, "fa fa-home", ""),
+        (Screen::Timing, "fa fa-stopwatch", "kt-tab-time"),
+        (Screen::Results, "fa fa-trophy", ""),
+        (Screen::Chat, "fa fa-comments", "kt-tab-chat"),
     ];
 
     // More menu items: admin/less-frequent screens, filtered by mode.
-    // Start/Finish are accessed via the Timing screen's stage picker, not the menu.
     let all_more_items = [
         (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Event config"),
@@ -975,26 +974,22 @@ fn view_navbar(model: Model) -> View {
         }
     };
 
-    // --- Build tab items ---
-    let mut tab_items: Vec<View> = vec![];
-    for (screen, icon, label, css_class) in all_tabs {
+    // --- Build brand items (bare <i> elements, matching main's structure) ---
+    let mut brand_items: Vec<View> = vec![];
+    for (screen, icon, css_class) in all_tabs {
         if !mode.has_screen(screen) {
             continue;
         }
         let active = model.screen.get() == screen;
-        let mut cls = format!("navbar-item{css_class}");
-        if active {
-            cls.push_str(" is-active");
-        }
-        let icon_cls = format!("{icon} has-text-weight-bold");
-        tab_items.push(view! {
-            a(class=cls, on:click=move |_| {
+        let class = format!(
+            "{icon} navbar-item has-text-weight-bold is-size-5 {css_class}{}",
+            if active { " is-active" } else { "" },
+        );
+        brand_items.push(view! {
+            i(class=class, on:click=move |_| {
                 model.screens.home.burger_open.set(false);
                 update(model, Msg::Show(screen));
-            }) {
-                span(class="icon") { i(class=icon_cls) }
-                span { (label) }
-            }
+            })
         });
     }
 
@@ -1022,7 +1017,7 @@ fn view_navbar(model: Model) -> View {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") {
                 (more_button)
-                (tab_items)
+                (brand_items)
             }
             div(class=if model.screens.home.burger_open.get() { "navbar-menu is-active" } else { "navbar-menu" }) {
                 div(class="navbar-start") { (more_menu_items) }

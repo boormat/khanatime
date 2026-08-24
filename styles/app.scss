@@ -286,31 +286,7 @@
   }
 }
 
-// ── Navbar tweaks for the More button and mode label ──
-
-// Tabs and More button: light text on is-link (blue) background
-.navbar.is-link .navbar-brand .navbar-item {
-  color: rgba(255, 255, 255, 0.85);
-  padding-top: 0.5rem;
-  padding-bottom: 0.5rem;
-
-  &:hover,
-  &.is-active {
-    color: $white;
-    background-color: rgba(255, 255, 255, 0.1);
-  }
-
-  .icon {
-    color: rgba(255, 255, 255, 0.85);
-  }
-}
-
-// Mode label on RHS: smaller text, subtle
-.navbar .navbar-brand .navbar-link {
-  font-size: 0.75rem;
-}
-
-// More menu: items with icons
+// ── More menu: items with icons ──
 .navbar-menu .navbar-item .icon {
   margin-right: 0.5rem;
 }
