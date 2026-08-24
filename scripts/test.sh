@@ -3,8 +3,7 @@
 # Worktrees signal readiness by containing a "test-me-please" marker file.
 # Use arrow keys/j/k to navigate, Enter to select, q to quit.
 #
-# Requires: trunk, openssl (or mkcert for trusted certs)
-# Note: Run with 'mise exec --' or ensure mise env is active for RUSTC_WRAPPER
+# Requires: trunk, mkcert (run `mise run bootstrap` first)
 
 set -euo pipefail
 
@@ -14,7 +13,8 @@ if [ -z "${RUSTC_WRAPPER:-}" ] && command -v mise &>/dev/null; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MAIN_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
+CERT_DIR="$MAIN_DIR/scripts/sslcerts"
 WORK_BASE="$HOME/work"
 HOST="khanatime.test"
 PORT=8080
@@ -38,25 +38,14 @@ find_ready_worktrees() {
     done
 }
 
-# Copy SSL certs from main repo into a worktree (idempotent).
-ensure_ssl_certs() {
-    local wt_dir="$1"
-    local wt_cert_dir="$wt_dir/scripts/sslcerts"
-    local src_cert_dir="$MAIN_DIR/scripts/sslcerts"
-    if [ ! -f "$wt_cert_dir/cert.pem" ]; then
-        echo "Copying SSL certs into worktree..."
-        mkdir -p "$wt_cert_dir"
-        cp "$src_cert_dir/cert.pem" "$src_cert_dir/key.pem" "$wt_cert_dir/"
-    fi
-}
-
-# Run trunk serve from a directory.
+# Run trunk serve from a directory, pointing at main repo certs.
 run_trunk() {
     local dir="$1"
+    cd "$dir"
     exec env \
         TRUNK_SERVE_DISABLE_ADDRESS_LOOKUP=true \
-        TRUNK_SERVE_TLS_CERT_PATH="$dir/scripts/sslcerts/cert.pem" \
-        TRUNK_SERVE_TLS_KEY_PATH="$dir/scripts/sslcerts/key.pem" \
+        TRUNK_SERVE_TLS_CERT_PATH="$CERT_DIR/cert.pem" \
+        TRUNK_SERVE_TLS_KEY_PATH="$CERT_DIR/key.pem" \
         TRUNK_SERVE_WS_PROTOCOL=wss \
         trunk serve
 }
@@ -138,15 +127,9 @@ if ! grep -qE "^\s*127\.0\.0\.1\s+$HOST(\s|$)" /etc/hosts; then
     die "Missing /etc/hosts alias. Run once with sudo:\n  echo '127.0.0.1 $HOST' | sudo tee -a /etc/hosts"
 fi
 
-# Ensure SSL certs exist in main repo
-mkdir -p "$MAIN_DIR/scripts/sslcerts"
-if [ ! -f "$MAIN_DIR/scripts/sslcerts/cert.pem" ]; then
-    echo "Generating self-signed cert for $HOST (accept the browser warning once)..."
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$MAIN_DIR/scripts/sslcerts/key.pem" \
-        -out "$MAIN_DIR/scripts/sslcerts/cert.pem" \
-        -days 365 \
-        -subj "/CN=$HOST" -addext "subjectAltName=DNS:$HOST"
+# Ensure SSL certs exist (mkcert — run `mise run bootstrap` first)
+if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
+    die "SSL certs not found at $CERT_DIR\n  Run: mise run bootstrap"
 fi
 
 trap 'restore_tty; echo; exit 0' INT TERM
@@ -190,15 +173,6 @@ while true; do
 
             if [ "$selected" -eq "$main_idx" ]; then
                 # Main repo
-                echo ""
-                echo "Pulling latest changes in main repo..."
-                if ! git -C "$MAIN_DIR" pull; then
-                    echo "Pull failed — resolve conflicts manually, then try again."
-                    echo "Press any key to continue..."
-                    read -r -s -n1
-                    setup_tty
-                    continue
-                fi
                 separator
                 printf '\033[1;33m  Now serving MAIN (%s)\033[0m\n' "$MAIN_DIR"
                 separator
@@ -207,7 +181,6 @@ while true; do
                 # Worktree
                 wt_dir="${worktree_dirs[$selected]}"
                 wt_name=$(basename "$wt_dir")
-                ensure_ssl_certs "$wt_dir"
                 separator
                 printf '\033[1;33m  Now serving %s\033[0m\n' "$wt_name"
                 separator

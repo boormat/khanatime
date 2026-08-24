@@ -12,7 +12,8 @@ if [ -z "${RUSTC_WRAPPER:-}" ] && command -v mise &>/dev/null; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+MAIN_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
+CERT_DIR="$MAIN_DIR/scripts/sslcerts"
 WORK_BASE="$HOME/work"
 HOST="khanatime.test"
 PID_FILE=".serve.pid"
@@ -50,17 +51,6 @@ find_free_port() {
     done
 }
 
-ensure_ssl_certs() {
-    local wt_dir="$1"
-    local wt_cert_dir="$wt_dir/scripts/sslcerts"
-    local src_cert_dir="$MAIN_DIR/scripts/sslcerts"
-    if [ ! -f "$wt_cert_dir/cert.pem" ]; then
-        echo "Copying SSL certs into worktree..."
-        mkdir -p "$wt_cert_dir"
-        cp "$src_cert_dir/cert.pem" "$src_cert_dir/key.pem" "$wt_cert_dir/"
-    fi
-}
-
 # ── commands ─────────────────────────────────────────────────────────
 
 do_serve() {
@@ -80,7 +70,6 @@ do_serve() {
         rm -f "$wt_dir/$PID_FILE"
     fi
 
-    ensure_ssl_certs "$wt_dir"
     local port
     port=$(find_free_port)
 
@@ -108,8 +97,8 @@ do_serve() {
     # Serve (foreground) — mise env already active from `mise run`
     exec env \
         TRUNK_SERVE_DISABLE_ADDRESS_LOOKUP=true \
-        TRUNK_SERVE_TLS_CERT_PATH="$wt_dir/scripts/sslcerts/cert.pem" \
-        TRUNK_SERVE_TLS_KEY_PATH="$wt_dir/scripts/sslcerts/key.pem" \
+        TRUNK_SERVE_TLS_CERT_PATH="$CERT_DIR/cert.pem" \
+        TRUNK_SERVE_TLS_KEY_PATH="$CERT_DIR/key.pem" \
         TRUNK_SERVE_WS_PROTOCOL=wss \
         trunk serve --port "$port"
 }
