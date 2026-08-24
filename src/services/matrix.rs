@@ -671,9 +671,20 @@ pub async fn finish_oauth_login(client: &Client, callback_url: &str) -> Result<(
 
 // ----- client lifecycle -----
 
+/// Resolve well-known homeservers to their actual API base URL.
+/// Skips the client-side discovery round-trip (which fails on dev servers
+/// due to CORS) for servers we already know the answer for.
+fn resolved_homeserver_url(homeserver: &str) -> &str {
+    match homeserver {
+        "https://matrix.org" => "https://matrix-client.matrix.org",
+        _ => homeserver,
+    }
+}
+
 pub async fn new_client(homeserver: &str) -> Result<Client, String> {
+    let url = resolved_homeserver_url(homeserver);
     Client::builder()
-        .server_name_or_homeserver_url(homeserver)
+        .homeserver_url(url)
         .indexeddb_store(STORE_NAME, None)
         .handle_refresh_tokens()
         .build()
