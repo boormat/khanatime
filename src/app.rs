@@ -1013,7 +1013,7 @@ fn view_navbar(model: Model) -> View {
                     model.screens.home.burger_open.set(false);
                     update(model, Msg::Show(Screen::Home));
                 }) {
-                    img(src="/icon-512.png", style="height: 1.5rem; width: 1.5rem; margin-right: 0.25rem;")
+                    img(src="icon-512.png", style="height: 1.5rem; width: 1.5rem; margin-right: 0.25rem;")
                     span { "Khanatime" }
                 }
                 a(class="navbar-item", on:click=move |_| {
