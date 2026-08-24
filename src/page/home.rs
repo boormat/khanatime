@@ -81,21 +81,15 @@ fn view_no_event(model: crate::Model) -> View {
 
 fn view_dashboard(model: crate::Model) -> View {
     view! {
-        section(class="hero is-small") {
-            div(class="hero-body") {
-                h1(class="title") { "Khana Time" }
-            }
-        }
+        (move || view_event_header(model))
         (move || view_sessions(model))
         (move || view_actions(model))
         (move || view_status_summary(model))
-        (move || view_event_switcher(model))
     }
 }
 
-/// Compact event switcher — single line showing current event name with a
-/// "Switch" link to the Events screen.  Only shown when an event is loaded.
-fn view_event_switcher(model: crate::Model) -> View {
+/// Event header: name + switch link + connection tag, all in one line.
+fn view_event_header(model: crate::Model) -> View {
     let event = model.khana.event.get_clone();
     if event.is_null() {
         return view! {};
@@ -106,67 +100,68 @@ fn view_event_switcher(model: crate::Model) -> View {
         event.name.clone()
     };
     view! {
-        div(class="box") {
-            div(class="level is-mobile") {
-                div(class="level-left") {
-                    span(class="has-text-weight-semibold") { (name) }
+        div(class="level is-mobile mb-2") {
+            div(class="level-left") {
+                span(class="has-text-weight-semibold") { (name) }
+                a(class="has-text-link is-size-7 ml-2", on:click=move |_| {
+                    crate::update(model, crate::Msg::Show(crate::Screen::Events));
+                }) {
+                    span(class="icon is-small") { i(class="fa fa-pen") }
                 }
-                div(class="level-right") {
-                    a(class="has-text-link is-size-7", on:click=move |_| {
-                        crate::update(model, crate::Msg::Show(crate::Screen::Events));
-                    }) {
-                        span(class="icon is-small") { i(class="fa fa-arrow-right") }
-                        span { " Switch" }
-                    }
-                }
+            }
+            div(class="level-right") {
+                (move || view_status_tag(model))
             }
         }
     }
 }
 
-/// Simple account status bar: shows connection state and links to Accounts page.
+/// Connection status tag — clickable, goes to Accounts page.
+#[cfg(target_arch = "wasm32")]
+fn view_status_tag(model: crate::Model) -> View {
+    let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
+    let sess = logged_in
+        .then(crate::services::matrix::active_hs)
+        .flatten()
+        .and_then(|hs| crate::services::matrix::load_session_for(&hs));
+    let tag = if let Some(sess) = sess {
+        if crate::services::matrix::is_matrix_org(&sess.homeserver) {
+            view! { span(class="tag is-success is-light is-small") {
+                span(class="icon is-small") { i(class="fa fa-check") }
+                span { (sess.user_id) }
+            } }
+        } else {
+            view! { span(class="tag is-link is-light is-small") { (hs_host_port(&sess.homeserver)) } }
+        }
+    } else {
+        view! { span(class="tag is-grey is-light is-small") { "Offline" } }
+    };
+    view! {
+        a(on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Accounts))) {
+            (tag)
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_status_tag(_model: crate::Model) -> View {
+    view! {}
+}
+
+/// Simple account status bar — just the clickable tag + forget modal.
 #[cfg(target_arch = "wasm32")]
 fn view_sessions(model: crate::Model) -> View {
     view! {
         (move || {
             let sm = model.screens.home;
             let _ = sm.refresh.get();
-            let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
-            let summary = view_account_summary(model);
             view! {
                 div(class="box") {
-                    (summary)
-                    (if !logged_in {
-                        view_account_footer(model)
-                    } else {
-                        view! {}
-                    })
+                    (view_account_footer(model))
                     (view_forget_modal(model))
                 }
             }
         })
-    }
-}
-
-/// One-line summary shown when the Accounts box is collapsed: the logged-in
-/// Matrix account id, or the custom homeserver `host:port`, or Offline.
-#[cfg(target_arch = "wasm32")]
-fn view_account_summary(model: crate::Model) -> View {
-    let logged_in = matches!(model.sync.conn.get_clone(), ConnState::LoggedIn(_));
-    let sess = logged_in
-        .then(crate::services::matrix::active_hs)
-        .flatten()
-        .and_then(|hs| crate::services::matrix::load_session_for(&hs));
-    let Some(sess) = sess else {
-        return view! { span(class="tag is-grey is-light is-small") { "Offline" } };
-    };
-    if crate::services::matrix::is_matrix_org(&sess.homeserver) {
-        view! { span(class="tag is-success is-light is-small") {
-            span(class="icon is-small") { i(class="fa fa-check") }
-            span { (sess.user_id) }
-        } }
-    } else {
-        view! { span(class="tag is-link is-light is-small") { (hs_host_port(&sess.homeserver)) } }
     }
 }
 
@@ -371,7 +366,6 @@ fn view_status_summary(model: crate::Model) -> View {
                 div(class="mt-2") {
                     h3(class="title is-6") { "Shared cars" }
                     (lines)
-                    p(class="help") { "Drivers sharing a car — run them early or hurry them up." }
                 }
             }
         }

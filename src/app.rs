@@ -951,13 +951,12 @@ fn view_navbar(model: Model) -> View {
     ];
 
     // More menu items: admin/less-frequent screens, filtered by mode.
+    // Start/Finish are accessed via the Timing screen's stage picker, not the menu.
     let all_more_items = [
         (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Event config"),
         (Screen::Entries, "fa fa-users", "Entries"),
         (Screen::Timekeeper, "fa fa-stopwatch-20", "Manual entry"),
-        (Screen::Start, "fa fa-flag", "Start flag"),
-        (Screen::Finish, "fa fa-flag-checkered", "Finish flag"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
         (Screen::Qr, "fa fa-qrcode", "QR Import"),
         (Screen::Help, "fa fa-question", "Help"),
