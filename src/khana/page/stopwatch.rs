@@ -401,11 +401,8 @@ fn fmt_ts(ts: i64) -> String {
 
 pub fn view(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
-    let count = model.khana.event.with(|e| e.stage_count());
     view! {
         div {
-            h1(class="title is-4") { "Stopwatch" }
-            (pad::test_chips(count as u8, sm.test))
             (view_action_buttons(model))
             (view_car_chips(model))
             (view_comment(model))
