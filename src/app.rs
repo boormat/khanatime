@@ -984,31 +984,16 @@ fn view_navbar(model: Model) -> View {
         "navbar-burger"
     };
 
-    // --- Brand: burger + icon-only items ---
-    let mut brand_items: Vec<View> = vec![];
-    for (screen, icon, _) in &filtered {
-        let screen = *screen;
-        let active = model.screen.get() == screen;
-        let class = format!(
-            "{icon} navbar-item has-text-weight-bold is-size-5{}",
-            if active { " is-active" } else { "" },
-        );
-        brand_items.push(view! {
-            i(class=class, on:click=move |_| {
-                model.screens.home.burger_open.set(false);
-                update(model, Msg::Show(screen));
-            })
-        });
-    }
-
-    // --- Menu: same items with icon + label ---
+    // --- Menu items: icon + label, in navbar-end ---
     let mut menu_items: Vec<View> = vec![];
     for (screen, icon, label) in &filtered {
         let screen = *screen;
+        let active = model.screen.get() == screen;
         let icon_owned = icon.to_string();
         let label_owned = label.to_string();
+        let cls = format!("navbar-item{}", if active { " is-active" } else { "" },);
         menu_items.push(view! {
-            a(class="navbar-item", on:click=move |_| {
+            a(class=cls, on:click=move |_| {
                 model.screens.home.burger_open.set(false);
                 update(model, Msg::Show(screen));
             }) {
@@ -1018,25 +1003,48 @@ fn view_navbar(model: Model) -> View {
         });
     }
 
-    // --- Assemble ---
+    // --- Assemble: Bulma standard pattern ---
+    // Brand (left) = icon + "Khanatime" + cup + stopwatch
+    // Menu (right) = navigation items
     view! {
         nav(class="navbar is-link is-hidden-print", role="navigation", aria-label="main navigation") {
             div(class="navbar-brand") {
+                a(class="navbar-item has-text-weight-bold", on:click=move |_| {
+                    model.screens.home.burger_open.set(false);
+                    update(model, Msg::Show(Screen::Home));
+                }) {
+                    img(src="/icon-512.png", style="height: 1.5rem; width: 1.5rem; margin-right: 0.25rem;")
+                    span { "Khanatime" }
+                }
+                a(class="navbar-item", on:click=move |_| {
+                    model.screens.home.burger_open.set(false);
+                    update(model, Msg::Show(Screen::Results));
+                }) {
+                    span(class="icon") { i(class="fa fa-trophy") }
+                }
+                a(class="navbar-item", on:click=move |_| {
+                    model.screens.home.burger_open.set(false);
+                    update(model, Msg::Show(Screen::Timing));
+                }) {
+                    span(class="icon") { i(class="fa fa-stopwatch") }
+                }
                 a(
                     class=burger_cls,
                     on:click=move |_| {
                         let cur = model.screens.home.burger_open.get();
                         model.screens.home.burger_open.set(!cur);
                     },
+                    role="button",
+                    aria-label="menu",
+                    aria-expanded=if burger_open { "true" } else { "false" },
                 ) {
                     span {}
                     span {}
                     span {}
                 }
-                (brand_items)
             }
             div(class=if burger_open { "navbar-menu is-active" } else { "navbar-menu" }) {
-                div(class="navbar-start") { (menu_items) }
+                div(class="navbar-end") { (menu_items) }
             }
         }
     }
