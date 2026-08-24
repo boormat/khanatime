@@ -986,7 +986,7 @@ fn view_navbar(model: Model) -> View {
         if active {
             cls.push_str(" is-active");
         }
-        let icon_cls = format!("{icon} has-text-weight-bold is-size-5");
+        let icon_cls = format!("{icon} has-text-weight-bold");
         tab_items.push(view! {
             a(class=cls, on:click=move |_| {
                 model.screens.home.burger_open.set(false);
