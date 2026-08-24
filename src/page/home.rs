@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use sycamore::prelude::*;
 
 use crate::app::ConnState;
-use crate::event::{EventInfo, KTime, RunRecord, ScoreData, ROLE_COMPETITOR, RUN_FINISH};
+use crate::event::{EventInfo, KTime, RunRecord, ScoreData, RUN_FINISH};
 
 // Home / dashboard: sign-in, event picker, quick actions and a live summary of
 // event status.  With no event selected it shows just the picker / sign-in bits.
@@ -83,7 +83,6 @@ fn view_dashboard(model: crate::Model) -> View {
     view! {
         (move || view_event_header(model))
         (move || view_sessions(model))
-        (move || view_actions(model))
         (move || view_status_summary(model))
     }
 }
@@ -178,48 +177,6 @@ pub(crate) fn hs_host_port(hs: &str) -> String {
 #[cfg(not(target_arch = "wasm32"))]
 fn view_sessions(_model: crate::Model) -> View {
     view! {}
-}
-
-fn view_actions(model: crate::Model) -> View {
-    let has_event = !model.khana.event.with(|e| e.is_null());
-    let role = crate::event::local_role();
-    let official = role != ROLE_COMPETITOR;
-    view! {
-        div(class="box") {
-            div(class="field is-grouped") {
-                (if has_event && official {
-                    view! {
-                        div(class="control") {
-                            button(
-                                class="button is-primary",
-                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Start)),
-                            ) {
-                                span(class="icon") { i(class="fa fa-flag") }
-                                span { "Timing mode" }
-                            }
-                        }
-                    }
-                } else {
-                    view! {}
-                })
-                (if has_event {
-                    view! {
-                        div(class="control") {
-                            button(
-                                class="button is-link",
-                                on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Results)),
-                            ) {
-                                span(class="icon") { i(class="fa fa-trophy") }
-                                span { "Results" }
-                            }
-                        }
-                    }
-                } else {
-                    view! {}
-                })
-            }
-        }
-    }
 }
 
 pub fn view_comms(model: crate::Model) -> View {
@@ -494,9 +451,6 @@ fn view_account_footer(model: crate::Model) -> View {
         (pending_view)
         div(class="field is-grouped") {
             (primary)
-        }
-        p(class="help") {
-            "matrix.org accounts are passwordless (SSO). The localhost dev server registers a new account for you."
         }
     }
 }
