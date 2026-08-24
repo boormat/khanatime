@@ -10,11 +10,6 @@ set -euo pipefail
 # Clear screen immediately for clean startup
 printf '\033[2J\033[H'
 
-# Ensure mise environment is active (for RUSTC_WRAPPER, tool paths)
-if [ -z "${RUSTC_WRAPPER:-}" ] && command -v mise &>/dev/null; then
-    eval "$(mise env 2>/dev/null)" 2>/dev/null
-fi
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
 CERT_DIR="$MAIN_DIR/scripts/sslcerts"
