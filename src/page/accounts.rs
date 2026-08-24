@@ -114,8 +114,37 @@ fn view_homeservers(model: crate::Model) -> View {
         } else {
             hs.description.clone()
         };
+
+        // Login buttons row (per homeserver)
+        let hs_url_for_sso = hs_url.clone();
+        let hs_url_for_pw = hs_url.clone();
+        let login_buttons = view! {
+            div(class="buttons mb-4") {
+                button(
+                    class="button is-link is-small",
+                    on:click=move |_| {
+                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::SsoLoginFor(hs_url_for_sso.clone())));
+                    },
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-id-badge") }
+                    span { "Login with SSO" }
+                }
+                button(
+                    class="button is-link is-outlined is-small",
+                    on:click=move |_| {
+                        sm.login_hs.set(hs_url_for_pw.clone());
+                        sm.show_login.set(true);
+                    },
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-right-to-bracket") }
+                    span { "Login with password" }
+                }
+            }
+        };
+
+        // Account rows
         let mut account_rows: Vec<View> = Vec::new();
-        for a in &hs_accounts {
+        for a in hs_accounts {
             let type_label = match a.account_type {
                 crate::services::matrix::AccountType::Personal => "Personal",
                 crate::services::matrix::AccountType::EventShared => "Event shared",
@@ -128,17 +157,15 @@ fn view_homeservers(model: crate::Model) -> View {
             };
             let active = a.active;
             let is_personal = a.account_type == crate::services::matrix::AccountType::Personal;
-            let a_user = a.user_id.clone();
             let a_hs = a.homeserver.clone();
             let a_hs2 = a.homeserver.clone();
-            let a_user2 = a.user_id.clone();
             let a_hs3 = a.homeserver.clone();
             let a_user3 = a.user_id.clone();
             account_rows.push(view! {
                 div(class="notification is-light") {
                     div(class="is-flex is-align-items-center is-flex-wrap-wrap", style="gap: 0.5rem;") {
                         div {
-                            p { (a_user.clone()) }
+                            p { (a.user_id.clone()) }
                             p(class="is-size-7 has-text-grey") { (desc_text) }
                         }
                         div(class="is-flex is-align-items-center is-flex-wrap-wrap", style="gap: 0.35rem;") {
@@ -162,10 +189,8 @@ fn view_homeservers(model: crate::Model) -> View {
                                 ) { "Logout" }
                                 button(
                                     class="button is-small is-danger is-outlined",
-                                    disabled=active,
                                     on:click=move |_| {
-                                        crate::services::matrix::remove_account(&a_hs2, &a_user2);
-                                        sm.refresh.set(sm.refresh.get() + 1);
+                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::Forget(a_hs2.clone())));
                                     },
                                 ) { "Forget" }
                             }
@@ -204,6 +229,7 @@ fn view_homeservers(model: crate::Model) -> View {
             div(class="box") {
                 h2(class="title is-5") { (label) }
                 p(class="subtitle is-6 has-text-grey") { (desc) }
+                (login_buttons)
                 (body)
             }
         });

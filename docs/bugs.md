@@ -131,7 +131,7 @@
 | Mode selector UX | ✅ DONE (B3) |
 | Home page cleanup | ✅ DONE (U6) |
 | Owner/Organisers picker | ✅ DONE (U1) |
-| SSO login on Accounts page | Open (not in B/U/V/F list — separate) |
+| SSO login on Accounts page | ✅ DONE |
 
 ---
 

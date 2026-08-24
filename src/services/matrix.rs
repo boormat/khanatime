@@ -58,8 +58,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::timing_event::TimingEvent;
 
-const SESSION_KEY: &str = "kt_sync_sessions";
-const ACTIVE_KEY: &str = "kt_sync_active";
 const STORE_NAME: &str = "khanatime_sync";
 const DEVICE_NAME: &str = "khanatime-wasm";
 
@@ -101,22 +99,19 @@ pub fn room() -> Option<Room> {
     ROOM.with(|r| r.borrow().clone())
 }
 
-// ----- session persistence (localStorage, keyed by homeserver) -----
+// ----- session / homeserver / account / contact persistence (localStorage) -----
+//
+// `kt_accounts` is the single source of truth for session credentials.
+// `kt_homeservers` holds server metadata (name, element link, etc.).
+// `kt_contacts` holds known Matrix users without credentials.
 //
 // Multiple homeserver logins are kept so we never create a fresh session (or
 // worse, a fresh account) when one already exists.  `save_session` upserts by
 // homeserver and marks it active; `load_session_for(hs)` fetches one.
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredSession {
-    pub homeserver: String,
-    pub user_id: String,
-    /// Registration mode for this homeserver (informs the event invite).
-    #[serde(default)]
-    pub reg: crate::event::RegistrationMode,
-    #[serde(flatten)]
-    pub kind: StoredAuth,
-}
+const HOMESERVERS_KEY: &str = "kt_homeservers";
+const ACCOUNTS_KEY: &str = "kt_accounts";
+const CONTACTS_KEY: &str = "kt_contacts";
 
 /// Which auth method the stored session uses; the session is rebuilt from the
 /// matching matrix-sdk session type on restore.
@@ -137,16 +132,6 @@ pub enum StoredAuth {
         user: UserSession,
     },
 }
-
-// ----- homeserver / account / contact model -----
-//
-// The new storage model splits the old flat `StoredSession` into three lists:
-// `kt_homeservers` (known servers), `kt_accounts` (accounts on those servers),
-// and `kt_contacts` (known Matrix users without credentials).
-
-const HOMESERVERS_KEY: &str = "kt_homeservers";
-const ACCOUNTS_KEY: &str = "kt_accounts";
-const CONTACTS_KEY: &str = "kt_contacts";
 
 /// A known homeserver with metadata.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -227,10 +212,10 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
     };
     let user_id = session.meta().user_id.to_string();
     // Preserve the existing password when updating (unless a new one is given).
-    let existing_password = read_sessions()
+    let existing_password = read_accounts()
         .iter()
-        .find(|s| s.homeserver == homeserver)
-        .and_then(|s| match &s.kind {
+        .find(|a| a.homeserver == homeserver && a.user_id == user_id)
+        .and_then(|a| match &a.kind {
             StoredAuth::Matrix { password, .. } if !password.is_empty() => Some(password.clone()),
             _ => None,
         });
@@ -251,38 +236,53 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
         },
         _ => return, // AuthSession is non-exhaustive; future variants
     };
-    let reg = read_sessions()
-        .into_iter()
-        .find(|s| s.homeserver == homeserver)
-        .map(|s| s.reg)
+    let reg = read_homeservers()
+        .iter()
+        .find(|h| h.url == homeserver)
+        .map(|h| h.reg)
         .unwrap_or_default();
-    let mut sessions = read_sessions();
-    if let Some(existing) = sessions.iter_mut().find(|s| s.homeserver == homeserver) {
-        existing.user_id = user_id;
+    // Ensure a homeserver entry exists.
+    ensure_homeserver(homeserver, reg);
+    let mut accounts = read_accounts();
+    // Mark only this account active; deactivate others on the same homeserver.
+    for a in accounts.iter_mut() {
+        if a.homeserver == homeserver {
+            a.active = a.user_id == user_id;
+        }
+    }
+    if let Some(existing) = accounts
+        .iter_mut()
+        .find(|a| a.homeserver == homeserver && a.user_id == user_id)
+    {
         existing.kind = kind;
-        existing.reg = reg;
+        existing.active = true;
     } else {
-        sessions.push(StoredSession {
+        accounts.push(Account {
             homeserver: homeserver.to_string(),
             user_id,
-            reg,
+            description: String::new(),
+            account_type: AccountType::Personal,
             kind,
+            active: true,
+            event_uid: None,
         });
     }
-    write_sessions(&sessions);
-    set_active_hs(homeserver);
+    write_accounts(&accounts);
 }
 
-/// All stored sessions, one per homeserver.
-pub fn load_sessions() -> Vec<StoredSession> {
-    read_sessions()
+/// All stored accounts.
+pub fn load_sessions() -> Vec<Account> {
+    read_accounts()
 }
 
-/// The session for a specific homeserver, if any.
-pub fn load_session_for(homeserver: &str) -> Option<StoredSession> {
-    read_sessions()
-        .into_iter()
-        .find(|s| s.homeserver == homeserver)
+/// The active (or first) account for a specific homeserver, if any.
+pub fn load_session_for(homeserver: &str) -> Option<Account> {
+    let accounts = read_accounts();
+    accounts
+        .iter()
+        .find(|a| a.homeserver == homeserver && a.active)
+        .cloned()
+        .or_else(|| accounts.into_iter().find(|a| a.homeserver == homeserver))
 }
 
 /// True when `homeserver` belongs to matrix.org.  Its session is stored as the
@@ -292,83 +292,58 @@ pub fn is_matrix_org(homeserver: &str) -> bool {
     crate::event::is_matrix_org_homeserver(homeserver)
 }
 
-/// True when a stored session belongs to matrix.org.
+/// True when a stored account belongs to matrix.org.
 pub fn has_matrix_org_session() -> bool {
-    read_sessions().iter().any(|s| is_matrix_org(&s.homeserver))
+    read_accounts().iter().any(|a| is_matrix_org(&a.homeserver))
 }
 
 /// The currently-active homeserver (most recently used), if any.
 pub fn active_hs() -> Option<String> {
-    active_hs_key()
+    read_accounts()
+        .iter()
+        .find(|a| a.active)
+        .map(|a| a.homeserver.clone())
 }
 
-/// Set the registration mode recorded for a homeserver's stored session.
+/// Set the registration mode recorded for a homeserver.
 pub fn set_session_reg(homeserver: &str, reg: crate::event::RegistrationMode) {
-    let mut sessions = read_sessions();
-    if let Some(s) = sessions.iter_mut().find(|x| x.homeserver == homeserver) {
-        s.reg = reg;
-        write_sessions(&sessions);
+    let mut homeservers = read_homeservers();
+    if let Some(h) = homeservers.iter_mut().find(|h| h.url == homeserver) {
+        h.reg = reg;
+        write_homeservers(&homeservers);
+    } else {
+        // Create a homeserver entry if none exists yet.
+        ensure_homeserver(homeserver, reg);
     }
 }
 
-/// Remove the stored session for `homeserver`.
+/// Remove all accounts for `homeserver`.
 pub fn remove_session(homeserver: &str) {
-    let mut sessions = read_sessions();
-    let before = sessions.len();
-    sessions.retain(|s| s.homeserver != homeserver);
-    if sessions.len() != before {
-        write_sessions(&sessions);
-    }
-    if active_hs_key().as_deref() == Some(homeserver) {
-        clear_active_hs();
-    }
+    let accounts = read_accounts();
+    let filtered: Vec<_> = accounts
+        .into_iter()
+        .filter(|a| a.homeserver != homeserver)
+        .collect();
+    write_accounts(&filtered);
 }
 
-/// Remove the active session.
+/// Remove the active account.
 pub fn clear_session() {
-    if let Some(hs) = active_hs_key() {
-        remove_session(&hs);
-    } else if let Some(first) = read_sessions().into_iter().next() {
-        remove_session(&first.homeserver);
+    let mut accounts = read_accounts();
+    let mut changed = false;
+    for a in accounts.iter_mut().filter(|a| a.active) {
+        a.active = false;
+        changed = true;
+    }
+    if changed {
+        write_accounts(&accounts);
     }
 }
 
 /// Deactivate the active session *without* removing it: the stored credentials
-/// stay so a later Re-login can restore the session in one tap.  The active
-/// pointer is cleared, so auto-resume won't revive it on the next load.
+/// stay so a later Re-login can restore the session in one tap.
 pub fn deactivate_session() {
-    clear_active_hs();
-}
-
-fn read_sessions() -> Vec<StoredSession> {
-    storage()
-        .and_then(|st| st.get_item(SESSION_KEY).ok().flatten())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-fn write_sessions(sessions: &[StoredSession]) {
-    if let Some(st) = storage() {
-        if let Ok(json) = serde_json::to_string(sessions) {
-            let _ = st.set_item(SESSION_KEY, &json);
-        }
-    }
-}
-
-fn active_hs_key() -> Option<String> {
-    storage()?.get_item(ACTIVE_KEY).ok().flatten()
-}
-
-fn set_active_hs(homeserver: &str) {
-    if let Some(st) = storage() {
-        let _ = st.set_item(ACTIVE_KEY, homeserver);
-    }
-}
-
-fn clear_active_hs() {
-    if let Some(st) = storage() {
-        let _ = st.remove_item(ACTIVE_KEY);
-    }
+    clear_session();
 }
 
 // ----- homeserver / account / contact persistence -----
@@ -380,7 +355,6 @@ fn read_homeservers() -> Vec<HomeserverConfig> {
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
 fn write_homeservers(hs: &[HomeserverConfig]) {
     if let Some(st) = storage() {
         if let Ok(json) = serde_json::to_string(hs) {
@@ -393,7 +367,6 @@ pub fn load_homeservers() -> Vec<HomeserverConfig> {
     read_homeservers()
 }
 
-#[allow(dead_code)]
 pub fn save_homeserver(hs: &HomeserverConfig) {
     let mut list = read_homeservers();
     if let Some(existing) = list.iter_mut().find(|h| h.url == hs.url) {
@@ -404,11 +377,28 @@ pub fn save_homeserver(hs: &HomeserverConfig) {
     write_homeservers(&list);
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub fn remove_homeserver(url: &str) {
     let list = read_homeservers();
     let filtered: Vec<_> = list.into_iter().filter(|h| h.url != url).collect();
     write_homeservers(&filtered);
+}
+
+/// Ensure a `HomeserverConfig` exists for `url`.  Creates a minimal entry with
+/// the given registration mode if none exists yet.
+fn ensure_homeserver(url: &str, reg: crate::event::RegistrationMode) {
+    let mut list = read_homeservers();
+    if list.iter().any(|h| h.url == url) {
+        return;
+    }
+    list.push(HomeserverConfig {
+        url: url.to_string(),
+        name: crate::page::home::hs_host_port(url),
+        description: String::new(),
+        reg,
+        element_link: crate::event::element_link_default(url),
+    });
+    write_homeservers(&list);
 }
 
 fn read_accounts() -> Vec<Account> {
@@ -418,7 +408,6 @@ fn read_accounts() -> Vec<Account> {
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
 fn write_accounts(accounts: &[Account]) {
     if let Some(st) = storage() {
         if let Ok(json) = serde_json::to_string(accounts) {
@@ -431,7 +420,7 @@ pub fn load_accounts() -> Vec<Account> {
     read_accounts()
 }
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 pub fn load_accounts_for(homeserver: &str) -> Vec<Account> {
     read_accounts()
         .into_iter()
@@ -439,7 +428,6 @@ pub fn load_accounts_for(homeserver: &str) -> Vec<Account> {
         .collect()
 }
 
-#[allow(dead_code)]
 pub fn save_account(account: &Account) {
     let mut list = read_accounts();
     if let Some(existing) = list
@@ -451,16 +439,6 @@ pub fn save_account(account: &Account) {
         list.push(account.clone());
     }
     write_accounts(&list);
-}
-
-#[allow(dead_code)]
-pub fn remove_account(homeserver: &str, user_id: &str) {
-    let list = read_accounts();
-    let filtered: Vec<_> = list
-        .into_iter()
-        .filter(|a| !(a.homeserver == homeserver && a.user_id == user_id))
-        .collect();
-    write_accounts(&filtered);
 }
 
 fn read_contacts() -> Vec<Contact> {
@@ -494,15 +472,15 @@ pub fn save_contact(contact: &Contact) {
     write_contacts(&list);
 }
 
-#[allow(dead_code)]
 pub fn remove_contact(user_id: &str) {
     let list = read_contacts();
     let filtered: Vec<_> = list.into_iter().filter(|c| c.user_id != user_id).collect();
     write_contacts(&filtered);
 }
 
-/// Migrate old `kt_sync_sessions` data into the new homeservers + accounts model.
-/// Called once on first load; idempotent (no-ops if new keys already exist).
+/// Migrate old `kt_sync_sessions` + `kt_sync_active` data into the single
+/// `kt_accounts` store.  Called once on first load; idempotent (no-ops if the
+/// new key already exists).  Removes the old keys after migrating.
 #[allow(dead_code)]
 pub fn migrate_session_storage() {
     let st = match storage() {
@@ -511,51 +489,71 @@ pub fn migrate_session_storage() {
     };
     // If new keys already exist, migration already ran.
     if st.get_item(HOMESERVERS_KEY).ok().flatten().is_some() {
+        // Belt-and-suspenders: clean up old keys if they still exist.
+        let _ = st.remove_item("kt_sync_sessions");
+        let _ = st.remove_item("kt_sync_active");
         return;
     }
-    let old_sessions: Vec<StoredSession> = st
-        .get_item(SESSION_KEY)
+    // Parse old session data using a local struct that matches the legacy shape.
+    #[derive(Deserialize)]
+    struct OldSession {
+        homeserver: String,
+        user_id: String,
+        #[serde(default)]
+        reg: crate::event::RegistrationMode,
+        #[serde(flatten)]
+        kind: StoredAuth,
+    }
+    let old_sessions: Vec<OldSession> = st
+        .get_item("kt_sync_sessions")
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let active = st
+        .get_item("kt_sync_active")
+        .ok()
+        .flatten()
         .unwrap_or_default();
     if old_sessions.is_empty() {
         // Write empty new lists so migration marker is set.
         write_homeservers(&[]);
         write_accounts(&[]);
         write_contacts(&[]);
-        return;
-    }
-    // Extract unique homeservers.
-    let mut homeservers: Vec<HomeserverConfig> = Vec::new();
-    for s in &old_sessions {
-        if !homeservers.iter().any(|h| h.url == s.homeserver) {
-            homeservers.push(HomeserverConfig {
-                url: s.homeserver.clone(),
-                name: crate::page::home::hs_host_port(&s.homeserver),
-                description: String::new(),
-                reg: s.reg,
-                element_link: crate::event::element_link_default(&s.homeserver),
-            });
+    } else {
+        // Extract unique homeservers.
+        let mut homeservers: Vec<HomeserverConfig> = Vec::new();
+        for s in &old_sessions {
+            if !homeservers.iter().any(|h| h.url == s.homeserver) {
+                homeservers.push(HomeserverConfig {
+                    url: s.homeserver.clone(),
+                    name: crate::page::home::hs_host_port(&s.homeserver),
+                    description: String::new(),
+                    reg: s.reg,
+                    element_link: crate::event::element_link_default(&s.homeserver),
+                });
+            }
         }
+        // Convert sessions to accounts.
+        let accounts: Vec<Account> = old_sessions
+            .iter()
+            .map(|s| Account {
+                homeserver: s.homeserver.clone(),
+                user_id: s.user_id.clone(),
+                description: String::new(),
+                account_type: AccountType::Personal,
+                kind: s.kind.clone(),
+                active: s.homeserver == active,
+                event_uid: None,
+            })
+            .collect();
+        write_homeservers(&homeservers);
+        write_accounts(&accounts);
+        write_contacts(&[]);
     }
-    // Convert sessions to accounts.
-    let active = active_hs_key().unwrap_or_default();
-    let accounts: Vec<Account> = old_sessions
-        .iter()
-        .map(|s| Account {
-            homeserver: s.homeserver.clone(),
-            user_id: s.user_id.clone(),
-            description: String::new(),
-            account_type: AccountType::Personal,
-            kind: s.kind.clone(),
-            active: s.homeserver == active,
-            event_uid: None,
-        })
-        .collect();
-    write_homeservers(&homeservers);
-    write_accounts(&accounts);
-    write_contacts(&[]);
+    // Remove legacy keys — they are now fully superseded.
+    let _ = st.remove_item("kt_sync_sessions");
+    let _ = st.remove_item("kt_sync_active");
 }
 
 // ----- OAuth / OIDC SSO (passwordless matrix.org accounts) -----
@@ -817,7 +815,7 @@ pub async fn register_or_login(
     }
 }
 
-pub async fn restore_session(client: &Client, stored: &StoredSession) -> Result<(), String> {
+pub async fn restore_session(client: &Client, stored: &Account) -> Result<(), String> {
     match &stored.kind {
         StoredAuth::Matrix {
             device_id,

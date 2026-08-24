@@ -29,11 +29,14 @@ use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
-/// Connection actions driven from the Home page.
+/// Connection actions driven from the Home and Accounts pages.
 #[derive(Clone)]
 pub enum Msg {
     /// Browser-based OAuth/SSO sign-in (passwordless matrix.org accounts).
+    /// Uses the homeserver from the Home model.
     SsoLogin,
+    /// SSO login for a specific homeserver (used from accounts page).
+    SsoLoginFor(String),
     Logout,
     /// Restore a stored session for `homeserver` (one-tap re-login after a
     /// soft logout).
@@ -85,7 +88,7 @@ pub fn resume_on_load(model: Model) {
 /// timing room and start syncing.  Reused by [resume_on_load] and one-tap
 /// Re-login.
 #[cfg(target_arch = "wasm32")]
-fn restore_and_connect(model: Model, stored: crate::services::matrix::StoredSession) {
+fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
     model.sync.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
@@ -563,6 +566,7 @@ fn apply_parcel(model: Model, id: &str, parcel: &crate::services::qr::Parcel) {
 fn update_wasm(model: Model, msg: Msg) {
     match msg {
         Msg::SsoLogin => sso_login(model),
+        Msg::SsoLoginFor(hs) => sso_login_for(model, hs),
         Msg::Logout => logout(model),
         Msg::Relogin(hs) => relogin(model, hs),
         Msg::Forget(hs) => forget(model, hs),
@@ -739,8 +743,9 @@ fn forget(model: Model, hs: String) {
     };
     sm.busy.set(true);
     wasm_bindgen_futures::spawn_local(async move {
-        // Revokes the server session and clears the stored entry.
+        // Revokes the server session and removes the stored entry.
         let _ = crate::services::matrix::logout(&client).await;
+        crate::services::matrix::remove_session(&hs);
         crate::services::matrix::set_client(None);
         crate::services::matrix::set_room(None);
         model.sync.identity.set(String::new());
@@ -935,6 +940,22 @@ fn sso_login(model: Model) {
                 "couldn't open the sign-in tab — allow popups for this site".to_string(),
             ));
             sm.busy.set(false);
+            return;
+        }
+    };
+    sso_begin(model, &hs, tab.as_ref());
+}
+
+/// SSO login for a specific homeserver (called from accounts page).
+#[cfg(target_arch = "wasm32")]
+fn sso_login_for(model: Model, hs: String) {
+    model.sync.conn.set(ConnState::Connecting);
+    let tab = match web_sys::window().map(|w| w.open()) {
+        Some(Ok(Some(tab))) => Some(tab),
+        _ => {
+            model.sync.conn.set(ConnState::Error(
+                "couldn't open the sign-in tab — allow popups for this site".to_string(),
+            ));
             return;
         }
     };
