@@ -207,73 +207,6 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
     // Table rows (for desktop)
     let table_rows: Vec<View> = sorted.iter().map(|rr| view_row(model, rr)).collect();
 
-    // Card data (for mobile)
-    let card_views: Vec<View> = sorted
-        .iter()
-        .enumerate()
-        .map(|(i, rr)| {
-            let car = rr.entry.car.clone();
-            let name = rr.entry.name.clone();
-            let per_test: Vec<String> = rr
-                .columns
-                .iter()
-                .enumerate()
-                .map(|(j, rso)| {
-                    let test_num = j + 1;
-                    match rso {
-                        Some(rs) => {
-                            let pos = rs
-                                .stage_pos
-                                .as_ref()
-                                .map(|p| format!(" #{}", p.pos))
-                                .unwrap_or_default();
-                            let runs_str: String = rs
-                                .runs
-                                .iter()
-                                .map(|r| run_time_text_str(&r.time))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            format!("T{test_num}: {runs_str}{pos}")
-                        }
-                        None => format!("T{test_num}: \u{2014}"),
-                    }
-                })
-                .collect();
-            let total = rr
-                .columns
-                .last()
-                .and_then(|rso| rso.as_ref())
-                .and_then(|rs| rs.cum_pos.as_ref())
-                .map(|cp| format!("{:.1}s", cp.score_ds as f32 / 10.0))
-                .unwrap_or_else(|| "\u{2014}".to_string());
-            let pos = i + 1;
-            let test_lines: Vec<View> = per_test
-                .iter()
-                .map(|t| {
-                    let t_owned = t.clone();
-                    view! { div { (t_owned) } }
-                })
-                .collect();
-            view! {
-                div(class="box mb-3") {
-                    div(class="level is-mobile mb-2") {
-                        div(class="level-left") {
-                            span(class="tag is-dark mr-2") { (pos.to_string()) }
-                            (crate::view::car_tag(&car))
-                            span(class="has-text-weight-semibold ml-2") { (name) }
-                        }
-                        div(class="level-right") {
-                            span(class="has-text-weight-bold has-text-link") { (total) }
-                        }
-                    }
-                    div(class="is-size-7 has-text-grey") {
-                        (test_lines)
-                    }
-                }
-            }
-        })
-        .collect();
-
     let name = results.event.name.clone();
     let class = results.class.clone();
     let date = results.event.event_date.clone();
@@ -298,10 +231,6 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
                     (footer)
                 }
             }
-            // Card view (mobile only)
-            div(class="kt-results-cards") {
-                (card_views)
-            }
             // Print button (bottom)
             div(class="mt-3 is-hidden-print") {
                 button(
@@ -317,26 +246,6 @@ fn view_results(model: crate::Model, results: &ResultView) -> View {
                 }
             }
         }
-    }
-}
-
-/// Format a run time as a plain string (for card view).
-fn run_time_text_str(time: &crate::event::KTime) -> String {
-    match time {
-        crate::event::KTime::Time(t) => {
-            let mut s = format!("{:.1}", t.time_ds as f32 / 10.0);
-            if t.garage {
-                s.push('\u{1f3e2}');
-            }
-            for _ in 0..t.flags {
-                s.push('\u{1f6a9}');
-            }
-            s
-        }
-        crate::event::KTime::DNF => "DNF".to_string(),
-        crate::event::KTime::FTS => "FTS".to_string(),
-        crate::event::KTime::WD => "WD".to_string(),
-        crate::event::KTime::NOSHO => "NOSHO".to_string(),
     }
 }
 

@@ -276,15 +276,37 @@
   }
 }
 
-// ── Results: table on desktop, cards on mobile ──
-@media screen and (max-width: $tablet - 1px) {
-  .kt-results-table {
-    display: none !important;
-  }
+// ── Results: hide cards everywhere (table only) ──
+.kt-results-cards {
+  display: none !important;
 }
 
-@media screen and (min-width: $tablet) {
-  .kt-results-cards {
-    display: none !important;
+// ── Results: compact table on mobile with sticky car column ──
+@media screen and (max-width: $tablet - 1px) {
+  .kt-results-table {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .kt-results-table .table {
+    font-size: 0.75rem;
+  }
+  .kt-results-table .table td,
+  .kt-results-table .table th {
+    padding: 0.2em 0.3em;
+    white-space: nowrap;
+  }
+  // Sticky car (#) and driver columns
+  .kt-results-table .table th:nth-child(1),
+  .kt-results-table .table td:nth-child(1),
+  .kt-results-table .table th:nth-child(2),
+  .kt-results-table .table td:nth-child(2) {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: white;
+  }
+  .kt-results-table .table th:nth-child(1),
+  .kt-results-table .table th:nth-child(2) {
+    z-index: 2;
   }
 }
