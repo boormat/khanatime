@@ -32,12 +32,6 @@ dependency problems. Styling with Bulma library. Fontawesome for icons.
 
 Write it as a single WASM app.
 
-Pages:
-- home menu/event picker
-- Results view. Just render
-- Event/Scorer. Central data entry for classes, entrants, stage times
-- Stage. Time entry for stage officials
-
 Data Store:
 Use local storage to operate offline. Offline sharing of documents as primary
 option (Matrix room as store-and-forward, see `PLAN.md`).
@@ -54,11 +48,13 @@ Note: trunk needs inline mode for stylesheets. data-inline
 
 ## Install / check required tools
 
-1. Make sure you have basic tools installed:
+1. Make sure you have basic tools installed, leverage mise.
 
-  - [Rust](https://www.rust-lang.org)
-  - `rustup target add wasm32-unknown-unknown`
-  - cargo install --locked trunk
+  - mise
+  - mise install
+    - [Rust](https://www.rust-lang.org)
+    - `rustup target add wasm32-unknown-unknown`
+    - cargo install --locked trunk
 
 Once you've installed Trunk, simply execute `trunk serve --open` from this
 example's directory, and you should see the web application rendered in your

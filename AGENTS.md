@@ -7,8 +7,6 @@
 ## Commands
 
 ```bash
-# Dev server (Trunk, auto-reload on save)
-trunk serve -p 8080
 
 # HTTPS dev server — OIDC/SSO testing against matrix.org (needs the /etc/hosts
 # alias khanatime.test; see the script header for one-time sudo setup)
@@ -22,14 +20,9 @@ trunk build --release
 # always check code changes with this. Must pass before commit
 ./scripts/check.sh
 
-# Tests
-cargo test
-
 # Format
 cargo fmt
 
-# Lint (matches CI; --all-targets also lints test code)
-cargo clippy --all-targets
 ```
 
 Deploy is a manual GitHub Actions workflow (`deploy.yml`) that updates
@@ -39,31 +32,35 @@ unlinted code.
 
 ## Worktrees
 
-For anything except trivial changes, work in an isolated git worktree. The
-agent MUST default to a worktree; only edit the main repo directly for trivial
-single-line fixes. **All git integration (commit / merge / rebase / push /
-worktree cleanup) is performed by the user, never by the agent** — the global
-opencode config (`~/.config/opencode/opencode.jsonc`) denies those commands,
-and that is intentional.
+Ensure each session starts and uses a single worktree before changing files.
+
+At the end of planning stage, tell user what branch/worktree will be create or used.
+Avoid flipping from one worktree to another, it should generally stick, unless user asks for a new one to be
+setup.
+
+
+The branch/worktree should be named to match the changes, or ask user.
+You can commit to the branch after blocks of work have been completed, and tested
+by the user.  After the session, the user will merge to main.
+
 
 Use the `using-git-worktrees` skill to create and work inside the worktree
-(convention: `~/work/<abbrev>-<slug>` on branch `feature/<slug>`, where
-`<abbrev>` is the repo-name abbreviation, e.g. `khanatime`). The skill owns
-creation/isolation only; it never commits or merges.
+Create worktrees as subdirs inside this directory, `./work-<slug>` on branch `feature/<slug>`.
+
 
 ### Testing workflow (MANDATORY)
 
 1. Create worktree, make changes (include `docs/bugs.md` / `docs/plan/` completion marks), run `./scripts/check.sh`
-2. **Mark worktree ready**: `touch ~/work/khanatime-<feature>/test-me-please`
-3. **Tell user**: "Ready to test **khanatime-<feature>** — run `scripts/test.sh`"
+2. **Mark worktree ready**: `touch test-me-please` in the worktree
+3. **Tell user**: "Ready to test **<worktree>** — run `scripts/test.sh`"
 4. **STOP and wait** for user to test and approve
-5. **After approval**: commit, squash-merge, clean up (see below)
+5. **After approval**: commit, clean up (see below)
 
 ### Agent testing (quick serve)
 
 Agents can test their worktree with a random port and pid file:
 
-```bash
+```bash 
 mise run serve start khanatime-<feature>   # start serving
 mise run serve status                      # check what's running
 mise run serve stop khanatime-<feature>    # stop serving
@@ -72,19 +69,6 @@ mise run serve stop khanatime-<feature>    # stop serving
 The script allocates a random port, writes PID to `.serve.pid` in the
 worktree, and shows the port in output. Kill with `kill $(cat .serve.pid)`.
 
-### Merge workflow (after user approval)
-
-**Goal:** No merge commits in main — only fast-forward merges.
-
-1. Commit changes in worktree (include `docs/bugs.md` completion marks in this commit)
-2. In main repo, try `git merge --ff-only feature/<name>`
-3. **If FF fails** ask user to help rebase
-4. Verify all tasks are complete
-
-Never merge to main until the user says "looks good" or approves the changes.
-
-Never edit `docs/bugs.md` in the main repo after merge — the update must ride
-along with the code commit in the worktree.
 
 ## Framework notes
 
