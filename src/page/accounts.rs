@@ -10,6 +10,8 @@ pub struct Model {
     pub show_contact: Signal<bool>,
     pub show_qr: Signal<Option<QrTarget>>,
     pub feedback: Signal<String>,
+    /// Homeserver awaiting a Forget confirmation ("are you sure" modal).
+    pub forget_target: Signal<Option<String>>,
     pub create_hs: Signal<String>,
     pub create_type: Signal<u8>,
     pub create_desc: Signal<String>,
@@ -43,6 +45,7 @@ impl Model {
             show_contact: create_signal(false),
             show_qr: create_signal(None),
             feedback: create_signal(String::new()),
+            forget_target: create_signal(None),
             create_hs: create_signal(String::new()),
             create_type: create_signal(0u8),
             create_desc: create_signal(String::new()),
@@ -81,6 +84,7 @@ pub fn view(model: crate::Model) -> View {
                 Some(t) => view_qr_modal(model, t),
                 None => view! {},
             })
+            (view_forget_modal(model))
             (if !sm.feedback.get_clone().is_empty() {
                 let msg = sm.feedback.get_clone();
                 view! {
@@ -158,7 +162,7 @@ fn view_homeservers(model: crate::Model) -> View {
             let active = a.active;
             let is_personal = a.account_type == crate::services::matrix::AccountType::Personal;
             let a_hs = a.homeserver.clone();
-            let a_hs2 = a.homeserver.clone();
+            let a_hs_forget = a.homeserver.clone();
             let a_hs3 = a.homeserver.clone();
             let a_user3 = a.user_id.clone();
             account_rows.push(view! {
@@ -172,30 +176,44 @@ fn view_homeservers(model: crate::Model) -> View {
                             (if active {
                                 view! { span(class="tag is-success is-small ml-2") { "active" } }
                             } else { view! {} })
-                            div(class="buttons has-addons") {
-                                button(
-                                    class="button is-small is-link",
-                                    disabled=active,
-                                    on:click=move |_| {
-                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::Relogin(a_hs.clone())));
-                                    },
-                                ) { "Login" }
-                                button(
-                                    class="button is-small is-light",
-                                    disabled=!active,
-                                    on:click=move |_| {
-                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::Logout));
-                                    },
-                                ) { "Logout" }
-                                button(
-                                    class="button is-small is-danger is-outlined",
-                                    on:click=move |_| {
-                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::Forget(a_hs2.clone())));
-                                    },
-                                ) { "Forget" }
+                            (if active {
+                                view! {
+                                    button(
+                                        class="button is-small is-warning",
+                                        on:click=move |_| {
+                                            crate::update(model, crate::Msg::Conn(crate::sync::Msg::Logout));
+                                            sm.refresh.update(|v| v.wrapping_add(1));
+                                        },
+                                    ) {
+                                        span(class="icon is-small") { i(class="fa fa-right-from-bracket") }
+                                        span { "Logout" }
+                                    }
+                                }
+                            } else {
+                                view! {
+                                    button(
+                                        class="button is-small is-link",
+                                        on:click=move |_| {
+                                            crate::update(model, crate::Msg::Conn(crate::sync::Msg::Relogin(a_hs.clone())));
+                                            sm.refresh.update(|v| v.wrapping_add(1));
+                                        },
+                                    ) {
+                                        span(class="icon is-small") { i(class="fa fa-right-to-bracket") }
+                                        span { "Login" }
+                                    }
+                                }
+                            })
+                            button(
+                                class="button is-small is-danger is-rounded",
+                                title="Forget this account",
+                                on:click=move |_| {
+                                    sm.forget_target.set(Some(a_hs_forget.clone()));
+                                },
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-xmark") }
                             }
                             button(
-                                class="button is-info is-outlined",
+                                class="button is-small is-info is-outlined",
                                 title="Share account credentials via QR",
                                 on:click=move |_| {
                                     sm.show_qr.set(Some(QrTarget::Account {
@@ -204,10 +222,10 @@ fn view_homeservers(model: crate::Model) -> View {
                                     }));
                                 },
                             ) {
-                                span(class="icon is-small") { i(class="fa fa-qrcode") }
+                                span(class="icon is-small") { i(class="fa fa-lock") }
                             }
                             button(
-                                class="button is-light",
+                                class="button is-small is-light",
                                 title="Share as contact (no password)",
                                 on:click=move |_| {
                                     sm.show_qr.set(Some(QrTarget::Contact(a_user3.clone())));
@@ -895,5 +913,58 @@ fn view_qr_modal(model: crate::Model, target: QrTarget) -> View {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn view_qr_modal(_model: crate::Model, _target: QrTarget) -> View {
+    view! {}
+}
+
+// ---------------------------------------------------------------------------
+// Forget confirmation modal
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+fn view_forget_modal(model: crate::Model) -> View {
+    let sm = model.screens.accounts;
+    let Some(hs) = sm.forget_target.get_clone() else {
+        return view! {};
+    };
+    let hs_display = hs.clone();
+    let hs_confirm = hs.clone();
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background", on:click=move |_| sm.forget_target.set(None))
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { "Forget this account?" }
+                    button(class="delete", on:click=move |_| sm.forget_target.set(None))
+                }
+                section(class="modal-card-body") {
+                    p { "Remove the stored session for:" }
+                    p(class="has-text-weight-medium") { (hs_display) }
+                    p(class="help") {
+                        "Forgetting the active account also signs it out server-side."
+                    }
+                }
+                footer(class="modal-card-foot") {
+                    button(
+                        class="button is-danger",
+                        on:click=move |_| {
+                            sm.forget_target.set(None);
+                            crate::update(
+                                model,
+                                crate::Msg::Conn(crate::sync::Msg::Forget(hs_confirm.clone())),
+                            );
+                            sm.refresh.update(|v| v.wrapping_add(1));
+                        },
+                    ) { "Forget" }
+                    button(class="button", on:click=move |_| sm.forget_target.set(None)) {
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_forget_modal(_model: crate::Model) -> View {
     view! {}
 }
