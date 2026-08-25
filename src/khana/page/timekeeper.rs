@@ -185,6 +185,8 @@ fn view_timing_observations(model: crate::Model) -> View {
         div(class="box") {
             h3(class="title is-6") { "Observations" }
             (move || {
+                let _now = model.tick.get(); // subscribe to tick for live "Xs ago"
+                let now = js_sys::Date::now() as i64;
                 let test = model.screens.timekeeper.stage.get();
                 let runs: Vec<RunRecord> = model.khana.runs.with(|runs| {
                     runs.iter()
@@ -212,7 +214,7 @@ fn view_timing_observations(model: crate::Model) -> View {
                             ("\u{25A0}", "")
                         };
                         let car_text = format!(" #{}", r.car);
-                        let ts = super::super::helpers::fmt_log_ts(r.ts);
+                        let ts = super::super::helpers::fmt_ts(r.ts, now);
                         let time_text = match r.time_ds {
                             Some(ds) => format!("{:.1}", ds as f32 / 10.0),
                             None => {

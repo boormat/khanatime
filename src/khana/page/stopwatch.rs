@@ -695,6 +695,8 @@ fn view_attached_events(model: crate::Model, idx: usize) -> View {
         div(class="mb-3") {
             p(class="has-text-weight-semibold is-size-7 mb-1") { "Attached observations:" }
             (move || {
+                let _now = model.tick.get(); // subscribe to tick for live "Xs ago"
+                let now = js_sys::Date::now() as i64;
                 let events = sm.pending.with(|v| {
                     v.get(idx)
                         .map(|p| p.attached.clone())
@@ -714,7 +716,7 @@ fn view_attached_events(model: crate::Model, idx: usize) -> View {
                         };
                         let is_attached = a.attached;
                         let car = a.car.clone();
-                        let ts = crate::khana::helpers::fmt_log_ts(a.ts);
+                        let ts = crate::khana::helpers::fmt_ts(a.ts, now);
                         let strike = if is_attached { "" } else { "has-text-grey-light has-text-decoration-line-through" };
                         view! {
                             div(class="level is-mobile mb-1") {

@@ -269,6 +269,9 @@ pub struct Model {
     pub sync: SyncState,
     pub entry_app: EntryAppState,
     pub screens: Screens,
+    /// Wall-clock tick: updated every second by a timer, drives relative
+    /// timestamps ("42s ago") in the timing log and attach panels.
+    pub tick: Signal<i64>,
 }
 
 pub enum Msg {
@@ -369,6 +372,7 @@ impl Model {
         let m = Model {
             screen: create_signal(Screen::Event),
             mode: create_signal(Mode::from_storage()),
+            tick: create_signal(js_sys::Date::now() as i64),
             khana: KhanaState {
                 event: create_signal(event_info),
                 scores: create_signal(scores),
@@ -701,6 +705,8 @@ pub fn setup_effects(model: Model) {
         model.screens.timekeeper.preview.set(cmd);
     });
     #[cfg(target_arch = "wasm32")]
+    start_tick_timer(model);
+    #[cfg(target_arch = "wasm32")]
     listen_for_tab_sync(model);
     #[cfg(target_arch = "wasm32")]
     listen_for_history(model);
@@ -728,6 +734,24 @@ fn push_screen_hash(screen: Screen) {
     if let Ok(history) = window.history() {
         let _ = history.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&hash));
     }
+}
+
+/// Start a 1-second timer that updates `model.tick` so reactive closures
+/// reading relative timestamps ("42s ago") re-render each second.
+#[cfg(target_arch = "wasm32")]
+fn start_tick_timer(model: Model) {
+    use wasm_bindgen::JsCast;
+    let window = web_sys::window().expect("window");
+    let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::wrap(Box::new(move || {
+        model.tick.set(js_sys::Date::now() as i64);
+    }));
+    window
+        .set_interval_with_callback_and_timeout_and_arguments_0(
+            closure.as_ref().unchecked_ref(),
+            1000,
+        )
+        .unwrap_or_default();
+    closure.forget();
 }
 
 /// Back/forward and manual hash edits: turn the URL back into a screen change

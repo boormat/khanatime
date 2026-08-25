@@ -151,6 +151,8 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
         div(class="box") {
             h3(class="title is-6") { "Log" }
             (move || {
+                let _now = model.tick.get(); // subscribe to tick for live "Xs ago"
+                let now = js_sys::Date::now() as i64;
                 let mut runs: Vec<RunRecord> = model.khana.runs.with(|runs| {
                     runs.iter()
                         .filter(|r| r.test == test && !r.voided)
@@ -174,7 +176,7 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                             ("\u{25A0}", "")
                         };
                         let car_text = format!(" #{}", r.car);
-                        let ts = fmt_log_ts(r.ts);
+                        let ts = fmt_ts(r.ts, now);
                         let official_view: View = match &r.official_id {
                             Some(o) if !o.is_empty() => {
                                 let text = format!("by {}", o);
@@ -214,9 +216,28 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
     }
 }
 
-pub fn fmt_log_ts(ms: i64) -> String {
-    let d = js_sys::Date::new(&js_sys::Number::from(ms as f64).into());
-    d.to_string().into()
+/// Format an epoch-ms timestamp as `HH:MM:SS` (24h local), optionally
+/// appending a relative age for entries under 60 minutes old.
+pub fn fmt_ts(ts: i64, now: i64) -> String {
+    let d = js_sys::Date::new(&js_sys::Number::from(ts as f64).into());
+    let time = format!(
+        "{:02}:{:02}:{:02}",
+        d.get_hours(),
+        d.get_minutes(),
+        d.get_seconds()
+    );
+    let age_ms = now.saturating_sub(ts);
+    if age_ms < 0 {
+        return time;
+    }
+    let age_s = age_ms / 1000;
+    if age_s < 60 {
+        format!("{} ({}s ago)", time, age_s)
+    } else if age_s < 3600 {
+        format!("{} ({}m ago)", time, age_s / 60)
+    } else {
+        time
+    }
 }
 
 /// Offline handoff box: export the current event's log as a QR parcel, scan or

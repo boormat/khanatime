@@ -296,7 +296,15 @@ fn view_live_results(model: crate::Model) -> View {
                                 };
                                 let status_text = r.status.as_deref().unwrap_or("\u{2014}").to_string();
                                 let official_text = r.official_id.as_deref().unwrap_or("\u{2014}").to_string();
-                                let ts = crate::khana::helpers::fmt_log_ts(r.ts);
+                                let ts = {
+                                    let d = js_sys::Date::new(&js_sys::Number::from(r.ts as f64).into());
+                                    format!(
+                                        "{:02}:{:02}:{:02}",
+                                        d.get_hours(),
+                                        d.get_minutes(),
+                                        d.get_seconds()
+                                    )
+                                };
                                 let car = crate::view::car_tag(&r.car);
                                 let test = r.test;
                                 view! {
