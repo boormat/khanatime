@@ -8,9 +8,8 @@
 
 ```bash
 
-# HTTPS dev server — OIDC/SSO testing against matrix.org (needs the /etc/hosts
-# alias khanatime.test; see the script header for one-time sudo setup)
-scripts/serve_https.sh
+# HTTPS dev server — interactive worktree picker (https://dev.localhost)
+scripts/serve.sh
 
 # Release build
 trunk build --release
@@ -52,7 +51,7 @@ Create worktrees as subdirs inside this directory, `./work-<slug>` on branch `fe
 
 1. Create worktree, make changes (include `docs/bugs.md` / `docs/plan/` completion marks), run `./scripts/check.sh`
 2. **Mark worktree ready**: `touch test-me-please` in the worktree
-3. **Tell user**: "Ready to test **<worktree>** — run `scripts/test.sh`"
+3. **Tell user**: "Ready to test **<worktree>** — run `scripts/serve.sh`"
 4. **STOP and wait** for user to test and approve
 5. **After approval**: commit, clean up (see below)
 

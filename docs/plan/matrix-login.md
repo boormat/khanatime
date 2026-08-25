@@ -140,18 +140,18 @@ state so the button shows "Waiting for browser tab…" and stays disabled until
   registration whose `client_uri`/`redirect_uris` are **http or on localhost**
   (its `client_registration.rego` enforces https + non-localhost hosts).  SSO
   therefore only works from a real https origin — the deployed GitHub Pages
-  app, the local `scripts/serve_https.sh` (trunk over TLS on the
-  `khanatime.test` host alias), or a https tunnel.  `sso_login` pre-empts this
+  app, the local `scripts/serve.sh` (trunk over TLS on
+  `dev.localhost`), or a https tunnel.  `sso_login` pre-empts this
   with a clear message instead of surfacing the raw 400.
 - **Concurrent edits**: another instance edits this repo; re-read files before
   touching.
 
 ## Manual matrix.org test
 
-1. Serve over https: `scripts/serve_https.sh` (one-time `/etc/hosts` alias +
-   self-signed cert, accept the browser warning once) and open
-   `https://khanatime.test:8081`, or deploy to GitHub Pages (SSO needs a real
-   https origin — matrix.org rejects http/localhost redirects).  Sign in form:
+1. Serve over https: `scripts/serve.sh` (auto-generated cert, accept the browser
+   warning once) and open `https://dev.localhost:8080`, or deploy to GitHub Pages
+   (SSO needs a real https origin — matrix.org rejects http/localhost redirects).
+   Sign in form:
    enter `https://matrix.org` (the "Use Matrix.org" button prefills it), tap
    "SSO sign-in".
 2. New tab opens at MAS; pick **Google**, grant access.

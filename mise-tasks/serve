@@ -13,9 +13,9 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_DIR="$(git -C "$SCRIPT_DIR/.." rev-parse --show-toplevel)"
-CERT_DIR="$MAIN_DIR/scripts/sslcerts"
+CERT_DIR="$HOME/.local/share/ssl-certs/dev.localhost"
 WORK_BASE="$HOME/work"
-HOST="khanatime.test"
+HOST="dev.localhost"
 PID_FILE=".serve.pid"
 PORT_FILE=".serve.port"
 
