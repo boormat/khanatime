@@ -150,10 +150,11 @@ pub struct HomeserverConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountType {
+    #[serde(alias = "event_shared")]
+    Shared,
     #[default]
+    #[serde(other)]
     Personal,
-    EventShared,
-    ClubShared,
 }
 
 /// An account on a homeserver, with credentials and metadata.
@@ -169,7 +170,7 @@ pub struct Account {
     pub kind: StoredAuth,
     #[serde(default)]
     pub active: bool,
-    /// For EventShared accounts: the event uid this account was created for.
+    /// For Shared accounts: the event uid this account was created for.
     #[serde(default)]
     pub event_uid: Option<String>,
 }
@@ -377,7 +378,6 @@ pub fn save_homeserver(hs: &HomeserverConfig) {
     write_homeservers(&list);
 }
 
-#[expect(dead_code)]
 pub fn remove_homeserver(url: &str) {
     let list = read_homeservers();
     let filtered: Vec<_> = list.into_iter().filter(|h| h.url != url).collect();

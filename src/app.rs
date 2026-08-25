@@ -338,6 +338,15 @@ pub enum Msg {
     },
     /// Post a signed hello message to the current event's room.
     SendHello,
+    /// Create a new account on a homeserver (register or login if taken).
+    /// `account_type`: 0 = Personal, 1 = Shared.
+    CreateAccount {
+        hs: String,
+        username: String,
+        password: String,
+        description: String,
+        account_type: u8,
+    },
 }
 
 impl Model {
@@ -639,7 +648,7 @@ pub fn update(model: Model, msg: Msg) {
                     homeserver,
                     user_id,
                     description: String::new(),
-                    account_type: crate::services::matrix::AccountType::EventShared,
+                    account_type: crate::services::matrix::AccountType::Shared,
                     kind: crate::services::matrix::StoredAuth::Matrix {
                         device_id: String::new(),
                         access_token: String::new(),
@@ -719,6 +728,62 @@ pub fn update(model: Model, msg: Msg) {
                     }
                 });
             }
+        }
+        Msg::CreateAccount {
+            hs,
+            username,
+            password,
+            description,
+            account_type,
+        } => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let sm = model.screens.accounts;
+                if hs.is_empty() || username.is_empty() || password.is_empty() {
+                    sm.feedback.set("Fill in all fields.".into());
+                    return;
+                }
+                sm.feedback.set(format!("Creating @{}…", username));
+                wasm_bindgen_futures::spawn_local(async move {
+                    let acc_type = match account_type {
+                        1 => crate::services::matrix::AccountType::Shared,
+                        _ => crate::services::matrix::AccountType::Personal,
+                    };
+                    let res = async {
+                        let client = crate::services::matrix::new_client(&hs).await?;
+                        crate::services::matrix::register_or_login(&client, &username, &password)
+                            .await?;
+                        crate::services::matrix::save_session_with_password(
+                            &client, &hs, &password,
+                        );
+                        let user_id = client.user_id().map(|u| u.to_string()).unwrap_or_default();
+                        // Update account type and description on the saved session.
+                        let mut accounts = crate::services::matrix::load_accounts();
+                        if let Some(a) = accounts
+                            .iter_mut()
+                            .find(|a| a.homeserver == hs && a.user_id == user_id)
+                        {
+                            a.account_type = acc_type;
+                            a.description = description;
+                            crate::services::matrix::save_account(a);
+                        }
+                        Ok::<_, String>(user_id)
+                    }
+                    .await;
+                    match res {
+                        Ok(user_id) => {
+                            sm.feedback
+                                .set(format!("Created {}. Use Login to sign in.", user_id));
+                            sm.refresh.update(|v| v.wrapping_add(1));
+                        }
+                        Err(e) => {
+                            sm.feedback.set(format!("Error: {}", e));
+                        }
+                    }
+                });
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let _ = (hs, username, password, description, account_type);
         }
     }
 }
