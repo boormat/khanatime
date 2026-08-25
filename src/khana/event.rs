@@ -1544,14 +1544,10 @@ pub fn ensure_demo() {
 pub fn setup_body(ev: &EventInfo) -> String {
     let mut ev = ev.clone();
     if ev.signature.is_none() {
-        if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
-            if keys.can_sign() {
-                if let Ok((sig, key)) = crate::signing::sign_payload(&ev, &keys) {
-                    ev.signature = Some(sig);
-                    ev.signing_key = Some(key);
-                }
-            }
-        }
+        let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+        let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
+        ev.signature = Some(sig);
+        ev.signing_key = Some(key);
     }
     format!(
         "{}{}",

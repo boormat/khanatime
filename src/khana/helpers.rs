@@ -4,14 +4,13 @@ use sycamore::prelude::*;
 // Signing helper
 // ---------------------------------------------------------------------------
 
-/// Sign a TimingEvent with the device key (if available).  Errors are silent —
-/// the message is sent unsigned if signing fails.
-fn sign_timing_event(te: &mut crate::khana::timing_event::TimingEvent) {
-    if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
-        if keys.can_sign() {
-            let _ = te.sign_with(&keys);
-        }
-    }
+/// Sign a TimingEvent with the device key.
+fn sign_timing_event(
+    te: &mut crate::khana::timing_event::TimingEvent,
+) -> Result<(), crate::signing::SigningError> {
+    let keys = crate::signing::DeviceKeys::load_from_storage()
+        .ok_or(crate::signing::SigningError::NoPrivateKey)?;
+    te.sign_with(&keys)
 }
 
 // ---------------------------------------------------------------------------
@@ -50,7 +49,7 @@ pub fn enqueue_run(model: crate::Model, run: &crate::khana::event::RunRecord) {
         signing_key: None,
         signature: None,
     };
-    sign_timing_event(&mut te);
+    sign_timing_event(&mut te).expect("signing key missing");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     crate::sync::flush_pending(model);
@@ -73,7 +72,7 @@ pub fn enqueue_ktime(
     let mut te = crate::khana::timing_event::TimingEvent::finish(&uid, test, car, time, vec![]);
     te.official_id = Some(model.sync.identity.get_clone());
     te.comment = comment;
-    sign_timing_event(&mut te);
+    sign_timing_event(&mut te).expect("signing key missing");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     let run = crate::khana::event::record_from_timing(&te);
@@ -102,7 +101,7 @@ pub fn enqueue_amend(
     let mut te = crate::khana::timing_event::TimingEvent::amend(&uid, target_uid, test, car, time);
     te.official_id = Some(model.sync.identity.get_clone());
     te.comment = comment;
-    sign_timing_event(&mut te);
+    sign_timing_event(&mut te).expect("signing key missing");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     model.khana.runs.update(|runs| {
@@ -131,7 +130,7 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) 
     }
     let mut te = crate::khana::timing_event::TimingEvent::void(&uid, target_uid, test, car);
     te.official_id = Some(model.sync.identity.get_clone());
-    sign_timing_event(&mut te);
+    sign_timing_event(&mut te).expect("signing key missing");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
     model.khana.runs.update(|runs| {

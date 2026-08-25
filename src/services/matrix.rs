@@ -1360,14 +1360,10 @@ pub async fn send_result(
         signing_key: None,
         signature: None,
     };
-    if let Some(keys) = crate::signing::DeviceKeys::load_from_storage() {
-        if keys.can_sign() {
-            if let Ok((sig, key)) = crate::signing::sign_payload(&snapshot, &keys) {
-                snapshot.signature = Some(sig);
-                snapshot.signing_key = Some(key);
-            }
-        }
-    }
+    let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+    let (sig, key) = crate::signing::sign_payload(&snapshot, &keys).expect("signing failed");
+    snapshot.signature = Some(sig);
+    snapshot.signing_key = Some(key);
     let body = format!(
         "{}{}",
         TimingEvent::RESULT_PREFIX,

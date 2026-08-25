@@ -175,11 +175,6 @@ impl DeviceKeys {
         Ok(key_bytes[..4].iter().map(|b| format!("{b:02x}")).collect())
     }
 
-    /// Whether this keypair has a private key (can sign).
-    pub fn can_sign(&self) -> bool {
-        self.ed25519_private_key.is_some()
-    }
-
     // -----------------------------------------------------------------------
     // localStorage persistence
     // -----------------------------------------------------------------------

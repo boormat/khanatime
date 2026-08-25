@@ -78,27 +78,8 @@ worktree, and shows the port in output. Kill with `kill $(cat .serve.pid)`.
 
 1. Commit changes in worktree (include `docs/bugs.md` completion marks in this commit)
 2. In main repo, try `git merge --ff-only feature/<name>`
-3. **If FF succeeds:** skip to step 6 (cleanup)
-4. **If FF fails (diverged):** squash the branch
-   ```bash
-   # In worktree:
-   git branch baseline                          # save original
-   git reset --soft main                        # move HEAD to main, keep changes staged
-   git commit -m "original message"             # recommit as single commit
-   git diff baseline                            # verify identical tree content
-   # If diff is empty (identical):
-   git branch -d baseline
-   # In main repo:
-   git merge --ff-only feature/<name>           # now FF works
-   ```
-5. **If diff shows differences:** tell user there's an issue, ask to retest
-6. Tell user: "Done! Please `git pull` in the main repo"
-7. Clean up:
-   ```bash
-   git worktree remove ~/work/khanatime-<feature>
-   git branch -d feature/<name>
-   ```
-8. Verify all tasks are complete
+3. **If FF fails** ask user to help rebase
+4. Verify all tasks are complete
 
 Never merge to main until the user says "looks good" or approves the changes.
 

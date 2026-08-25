@@ -12,7 +12,7 @@ printf '\033[2J\033[H'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_DIR="$(git worktree  list --porcelain  | head -n 1 | cut -d' ' -f 2)"
-CERT_DIR="$MAIN_DIR/scripts/sslcerts"
+CERT_DIR="$MAIN_DIR/.sslcerts"
 WORK_BASE="$HOME/work"
 HOST="khanatime.test"
 PORT=8080
@@ -127,6 +127,7 @@ fi
 
 # Ensure SSL certs exist (mkcert — run `mise run bootstrap` first)
 if [ ! -f "$CERT_DIR/cert.pem" ] || [ ! -f "$CERT_DIR/key.pem" ]; then
+    cd $MAIN_DIR
     die "SSL certs not found at $CERT_DIR\n  Run: mise run bootstrap"
 fi
 

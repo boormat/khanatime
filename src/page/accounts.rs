@@ -255,34 +255,26 @@ fn view_homeservers(_model: crate::Model) -> View {
 fn view_signing_key(model: crate::Model) -> View {
     let sm = model.screens.accounts;
     let _ = sm.refresh.get();
-    let keys = crate::signing::DeviceKeys::load_from_storage();
-    let fp = keys.as_ref().and_then(|k| k.fingerprint().ok());
-    let pub_key_b64 = keys.as_ref().map(|k| k.ed25519_public_key.clone());
+    let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+    let fp = keys.fingerprint().expect("fingerprint failed");
+    let pub_key_b64 = keys.ed25519_public_key.clone();
     let registry = crate::signing::SigningKeyRegistry::load();
 
-    // Build fingerprint + export sub-view
-    let key_view = if let Some(fp) = fp {
-        let pk = pub_key_b64.unwrap_or_default();
-        view! {
-            p {
-                span(class="tag is-info is-medium") { (fp) }
-                span(class="ml-2 has-text-grey") { "device fingerprint" }
-            }
-            button(
-                class="button is-small is-link is-outlined mt-2",
-                title="Copy public key to clipboard",
-                on:click=move |_| {
-                    let nav = web_sys::window().unwrap().navigator().clipboard();
-                    let _ = nav.write_text(&pk);
-                },
-            ) {
-                span(class="icon is-small") { i(class="fa fa-copy") }
-                span { "Export Public Key" }
-            }
+    let key_view = view! {
+        p {
+            span(class="tag is-info is-medium") { (fp) }
+            span(class="ml-2 has-text-grey") { "device fingerprint" }
         }
-    } else {
-        view! {
-            p(class="has-text-grey") { "No signing key generated yet. It will be created on first use." }
+        button(
+            class="button is-small is-link is-outlined mt-2",
+            title="Copy public key to clipboard",
+            on:click=move |_| {
+                let nav = web_sys::window().unwrap().navigator().clipboard();
+                let _ = nav.write_text(&pub_key_b64);
+            },
+        ) {
+            span(class="icon is-small") { i(class="fa fa-copy") }
+            span { "Export Public Key" }
         }
     };
 
