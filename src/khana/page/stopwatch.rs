@@ -4,7 +4,7 @@ use crate::event::{
     elapsed_ds, pending_for_car, pending_starts, upsert_ktime, RunRecord, RUN_FINISH, RUN_START,
     RUN_STOP,
 };
-use crate::khana::page::{pad, penalty};
+use crate::khana::page::penalty;
 
 // Cooperative stopwatch: START sends a start event, STOP sends a stop event
 // and opens a confirm panel with auto-attached observations, CONFIRM sends a
@@ -435,9 +435,18 @@ pub fn view(model: crate::Model) -> View {
     view! {
         div {
             (view_action_buttons(model))
-            (view_car_chips(model))
-            (view_comment(model))
-            (view_manual_entry(model))
+            (move || {
+                let has_pending = sm.pending.with(|v| !v.is_empty());
+                if has_pending {
+                    view! {}
+                } else {
+                    view! {
+                        (view_car_chips(model))
+                        (view_comment(model))
+                        (view_manual_entry(model))
+                    }
+                }
+            })
             (view_pending_stack(model))
             (crate::khana::helpers::view_timing_log(model, sm.test.get()))
         }
@@ -448,8 +457,8 @@ pub fn view(model: crate::Model) -> View {
 fn view_action_buttons(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
     view! {
-        div(class="columns is-gapless mt-3 is-vcentered") {
-            div(class="column is-narrow mr-3") {
+        div(class="columns is-mobile is-vcentered is-gapless mt-3") {
+            div(class="column is-one-third") {
                 (move || {
                     let car = sm.car.get_clone();
                     let trimmed = car.trim().to_string();
@@ -463,20 +472,14 @@ fn view_action_buttons(model: crate::Model) -> View {
                     }
                     let test = sm.test.get();
                     let runs = model.khana.runs.get_clone();
-                    let (entry_name, entry_desc, entry_shared, entry_passenger, runs_total) =
+                    let (entry_name, runs_total) =
                         model.khana.event.with(|e| {
                             let stage = e.stages.iter().find(|s| s.num == test);
                             let total = stage.map(|s| s.runs_total).unwrap_or(1);
                             let entry = e.entries.iter().find(|en| en.car == trimmed);
                             match entry {
-                                Some(en) => (
-                                    en.name.clone(),
-                                    en.description.clone(),
-                                    en.shared.clone(),
-                                    en.passenger.clone(),
-                                    total,
-                                ),
-                                None => (String::new(), None, None, None, total),
+                                Some(en) => (en.name.clone(), total),
+                                None => (String::new(), total),
                             }
                         });
                     let finished = runs.iter()
@@ -485,41 +488,14 @@ fn view_action_buttons(model: crate::Model) -> View {
                     let remaining = runs_total.saturating_sub(finished);
                     let run_number = finished + 1;
                     let at_max = remaining == 0;
-                    let desc_text = entry_desc.unwrap_or_default();
-                    let passenger_text = entry_passenger.unwrap_or_default();
-                    let shared_text = entry_shared.unwrap_or_default();
-                    let show_desc = !desc_text.is_empty();
-                    let show_passenger = !passenger_text.is_empty();
-                    let show_shared = !shared_text.is_empty();
                     let run_label = format!("{}/{}", run_number, runs_total);
                     view! {
                         div(
                             class="notification is-primary is-light is-clickable kt-selected-car",
                             on:click=move |_| sm.car.set(String::new()),
                         ) {
-                            div(class="has-text-weight-semibold is-size-6") { (format!("#{}", trimmed)) }
+                            div(class="has-text-weight-semibold is-size-7") { (format!("#{}", trimmed)) }
                             div(class="is-size-7") { (entry_name) }
-                            (if show_desc {
-                                view! { div(class="has-text-grey is-size-7") { (desc_text) } }
-                            } else {
-                                view! {}
-                            })
-                            (if show_passenger {
-                                view! { div(class="is-size-7") {
-                                    span(class="icon is-small mr-1") { i(class="fa fa-users") }
-                                    (passenger_text)
-                                } }
-                            } else {
-                                view! {}
-                            })
-                            (if show_shared {
-                                view! { div(class="is-size-7") {
-                                    span(class="icon is-small mr-1") { i(class="fa fa-users") }
-                                    (shared_text)
-                                } }
-                            } else {
-                                view! {}
-                            })
                             div(class="is-size-7 mt-1") {
                                 (if at_max {
                                     view! { span(class="icon is-small has-text-warning mr-1") { i(class="fa fa-triangle-exclamation") } }
@@ -532,7 +508,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                     }
                 })
             }
-            div(class="column") {
+            div(class="column is-one-third") {
                 (move || {
                     let car = sm.car.get_clone();
                     let has = pending_for_car(
@@ -540,24 +516,34 @@ fn view_action_buttons(model: crate::Model) -> View {
                         sm.test.get(),
                         car.trim(),
                     );
-                    let start_cls = if has { "button is-light" } else { "button is-success" };
-                    let stop_cls = if has { "button is-danger" } else { "button is-light" };
+                    let start_cls = if has { "button is-light is-small is-fullwidth" } else { "button is-success is-small is-fullwidth" };
                     view! {
-                        div(class="buttons") {
-                            button(
-                                class=start_cls,
-                                on:click=move |_| update(model, Msg::Start),
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-flag-checkered") }
-                                span { " Start" }
-                            }
-                            button(
-                                class=stop_cls,
-                                on:click=move |_| update(model, Msg::Stop),
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-flag-checkered") }
-                                span { " Stop" }
-                            }
+                        button(
+                            class=start_cls,
+                            on:click=move |_| update(model, Msg::Start),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-flag-checkered") }
+                            span { " Start" }
+                        }
+                    }
+                })
+            }
+            div(class="column is-one-third") {
+                (move || {
+                    let car = sm.car.get_clone();
+                    let has = pending_for_car(
+                        &model.khana.runs.get_clone(),
+                        sm.test.get(),
+                        car.trim(),
+                    );
+                    let stop_cls = if has { "button is-danger is-small is-fullwidth" } else { "button is-light is-small is-fullwidth" };
+                    view! {
+                        button(
+                            class=stop_cls,
+                            on:click=move |_| update(model, Msg::Stop),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-flag-checkered") }
+                            span { " Stop" }
                         }
                     }
                 })
@@ -566,8 +552,9 @@ fn view_action_buttons(model: crate::Model) -> View {
     }
 }
 
-/// Compact car-number chips grouped by runs remaining.
+/// Compact car-number chips grouped by runs remaining, using car_tag style.
 fn view_car_chips(model: crate::Model) -> View {
+    use crate::event::cmp_car_number;
     let sm = model.screens.stopwatch;
     view! {
         div(class="box") {
@@ -575,7 +562,67 @@ fn view_car_chips(model: crate::Model) -> View {
                 let entries = model.khana.event.with(|e| e.entries.clone());
                 let test = sm.test.get();
                 let (runs_remaining, _unknown_remaining) = compute_runs_remaining(model, test);
-                pad::car_chips_compact(entries, sm.car, &runs_remaining)
+
+                struct CarInfo { car: String, remaining: u8 }
+                let mut cars: Vec<CarInfo> = entries
+                    .iter()
+                    .filter(|e| !e.car.is_empty())
+                    .map(|e| CarInfo {
+                        car: e.car.clone(),
+                        remaining: *runs_remaining.get(&e.car).unwrap_or(&0),
+                    })
+                    .collect();
+                cars.sort_by(|a, b| {
+                    b.remaining.cmp(&a.remaining)
+                        .then_with(|| cmp_car_number(&a.car, &b.car))
+                });
+
+                let mut groups: std::collections::HashMap<u8, Vec<&CarInfo>> = std::collections::HashMap::new();
+                for c in &cars {
+                    groups.entry(c.remaining).or_default().push(c);
+                }
+                let mut group_keys: Vec<u8> = groups.keys().copied().collect();
+                group_keys.sort_by(|a, b| b.cmp(a));
+
+                let mut rows: Vec<View> = Vec::new();
+                for remaining in group_keys {
+                    let car_list = groups.remove(&remaining).unwrap();
+                    let badge_label = format!("{remaining}r");
+                    let car_views: Vec<View> = car_list.iter().map(|ci| {
+                        let car_set = ci.car.clone();
+                        let car_display = ci.car.clone();
+                        view! {
+                            button(
+                                class="button is-light is-small",
+                                on:click=move |_| sm.car.set(car_set.clone()),
+                            ) {
+                                (crate::view::car_tag(&car_display))
+                            }
+                        }
+                    }).collect();
+                    rows.push(view! {
+                        div(class="field is-grouped is-grouped-multiline is-align-items-center mb-1") {
+                            span(class="tag is-small is-link is-light kt-runs-separator") { (badge_label) }
+                            (car_views)
+                        }
+                    });
+                }
+
+                // Unknown chip at the end.
+                rows.push(view! {
+                    div(class="field is-grouped is-grouped-multiline is-align-items-center mb-1") {
+                        span(class="tag is-small is-light kt-runs-separator") { "TBA" }
+                        button(
+                            class="button is-warning is-small",
+                            on:click=move |_| sm.car.set("?".to_string()),
+                        ) {
+                            span(class="kt-car-tag has-text-weight-semibold") { "?" }
+                        }
+                    }
+                });
+
+                let view: View = rows.into();
+                view
             })
         }
     }
@@ -653,36 +700,123 @@ fn view_pending_one(model: crate::Model, idx: usize) -> View {
                     Some(p) => p,
                     None => return view! {},
                 };
-                let elapsed_str = format!("{:.2}s", p.time_ds as f32 / 10.0);
                 let car = p.car.clone();
                 let time_ds = p.time_ds;
-                let attached_events = view_attached_events(model, idx);
-                let penalty_view = penalty::view(model, sm.penalty, time_ds);
-                view! {
-                    h3(class="title is-6") { "Confirm finish" }
-                    p(class="notification is-primary is-light kt-entrant-line") {
-                        (crate::view::car_tag(&car))
-                        span { " \u{2014} " (elapsed_str) }
+                let raw_str = format!("{:.1}s", time_ds as f32 / 10.0);
+                let net = penalty::net_ds(time_ds, sm.penalty.flags.get(), sm.penalty.garage.get());
+                let net_str = format!("{:.1}s", net as f32 / 10.0);
+                let has_penalty = net > time_ds as u32;
+                let status = sm.penalty.status.get_clone();
+                let is_dns = status == "dnf" || status == "fts" || status == "wd";
+                let time_display = if is_dns {
+                    status.to_uppercase()
+                } else if has_penalty {
+                    format!("{} → {}", raw_str, net_str)
+                } else {
+                    raw_str
+                };
+                let (entry_name, entry_desc) = model.khana.event.with(|e| {
+                    let entry = e.entries.iter().find(|en| en.car == car);
+                    match entry {
+                        Some(en) => (en.name.clone(), en.description.clone()),
+                        None => (String::new(), None),
                     }
-                    (attached_events)
-                    (penalty_view)
-                    div(class="field is-grouped") {
-                        div(class="control is-expanded") {
+                });
+                let desc_text = entry_desc.unwrap_or_default();
+                let show_desc = !desc_text.is_empty();
+                view! {
+                    // Car + name + time → net
+                    div(class="level is-mobile mb-1") {
+                        div(class="level-left") {
+                            (crate::view::car_tag(&car))
+                            span(class="has-text-weight-semibold ml-2") { (entry_name) }
+                            span(class="has-text-grey ml-2 is-size-7") { (time_display) }
+                        }
+                    }
+                    (if show_desc {
+                        let t = desc_text;
+                        view! { div(class="has-text-grey is-size-7 mb-1 ml-4") { (t) } }
+                    } else {
+                        view! {}
+                    })
+                    // Status chips + Garage + Flags
+                    (move || {
+                        let status = sm.penalty.status.get_clone();
+                        let on = sm.penalty.garage.get();
+                        let flags = sm.penalty.flags.get();
+                        let chips: Vec<View> = penalty::STATUS_CHIPS.iter().map(|(val, label, cls)| {
+                            let val = *val;
+                            let label = *label;
+                            let cls = *cls;
+                            let active = status == val;
+                            view! {
+                                button(
+                                    class=format!("button is-small {}", if active { cls } else { "is-light" }),
+                                    on:click=move |_| {
+                                        if active {
+                                            sm.penalty.status.set("clean".to_string());
+                                        } else {
+                                            sm.penalty.status.set(val.to_string());
+                                        }
+                                    },
+                                ) { (label) }
+                            }
+                        }).collect();
+                        let chips_view: View = chips.into();
+                        view! {
+                            div(class="level is-mobile mb-2") {
+                                div(class="level-left") {
+                                    (chips_view)
+                                    button(
+                                        class=format!("button is-small ml-2 {}", if on { "is-warning" } else { "is-light" }),
+                                        on:click=move |_| sm.penalty.garage.set(!sm.penalty.garage.get()),
+                                    ) {
+                                        span(class="icon is-small") { i(class="fa fa-warehouse") }
+                                    }
+                                    div(class="buttons has-addons ml-2") {
+                                        button(
+                                            class="button is-small",
+                                            disabled=flags == 0,
+                                            on:click=move |_| sm.penalty.flags.update(|f| *f = f.saturating_sub(1)),
+                                        ) { "\u{2212}" }
+                                        span(class="button is-small is-static") {
+                                            span(class="icon is-small has-text-warning") { i(class="fa fa-flag") }
+                                            span { (flags) }
+                                        }
+                                        button(
+                                            class="button is-small",
+                                            disabled=flags >= 9,
+                                            on:click=move |_| sm.penalty.flags.update(|f| *f += 1),
+                                        ) { "+" }
+                                    }
+                                }
+                            }
+                        }
+                    })
+                    // Comment
+                    div(class="field mb-2") {
+                        input(class="input is-small", r#type="text", placeholder="Comment (required for #?)", bind:value=sm.comment)
+                    }
+                    // CONFIRM / Cancel
+                    div(class="field is-grouped is-grouped-centered") {
+                        div(class="control") {
                             button(
-                                class="button is-success is-large is-fullwidth",
+                                class="button is-success is-small",
                                 on:click=move |_| update(model, Msg::Commit(idx)),
                             ) {
-                                span(class="icon") { i(class="fa fa-flag-checkered") }
-                                span { "CONFIRM" }
+                                span(class="icon is-small") { i(class="fa fa-flag-checkered") }
+                                span { " CONFIRM" }
                             }
                         }
                         div(class="control") {
                             button(
-                                class="button is-light is-large",
+                                class="button is-light is-small",
                                 on:click=move |_| update(model, Msg::Cancel(idx)),
                             ) { "Cancel" }
                         }
                     }
+                    // Attached observations (bottom)
+                    (view_attached_events(model, idx))
                 }
             })
         }
@@ -692,10 +826,9 @@ fn view_pending_one(model: crate::Model, idx: usize) -> View {
 fn view_attached_events(model: crate::Model, idx: usize) -> View {
     let sm = model.screens.stopwatch;
     view! {
-        div(class="mb-3") {
-            p(class="has-text-weight-semibold is-size-7 mb-1") { "Attached observations:" }
+        div(class="mt-2") {
             (move || {
-                let _now = model.tick.get(); // subscribe to tick for live "Xs ago"
+                let _now = model.tick.get();
                 let now = js_sys::Date::now() as i64;
                 let events = sm.pending.with(|v| {
                     v.get(idx)
@@ -703,7 +836,7 @@ fn view_attached_events(model: crate::Model, idx: usize) -> View {
                         .unwrap_or_default()
                 });
                 if events.is_empty() {
-                    return view! { p(class="help") { "No matching start/stop events found." } };
+                    return view! {};
                 }
                 let views: Vec<View> = events
                     .iter()
@@ -719,18 +852,17 @@ fn view_attached_events(model: crate::Model, idx: usize) -> View {
                         let ts = crate::khana::helpers::fmt_ts(a.ts, now);
                         let strike = if is_attached { "" } else { "has-text-grey-light has-text-decoration-line-through" };
                         view! {
-                            div(class="level is-mobile mb-1") {
+                            div(class="level is-mobile mb-0") {
                                 div(class="level-left") {
-                                    span(class=strike) {
+                                    span(class="is-size-7") {
                                         span(class=icon_class) { (icon_char) }
-                                        span { (format!(" #{} — {}", car, ts)) }
+                                        span(class=strike) { (format!(" {} {}", car, ts)) }
                                     }
                                 }
                                 div(class="level-right") {
                                     button(
-                                        class=format!("button is-small {}", if is_attached { "is-light is-danger" } else { "is-light" }),
+                                        class=format!("button is-small is-small {}", if is_attached { "is-light is-danger" } else { "is-light" }),
                                         on:click=move |_| {
-                                            // Toggle via message
                                             sycamore::reactive::untrack(move || {
                                                 update(model, Msg::ToggleAttach(idx, i));
                                             });

@@ -9,7 +9,7 @@ use crate::event::{KTime, KTimeTime};
 pub struct PenaltyModel {
     pub flags: Signal<u8>,
     pub garage: Signal<bool>,
-    pub status: Signal<String>, // "clean" | "garage" | "dnf" | "fts" | "wd"
+    pub status: Signal<String>, // "clean" | "dnf" | "fts" | "wd"
 }
 
 pub fn init() -> PenaltyModel {
@@ -45,12 +45,10 @@ pub fn to_ktime(model: PenaltyModel, time_ds: u16) -> KTime {
     }
 }
 
-const STATUS_CHIPS: [(&str, &str, &str); 5] = [
-    ("clean", "Clean", "is-success"),
-    ("garage", "Garage", "is-warning"),
+pub const STATUS_CHIPS: [(&str, &str, &str); 3] = [
     ("dnf", "DNF", "is-danger"),
-    ("fts", "FTS", "is-danger is-light"),
-    ("wd", "WD", "is-danger is-light"),
+    ("fts", "FTS", "is-danger"),
+    ("wd", "WD", "is-danger"),
 ];
 
 pub fn view(app: crate::Model, p: PenaltyModel, time_ds: u16) -> View {
@@ -82,7 +80,13 @@ pub fn view(app: crate::Model, p: PenaltyModel, time_ds: u16) -> View {
                                         "button is-small {}",
                                         if active { cls } else { "is-light" }
                                     ),
-                                    on:click=move |_| p.status.set(val.to_string()),
+                                    on:click=move |_| {
+                                        if active {
+                                            p.status.set("clean".to_string());
+                                        } else {
+                                            p.status.set(val.to_string());
+                                        }
+                                    },
                                 ) {
                                     (label)
                                 }

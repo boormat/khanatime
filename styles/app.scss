@@ -143,7 +143,9 @@
 // Selected car chip in stopwatch — vertical flex for detail fields.
 .kt-selected-car {
   padding: 0.5rem 0.75rem;
-  min-width: 8rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // Tag badge separator between car-chip groups.
