@@ -20,7 +20,8 @@ pub enum Msg {
     Start,
     Stop,
     /// Toggle attachment of an event in the pending confirm panel.
-    ToggleAttach(usize),
+    /// (pending_idx, attached_idx)
+    ToggleAttach(usize, usize),
     Commit(usize),
     Cancel(usize),
     /// Manual time entry: car + time → opens confirm panel.
@@ -103,7 +104,9 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::Test(t) => model.screens.stopwatch.test.set(t),
         Msg::Start => start_car(model),
         Msg::Stop => stop_car(model),
-        Msg::ToggleAttach(idx) => toggle_attach(model, idx),
+        Msg::ToggleAttach(pending_idx, attached_idx) => {
+            toggle_attach(model, pending_idx, attached_idx)
+        }
         Msg::Commit(idx) => commit(model, idx),
         Msg::Cancel(idx) => cancel(model, idx),
         Msg::ManualTime => manual_time(model),
@@ -248,11 +251,11 @@ fn stop_car(model: crate::Model) {
     sm.car.set(String::new());
 }
 
-fn toggle_attach(model: crate::Model, idx: usize) {
+fn toggle_attach(model: crate::Model, pending_idx: usize, attached_idx: usize) {
     let sm = model.screens.stopwatch;
     sm.pending.update(|v| {
-        if let Some(p) = v.get_mut(idx) {
-            if let Some(a) = p.attached.get_mut(idx) {
+        if let Some(p) = v.get_mut(pending_idx) {
+            if let Some(a) = p.attached.get_mut(attached_idx) {
                 a.attached = !a.attached;
             }
         }
@@ -388,11 +391,6 @@ fn non_empty(s: String) -> Option<String> {
     } else {
         Some(s)
     }
-}
-
-fn fmt_ts(ts: i64) -> String {
-    let d = js_sys::Date::new(&js_sys::Number::from(ts as f64).into());
-    d.to_string().into()
 }
 
 /// Compute runs remaining per car and for the unknown "?" car.
@@ -658,7 +656,7 @@ fn view_pending_one(model: crate::Model, idx: usize) -> View {
                 let elapsed_str = format!("{:.2}s", p.time_ds as f32 / 10.0);
                 let car = p.car.clone();
                 let time_ds = p.time_ds;
-                let attached_events = view_attached_events(model, idx, &p);
+                let attached_events = view_attached_events(model, idx);
                 let penalty_view = penalty::view(model, sm.penalty, time_ds);
                 view! {
                     h3(class="title is-6") { "Confirm finish" }
@@ -691,7 +689,7 @@ fn view_pending_one(model: crate::Model, idx: usize) -> View {
     }
 }
 
-fn view_attached_events(model: crate::Model, idx: usize, _p: &PendingFinish) -> View {
+fn view_attached_events(model: crate::Model, idx: usize) -> View {
     let sm = model.screens.stopwatch;
     view! {
         div(class="mb-3") {
@@ -716,7 +714,7 @@ fn view_attached_events(model: crate::Model, idx: usize, _p: &PendingFinish) -> 
                         };
                         let is_attached = a.attached;
                         let car = a.car.clone();
-                        let ts = fmt_ts(a.ts);
+                        let ts = crate::khana::helpers::fmt_log_ts(a.ts);
                         let strike = if is_attached { "" } else { "has-text-grey-light has-text-decoration-line-through" };
                         view! {
                             div(class="level is-mobile mb-1") {
@@ -732,7 +730,7 @@ fn view_attached_events(model: crate::Model, idx: usize, _p: &PendingFinish) -> 
                                         on:click=move |_| {
                                             // Toggle via message
                                             sycamore::reactive::untrack(move || {
-                                                update(model, Msg::ToggleAttach(i));
+                                                update(model, Msg::ToggleAttach(idx, i));
                                             });
                                         },
                                     ) {
