@@ -4,7 +4,10 @@ pub fn view() -> View {
     view! {
         section(class="hero is-medium ml-6") {
             div(class="hero-body") {
-                h1(class="title is-size-1") { "Khana Time Tracker" }
+                h1(class="title is-size-1") {
+                    "Khana Time Tracker"
+                    span(class="tag is-info is-medium ml-3") { (format!("v{}", khanatime::APP_VERSION)) }
+                }
                 span {
                     r"
                     For the moment this works best on a PC, as it is designed

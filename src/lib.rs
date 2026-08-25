@@ -1,5 +1,7 @@
 pub mod signing;
 
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Vec of str to strings.
 // let a= stringify(["a", "b", "c"]);
 pub fn stringify<const N: usize>(a: [&str; N]) -> [String; N] {
