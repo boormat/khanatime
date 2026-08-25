@@ -8,6 +8,9 @@
 //! [`SigningKeyRegistry`] — TOFU trust store for all seen keys.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+
+/// Body prefix for signed hello messages.
+pub const HELLO_PREFIX: &str = "khanatime_hello:";
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
@@ -413,6 +416,63 @@ impl std::fmt::Display for SigningError {
 impl std::error::Error for SigningError {}
 
 // ---------------------------------------------------------------------------
+// Hello message (key → Matrix ID association)
+// ---------------------------------------------------------------------------
+
+/// Signed hello payload: associates a device signing key with a Matrix user ID.
+/// Sent to the event room on joining; receivers verify the signature and check
+/// the Matrix `sender` field matches `official_id` to prevent forwarded-message
+/// spoofing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelloPayload {
+    /// The Matrix user ID this device claims to be.
+    pub official_id: String,
+    /// Base64 ed25519 public key of the device.
+    pub signing_key: String,
+    /// Timestamp (ms since epoch).
+    pub ts: i64,
+    /// Signature over the canonical JSON (stripped of `signature` + `signing_key`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl HelloPayload {
+    /// Create a new unsigned hello from the device keys.
+    pub fn new(official_id: String, device_keys: &DeviceKeys) -> Self {
+        Self {
+            official_id,
+            signing_key: device_keys.ed25519_public_key.clone(),
+            ts: now_ms(),
+            signature: None,
+        }
+    }
+
+    /// Sign the payload and return the full body string (`khanatime_hello:{json}`).
+    pub fn sign(mut self, device_keys: &DeviceKeys) -> Result<String, SigningError> {
+        let (sig, _key) = sign_payload(&self, device_keys)?;
+        self.signature = Some(sig);
+        Ok(format!(
+            "{}{}",
+            HELLO_PREFIX,
+            serde_json::to_string(&self).unwrap()
+        ))
+    }
+
+    /// Parse a hello body and verify its signature.
+    /// Returns `None` if the prefix is wrong or JSON is invalid.
+    /// The bool indicates whether the signature is valid.
+    pub fn from_body(body: &str) -> Option<(Self, bool)> {
+        let json = body.strip_prefix(HELLO_PREFIX)?;
+        let mut payload: Self = serde_json::from_str(json).ok()?;
+        let sig = payload.signature.as_deref()?;
+        let valid = verify_payload(&payload, sig, &payload.signing_key).is_ok();
+        // Strip signature before returning so the caller sees the clean payload.
+        payload.signature = Some(sig.to_owned());
+        Some((payload, valid))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -592,5 +652,51 @@ mod tests {
             reg.find_key("key1").unwrap().status,
             KeyTrustStatus::Verified
         );
+    }
+
+    // -- HelloPayload tests --
+
+    #[test]
+    fn hello_roundtrip_sign_and_verify() {
+        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let body = HelloPayload::new("@alice:matrix.org".into(), &keys)
+            .sign(&keys)
+            .unwrap();
+        assert!(body.starts_with("khanatime_hello:"));
+        let (parsed, valid) = HelloPayload::from_body(&body).unwrap();
+        assert!(valid);
+        assert_eq!(parsed.official_id, "@alice:matrix.org");
+        assert_eq!(parsed.signing_key, keys.ed25519_public_key);
+    }
+
+    #[test]
+    fn hello_rejects_wrong_key() {
+        let keys1 = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys2 = DeviceKeys::generate("bob".into(), "D2".into());
+        // Sign with keys1, but the payload claims to be Bob with Bob's key.
+        let mut hello = HelloPayload::new("@bob:matrix.org".into(), &keys2);
+        let (sig, _) = sign_payload(&hello, &keys1).unwrap();
+        hello.signature = Some(sig);
+        let body = format!("{}{}", HELLO_PREFIX, serde_json::to_string(&hello).unwrap());
+        let (_, valid) = HelloPayload::from_body(&body).unwrap();
+        assert!(!valid);
+    }
+
+    #[test]
+    fn hello_rejects_tampered_id() {
+        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let body = HelloPayload::new("@alice:matrix.org".into(), &keys)
+            .sign(&keys)
+            .unwrap();
+        // Tamper with the official_id in the body.
+        let tampered = body.replace("@alice:matrix.org", "@eve:matrix.org");
+        let result = HelloPayload::from_body(&tampered);
+        assert!(result.is_none() || !result.unwrap().1);
+    }
+
+    #[test]
+    fn hello_rejects_bad_prefix() {
+        let result = HelloPayload::from_body("not_a_hello:...");
+        assert!(result.is_none());
     }
 }

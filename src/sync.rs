@@ -1126,6 +1126,29 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         return;
     }
 
+    // Signed hello: associates a device signing key with a Matrix user ID.
+    // Anti-forwarding: Matrix `sender` must match the claimed `official_id`.
+    if msg
+        .body
+        .starts_with(crate::timing_event::TimingEvent::HELLO_PREFIX)
+    {
+        if let Some((hello, valid)) = crate::signing::HelloPayload::from_body(&msg.body) {
+            if msg.sender != hello.official_id {
+                // Forwarded or spoofed hello — Matrix sender doesn't match.
+                return;
+            }
+            let mut reg = crate::signing::SigningKeyRegistry::load();
+            if valid {
+                reg.record_key(&hello.signing_key, Some(&hello.official_id));
+            } else {
+                // Invalid signature — record key but don't trust the association.
+                reg.record_key(&hello.signing_key, None);
+            }
+            let _ = reg.save();
+        }
+        return; // hello is log-only, no state changes
+    }
+
     let Some(te) = msg.timing else {
         return; // plain chat / results-snapshot messages: log-only
     };

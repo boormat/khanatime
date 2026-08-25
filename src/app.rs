@@ -336,6 +336,8 @@ pub enum Msg {
         description: String,
         phone: Option<String>,
     },
+    /// Post a signed hello message to the current event's room.
+    SendHello,
 }
 
 impl Model {
@@ -693,6 +695,30 @@ pub fn update(model: Model, msg: Msg) {
             }
             #[cfg(not(target_arch = "wasm32"))]
             let _ = (user_id, name, description, phone);
+        }
+        Msg::SendHello => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let Some(room) = crate::services::matrix::room() else {
+                    return;
+                };
+                let Some(keys) = crate::signing::DeviceKeys::load_from_storage() else {
+                    return;
+                };
+                let official_id = model.sync.identity.get_clone();
+                if official_id.is_empty() {
+                    return;
+                }
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Err(e) =
+                        crate::services::matrix::send_hello(&room, &keys, &official_id).await
+                    {
+                        model.sync.conn.set(crate::app::ConnState::Error(e));
+                    } else {
+                        model.screens.accounts.feedback.set("Hello sent.".into());
+                    }
+                });
+            }
         }
     }
 }

@@ -1372,6 +1372,20 @@ pub async fn send_result(
     send_chat(room, &body).await.map(|_| ())
 }
 
+/// Post a signed hello message to the room, associating the device signing
+/// key with the given Matrix user ID.  Receivers verify the signature and
+/// check `msg.sender == official_id` to prevent forwarded-message spoofing.
+pub async fn send_hello(
+    room: &Room,
+    device_keys: &crate::signing::DeviceKeys,
+    official_id: &str,
+) -> Result<(), String> {
+    let body = crate::signing::HelloPayload::new(official_id.to_string(), device_keys)
+        .sign(device_keys)
+        .map_err(|e| e.to_string())?;
+    send_chat(room, &body).await.map(|_| ())
+}
+
 /// Replay the full room history oldest→newest into `on_event`, so a joining
 /// device merges every timing message stored on the server.  Idempotent: the
 /// merge sink dedupes runs and last-writer-wins scores/setup.

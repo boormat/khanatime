@@ -441,6 +441,20 @@ fn view_action_buttons(model: crate::Model) -> View {
                 span(class="icon") { i(class="fa fa-qrcode") }
                 span { "Scan QR" }
             }
+            (move || {
+                let has_room = model.sync.room.with(|r| r.is_some());
+                let has_id = model.sync.identity.with(|u| !u.is_empty());
+                view! {
+                    button(
+                        class="button is-light",
+                        disabled=!has_room || !has_id,
+                        on:click=move |_| crate::update(model, crate::Msg::SendHello),
+                    ) {
+                        span(class="icon") { i(class="fa fa-bullhorn") }
+                        span { "Send Hello" }
+                    }
+                }
+            })
         }
     }
 }

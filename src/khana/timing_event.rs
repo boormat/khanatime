@@ -58,6 +58,9 @@ impl TimingEvent {
     /// Body prefix of a results-snapshot message (informational / audit only).
     pub const RESULT_PREFIX: &'static str = "khanatime_result:";
 
+    /// Body prefix of a signed hello message (associates signing key with Matrix ID).
+    pub const HELLO_PREFIX: &'static str = "khanatime_hello:";
+
     pub fn new(r#type: &str, event_id: &str, test: u8, car: &str) -> Self {
         Self {
             r#type: r#type.to_string(),
