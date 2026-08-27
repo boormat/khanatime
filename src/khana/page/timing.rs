@@ -23,9 +23,8 @@ pub struct Model {
 }
 
 pub fn init() -> Model {
-    Model {
-        active_stage: create_signal(None),
-    }
+    let active_stage = create_signal(load_active_stage());
+    Model { active_stage }
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
@@ -33,13 +32,37 @@ pub fn update(model: crate::Model, msg: Msg) {
     match msg {
         Msg::EnterStage(n) => {
             tm.active_stage.set(Some(n));
+            save_active_stage(n);
             // Also set the stopwatch test signal so sub-views pick it up
             model.screens.stopwatch.test.set(n);
         }
         Msg::LeaveStage => {
             tm.active_stage.set(None);
+            clear_active_stage();
         }
     }
+}
+
+fn save_active_stage(n: u8) {
+    if let Some(st) = storage() {
+        let _ = st.set_item("kt_active_stage", &n.to_string());
+    }
+}
+
+fn load_active_stage() -> Option<u8> {
+    storage()
+        .and_then(|st| st.get_item("kt_active_stage").ok().flatten())
+        .and_then(|s| s.parse().ok())
+}
+
+fn clear_active_stage() {
+    if let Some(st) = storage() {
+        let _ = st.remove_item("kt_active_stage");
+    }
+}
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
 }
 
 pub fn view(model: crate::Model) -> View {

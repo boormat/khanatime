@@ -3,7 +3,7 @@ use sycamore::prelude::*;
 use crate::event::{KTime, KTimeTime};
 
 // Finish penalty entry: status chips + flag counter (+5s each) + garage toggle,
-// with a live net-time preview. Shared by the Finish screen.
+// with a live net-time preview. Shared by Finish screen and stopwatch.
 
 #[derive(Clone, Copy)]
 pub struct PenaltyModel {
@@ -120,19 +120,16 @@ pub fn view(app: crate::Model, p: PenaltyModel, time_ds: u16) -> View {
                     ) { "+" }
                 }
             }
-            div(class="field") {
+            div(class="field is-grouped is-grouped-centered") {
                 (move || {
                     let on = p.garage.get();
                     view! {
                         button(
-                            class=format!("button is-fullwidth {}", if on { "is-warning" } else { "is-light" }),
+                            class=format!("button is-small {}", if on { "is-warning" } else { "is-light" }),
                             on:click=move |_| p.garage.set(!p.garage.get()),
                         ) {
-                            (if on {
-                                "Garage penalty (+5s) ON"
-                            } else {
-                                "Garage penalty (+5s) OFF"
-                            })
+                            span(class="icon is-small") { i(class="fa fa-warehouse") }
+                            span { " Garage (+5s)" }
                         }
                     }
                 })

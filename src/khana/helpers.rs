@@ -143,6 +143,20 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) 
     crate::update(model, crate::Msg::Reload);
 }
 
+/// Return true if the selected car is "?" and the comment is empty, setting
+/// feedback when so.  Shared by stopwatch, finish, and start screens.
+pub fn check_unknown_comment(
+    car: &str,
+    comment: &str,
+    feedback: &sycamore::prelude::Signal<Option<String>>,
+) -> bool {
+    if car.trim() == "?" && comment.trim().is_empty() {
+        feedback.set(Some("Comment is required for unknown cars".to_string()));
+        return true;
+    }
+    false
+}
+
 /// Shared timing log: all starts and finishes for a test, newest first, with
 /// void buttons.  Used by all timing screens.
 pub fn view_timing_log(model: crate::Model, test: u8) -> View {
@@ -226,11 +240,10 @@ pub fn fmt_ts(ts: i64, now: i64) -> String {
         d.get_minutes(),
         d.get_seconds()
     );
-    let age_ms = now.saturating_sub(ts);
-    if age_ms < 0 {
+    if ts > now {
         return time;
     }
-    let age_s = age_ms / 1000;
+    let age_s = (now.saturating_sub(ts)) / 1000;
     if age_s < 60 {
         format!("{} ({}s ago)", time, age_s)
     } else if age_s < 3600 {

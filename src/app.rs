@@ -426,6 +426,12 @@ impl Model {
                 entry_app: crate::entry_app::init(),
             },
         };
+        // Restore stopwatch test from persisted timing active_stage
+        if let Some(n) = m.screens.timing.active_stage.get() {
+            m.screens.stopwatch.test.set(n);
+        }
+        // Restore stopwatch session (car selection + uncommitted stop → pending)
+        crate::khana::page::stopwatch::restore_session(m);
         refresh_feed(m);
         m
     }

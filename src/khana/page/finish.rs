@@ -90,9 +90,7 @@ fn do_finish(model: crate::Model) {
         sm.feedback.set(Some("Pick a car number".to_string()));
         return;
     }
-    if car == "?" && sm.comment.get_clone().trim().is_empty() {
-        sm.feedback
-            .set(Some("Comment is required for unknown cars".to_string()));
+    if crate::khana::helpers::check_unknown_comment(&car, &sm.comment.get_clone(), &sm.feedback) {
         return;
     }
     let now = js_sys::Date::now() as i64;
