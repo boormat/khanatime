@@ -107,7 +107,7 @@
 **See also:** `docs/plan/layout-navigation.md` — this is essentially the Stopwatch screen rework already planned.
 
 ### ~~F2. Rename #stage to #timekeeper~~ ✅ DONE
-**File:** `src/khana/page/stage.rs`
+**File:** `src/khana/page/timekeeper.rs`
 **Severity:** Medium
 **Detail:** The manual timing page (`#stage`) should be renamed to `#timekeeper`. It needs:
 - A way to view/edit/approve timing messages/events

@@ -34,7 +34,7 @@ format may change freely.
   (`pad::test_chips`):
   - `page/start.rs` — start control (flag out, START, DNS).
   - `page/finish.rs` — finish control (pending starts, time entry, penalties).
-  - `page/stage.rs` — command-line manual entry (`parse_command`/`TimeCmd`) +
+  - `page/timekeeper.rs` — command-line manual entry (`parse_command`/`TimeCmd`) +
     the Publish box.
 - Home dashboard already has an "Event status" box (`home.rs`): `entry_counts`
   (`home.rs:217`) and a per-stage `stage_progress` table (`home.rs:246`,
@@ -62,7 +62,7 @@ Entries · Events (picker + storage) · Help · KhanaRules · About
 | Chat | top | `#chat` |
 | **Status** (new, COC) | burger | `#status` |
 | Event config (`page/event.rs`) | burger | `#event` |
-| Manual timing entry (`page/stage.rs`) | burger | `#stage` |
+| Manual timing entry (`page/timekeeper.rs`) | burger | `#timekeeper` |
 | Entries | burger | `#entries` |
 | Events hub + storage | burger | `#events` |
 | Help | burger | `#help` |
@@ -144,7 +144,7 @@ Read-only overview (close-stage action lives on Event config, not here):
 
 ## Smaller moves
 
-- `page/stage.rs` Publish box → Event config (`page/event.rs`); stage.rs stays
+- `page/timekeeper.rs` Publish box → Event config (`page/event.rs`); timekeeper.rs stays
   as the burger "Manual timing entry".
 - `page/events.rs` `view_saved` rows gain "Remove from device"
   (`log::remove_event_log`) + a demo reset control (event storage management).

@@ -40,18 +40,27 @@
 
 | Area | State |
 |------|-------|
-| Pages | Home, Event, Stage, Results, Help, KhanaRules (navbar in `main.rs`) |
-| Timer (Stage) | Command-line text entry (`parse_command`/`parse_car`); manual time + flags + garage |
-| Results | `results.rs` computes scores from `ScoreData` (stage × car, `KTimeTime.time_ds` deciseconds) |
+| Pages | Home, Events, Event, Timing, Stopwatch, Timekeeper, Results, Chat, Accounts, Help, KhanaRules |
+| Timer | Cooperative stopwatch (auto-attached observations, session persistence) + command-line timekeeper |
+| Results | `results.rs` computes scores from `RunRecord` (start/finish pairing, elapsed, penalties) |
 | Event | `event.rs`: `EventInfo{name, stages_count, classes, entries}`; entries = car/name/vehicle/classes |
-| Storage | localStorage via `web_sys::Storage` |
-| Matrix | `matrix-sdk` 0.18 (`js`, `indexeddb`) dependency added; not wired up yet |
+| Storage | localStorage for event data; sessionStorage for stopwatch UI state (car, comment, pending finish) |
+| Matrix | `matrix-sdk` 0.18 — fully wired: connect/login/resume, room join, broadcast, relay-to-room, QR parcel |
 | Server | none |
 
-**Gap vs this plan:** the current model stores one `ScoreData` per stage per
-car. The plan below moves to **separate start/finish event records** (per
-khanatime26 / `KhanacrossStopwatch.md`) with computed elapsed, plus the richer
-event fields (best_x/best_y, scheduled tests, categories, officials).
+### Storage model
+
+| Key | Storage | Scope | Purpose |
+|-----|---------|-------|---------|
+| `kt_active_stage` | localStorage | Persistent | Which stage is selected in the timing hub |
+| `kt_sw_car` | sessionStorage | Tab session | Stopwatch car selection |
+| `kt_sw_comment` | sessionStorage | Tab session | Stopwatch run comment |
+| `kt_sw_pending` | sessionStorage | Tab session | Uncommitted finish (PendingFinish JSON) |
+
+**Why the split?** Stage selection persists across browser restarts — the user
+returns to the same event and wants to pick up where they left off. Stopwatch
+UI state (car, comment, pending finish) is transient: meaningless after tab
+close, and stale pending finishes would be confusing on a fresh start.
 
 ---
 

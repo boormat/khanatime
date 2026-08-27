@@ -56,7 +56,7 @@ concrete:
   same observation with different notes; the observation identity is still
   `(type, test, car, run, ts)`.
 
-## Start screen (`src/page/start.rs`)
+## Start screen (`src/khana/page/start.rs`)
 
 - Add an always-visible **UNKNOWN** button (warning style) next to START / DNS.
 - Tapping it expands an inline panel: note textarea + **Record unknown start**
@@ -67,7 +67,7 @@ concrete:
 - Recent-starts list shows unknowns with their note.
 - DNS still requires a real car.
 
-## Finish screen (`src/page/finish.rs`)
+## Finish screen (`src/khana/page/finish.rs`)
 
 - Same UNKNOWN button + note panel, usable in both Car and Time modes.
 - Time resolution: auto-elapsed from a matching unknown pending start
@@ -79,7 +79,7 @@ concrete:
   can match ("red car") or record the sibling unknown finish.
 - Broadcasts the finish (with `note`, `car="?"`) as normal.
 
-## Keyboard entry (`src/page/pad.rs`)
+## Keyboard entry (`src/khana/page/pad.rs`)
 
 - Replace the keypad's `disabled` display `<input>` (pad.rs:46) with an
   editable `<input type="text">` driven by `on:input` into the same

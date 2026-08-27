@@ -133,10 +133,11 @@ src/
     └── page/
         ├── event.rs    # event setup (classes, stages, lifecycle)
         ├── results.rs  # results + score computation (ResultRow/ResultScore/Pos)
-        ├── stage.rs    # TIMER — command-line stopwatch entry
+        ├── timing.rs   # timing hub — stage picker + style dispatch
+        ├── timekeeper.rs # command-line manual entry
         ├── start.rs    # start flag screen
         ├── finish.rs   # finish flag screen
-        ├── stopwatch.rs # cooperative stopwatch
+        ├── stopwatch.rs # cooperative stopwatch (session persistence)
         ├── penalty.rs  # penalty-flag input helper
         ├── pad.rs      # keypad input helper
         └── khana_rule.rs # rendered rules reference

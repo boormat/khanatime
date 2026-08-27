@@ -8,12 +8,12 @@ Keep Start/Finish screens. Penalty chips appear **after** STOP. Per-official car
 
 ## Part 1 — Manual entry rename + link (small)
 
-- `page/stage.rs`: change the `view` heading from `"Event: {} Stage:{}"` to **"Manual entry"** (keep stage number as secondary text).
-- `page/event.rs`: add a **"Manual entry"** button in the `level-right` action row (beside edit/copy/create) dispatching `Msg::Show(Screen::Stage)`.
+- `src/khana/page/timekeeper.rs`: change the `view` heading from `"Event: {} Stage:{}"` to **"Manual entry"** (keep stage number as secondary text).
+- `src/khana/page/event.rs`: add a **"Manual entry"** button in the `level-right` action row (beside edit/copy/create) dispatching `Msg::Show(Screen::Stage)`.
 
 ## Part 2 — Stopwatch screen
 
-### New module `src/page/stopwatch.rs` + wiring
+### New module `src/khana/page/stopwatch.rs` + wiring
 
 ```rust
 pub struct Model {
@@ -71,9 +71,9 @@ On `pending` set: render `penalty::view` (flag/garage/NFG/status chips) + **Conf
 ## Files touched
 
 - `src/app.rs` — Screen::Stopwatch, Screens.stopwatch, Msg::StopwatchMsg, dispatch, navbar, view_content.
-- `src/page.rs` — `pub mod stopwatch;`.
-- `src/page/stopwatch.rs` — new (model, update, view, recent/void list).
-- `src/page/stage.rs` — heading rename.
+- `src/khana/page.rs` — `pub mod stopwatch;`.
+- `src/khana/page/stopwatch.rs` — new (model, update, view, recent/void list).
+- `src/khana/page/timekeeper.rs` — heading rename.
 - `src/page/event.rs` — "Manual entry" link button.
 - `src/event.rs` — `pending_for_car` helper (+ tests).
 
