@@ -46,11 +46,10 @@ find_ready_worktrees() {
     echo $(git worktree list |cut -d' ' -f 1)
 }
 
-# Run trunk serve from a directory with TLS.
+# Run trunk serve from a directory with TLS (must be called in a subshell).
 run_trunk() {
-    local dir="$1"
-    cd "$dir"
-    exec env \
+    cd "$1"
+    env \
         TRUNK_SERVE_DISABLE_ADDRESS_LOOKUP=true \
         TRUNK_SERVE_TLS_CERT_PATH="$CERT" \
         TRUNK_SERVE_TLS_KEY_PATH="$KEY" \
@@ -110,7 +109,8 @@ render_menu() {
     separator
     printf '\033[1m  Khanatime Dev Server — pick a directory to serve\033[0m\n'
     separator
-    printf '  \033[2mUse j/k or arrows to navigate, Enter to select, q to quit\033[0m\n\n'
+    printf '  \033[2mUse j/k or arrows to navigate, Enter to select, q to quit\033[0m\n'
+    printf '  \033[2mCtrl-C while serving returns to this menu\033[0m\n\n'
 
     for i in "${!_items[@]}"; do
         local label="${_items[$i]}"
@@ -169,8 +169,14 @@ do_interactive() {
                 separator
                 printf '\033[1;33m  Now serving %s\033[0m\n' "$wt_dir"
                 separator
-                run_trunk "$wt_dir"
-
+                trap 'kill $TRUNK_PID 2>/dev/null' INT TERM
+                run_trunk "$wt_dir" &
+                TRUNK_PID=$!
+                wait $TRUNK_PID 2>/dev/null || true
+                kill $TRUNK_PID 2>/dev/null || true
+                wait $TRUNK_PID 2>/dev/null || true
+                TRUNK_PID=
+                trap 'restore_tty; echo; exit 0' INT TERM
                 setup_tty
                 ;;
             quit)
