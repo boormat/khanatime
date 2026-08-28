@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sycamore::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::event::{
     elapsed_ds, pending_for_car, pending_starts, upsert_ktime, KTime, KTimeTime, RunRecord,
@@ -313,8 +314,8 @@ fn commit(model: crate::Model) {
     set_pending(sm.pending, None);
     sm.car.set(String::new());
     save_car("");
-    save_comment(&sm.comment.get_clone());
     sm.comment.set(String::new());
+    save_comment("");
     sm.time.set(String::new());
     sm.feedback.set(None);
     penalty::clear(sm.penalty);
@@ -823,36 +824,72 @@ fn view_pending(model: crate::Model) -> View {
             };
             let car = p.car.clone();
             let is_manual = p.mode == PendingMode::Manual;
-            let (entry_name, entry_desc) = model.khana.event.with(|e| {
-                let entry = e.entries.iter().find(|en| en.car == car);
-                match entry {
-                    Some(en) => (en.name.clone(), en.description.clone()),
-                    None => (String::new(), None),
-                }
-            });
-            let desc_text = entry_desc.unwrap_or_default();
-            let show_desc = !desc_text.is_empty();
+            let time_ds = p.time_ds;
+            // Build car options list from entries + TBA.
+            let entries = model.khana.event.with(|e| e.entries.clone());
+            let mut options: Vec<(String, String)> = entries
+                .iter()
+                .filter(|e| !e.car.is_empty())
+                .map(|e| {
+                    let label = format!("{} — {}", e.car, e.name);
+                    (e.car.clone(), label)
+                })
+                .collect();
+            options.push(("?".to_string(), "TBA (?)".to_string()));
+            let car_clone = car.clone();
+            let options_view: Vec<View> = options.into_iter().map(|(val, label)| {
+                let selected = val == car_clone;
+                view! { option(value=val, selected=selected) { (label) } }
+            }).collect();
+            let options_html: View = options_view.into();
+            let time_str = if is_manual {
+                "manual".to_string()
+            } else {
+                format!("{:.1}s", time_ds as f32 / 10.0)
+            };
             view! {
                 div(class="box") {
-                    // Car + name + time (or manual input)
-                    div(class="level is-mobile mb-1") {
-                        div(class="level-left") {
-                            (crate::view::car_tag(&car))
-                            span(class="has-text-weight-semibold ml-2") { (entry_name) }
-                            (if is_manual {
-                                view! { span(class="has-text-grey ml-2 is-size-7") { "manual" } }
-                            } else {
-                                let time_ds = p.time_ds;
-                                let raw_str = format!("{:.1}s", time_ds as f32 / 10.0);
-                                view! { span(class="has-text-grey ml-2 is-size-7") { (raw_str) } }
-                            })
+                    // Car selector + time
+                    div(class="field has-addons mb-2") {
+                        div(class="control is-expanded") {
+                            div(class="select is-small is-fullwidth") {
+                                select(
+                                    on:change=move |ev: web_sys::Event| {
+                                        let target = ev.target().unwrap();
+                                        let select = target.unchecked_into::<web_sys::HtmlSelectElement>();
+                                        let new_car = select.value();
+                                        update_pending(sm.pending, |p| {
+                                            p.car = new_car;
+                                        });
+                                    },
+                                ) {
+                                    (options_html)
+                                }
+                            }
+                        }
+                        div(class="control") {
+                            span(class="tag is-light is-small") { (time_str) }
                         }
                     }
-                    (if show_desc {
-                        let t = desc_text;
-                        view! { div(class="has-text-grey is-size-7 mb-1 ml-4") { (t) } }
-                    } else {
-                        view! {}
+                    // Entry info — reactive to pending.car
+                    (move || {
+                        let current_car = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.clone()).unwrap_or_default());
+                        let (entry_name, entry_desc) = model.khana.event.with(|e| {
+                            let entry = e.entries.iter().find(|en| en.car == current_car);
+                            match entry {
+                                Some(en) => (en.name.clone(), en.description.clone().unwrap_or_default()),
+                                None => (String::new(), String::new()),
+                            }
+                        });
+                        let mut tags: Vec<View> = Vec::new();
+                        if !entry_name.is_empty() {
+                            tags.push(view! { span(class="tag is-info is-light is-small") { (entry_name) } });
+                        }
+                        if !entry_desc.is_empty() {
+                            tags.push(view! { span(class="tag is-info is-light is-small") { (entry_desc) } });
+                        }
+                        let tags_view: View = tags.into();
+                        view! { div(class="tags are-small mb-1 ml-1") { (tags_view) } }
                     })
                     // Manual time input (shown when mode == Manual and time not yet set)
                     (if is_manual && p.time_ds == 0 {
