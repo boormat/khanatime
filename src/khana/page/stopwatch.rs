@@ -730,7 +730,6 @@ fn view_action_buttons(model: crate::Model) -> View {
                 })
             }
         }
-        (view_comment(model))
     }
 }
 
@@ -813,39 +812,6 @@ fn view_car_chips(model: crate::Model) -> View {
                 view
             })
         }
-    }
-}
-
-/// Comment input — visible only when a car is selected and no pending finish.
-fn view_comment(model: crate::Model) -> View {
-    let sm = model.screens.stopwatch;
-    view! {
-        (move || {
-            let car = sm.car.get_clone();
-            let trimmed = car.trim().to_string();
-            if trimmed.is_empty() {
-                return view! {};
-            }
-            let is_tba = trimmed == "?";
-            let input_cls = if is_tba {
-                "input is-warning"
-            } else {
-                "input"
-            };
-            let label_cls = if is_tba {
-                "label is-size-7 has-text-warning-dark"
-            } else {
-                "label is-size-7"
-            };
-            view! {
-                div(class="field mt-2") {
-                    label(class=label_cls) {
-                        (if is_tba { "Comment (required for TBA)" } else { "Comment" })
-                    }
-                    input(class=input_cls, r#type="text", placeholder="Optional note (required for #?)", bind:value=sm.comment)
-                }
-            }
-        })
     }
 }
 
@@ -1045,28 +1011,43 @@ fn view_pending(model: crate::Model) -> View {
                             })
                         }
                     })
-                    // Comment
-                    div(class="field mb-2") {
-                        input(class="input is-small", r#type="text", placeholder="Comment (required for #?)", bind:value=sm.comment)
-                    }
-                    // CONFIRM / Cancel
-                    div(class="field is-grouped is-grouped-centered") {
-                        div(class="control") {
-                            button(
-                                class="button is-success is-small",
-                                on:click=move |_| update(model, Msg::Commit),
-                            ) {
-                                span(class="icon is-small") { i(class="fa fa-flag-checkered") }
-                                span { " CONFIRM" }
+                    // Comment — highlighted when TBA (car == "?")
+                    (move || {
+                        let is_tba = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.as_str()) == Some("?"));
+                        let input_cls = if is_tba { "input is-small is-warning" } else { "input is-small" };
+                        let placeholder = if is_tba { "Comment (required for TBA)" } else { "Comment (required for #?)" };
+                        view! {
+                            div(class="field mb-2") {
+                                input(class=input_cls, r#type="text", placeholder=placeholder, bind:value=sm.comment)
                             }
                         }
-                        div(class="control") {
-                            button(
-                                class="button is-light is-small",
-                                on:click=move |_| update(model, Msg::Cancel),
-                            ) { "Cancel" }
+                    })
+                    // CONFIRM / Cancel
+                    (move || {
+                        let is_tba = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.as_str()) == Some("?"));
+                        let comment_empty = sm.comment.get_clone().trim().is_empty();
+                        let confirm_disabled = is_tba && comment_empty;
+                        view! {
+                            div(class="field is-grouped is-grouped-centered") {
+                                div(class="control") {
+                                    button(
+                                        class="button is-success is-small",
+                                        disabled=confirm_disabled,
+                                        on:click=move |_| update(model, Msg::Commit),
+                                    ) {
+                                        span(class="icon is-small") { i(class="fa fa-flag-checkered") }
+                                        span { " CONFIRM" }
+                                    }
+                                }
+                                div(class="control") {
+                                    button(
+                                        class="button is-light is-small",
+                                        on:click=move |_| update(model, Msg::Cancel),
+                                    ) { "Cancel" }
+                                }
+                            }
                         }
-                    }
+                    })
                     // Attached observations (bottom)
                     (view_attached_events(model))
                 }
