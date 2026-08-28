@@ -670,9 +670,6 @@ fn view_action_buttons(model: crate::Model) -> View {
                         trimmed,
                     );
                     let no_car = trimmed.is_empty();
-                    let is_tba = trimmed == "?";
-                    let comment_empty = sm.comment.get_clone().trim().is_empty();
-                    let tba_blocked = is_tba && comment_empty;
                     // Show Stop when car is on course, Start otherwise.
                     if is_on_course && !has_pending {
                         view! {
@@ -686,7 +683,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                             }
                         }
                     } else {
-                        let cls = if no_car || has_pending || tba_blocked {
+                        let cls = if no_car || has_pending {
                             "button"
                         } else {
                             "button is-success"
@@ -694,7 +691,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                         view! {
                             button(
                                 class=cls,
-                                disabled=has_pending || no_car || tba_blocked,
+                                disabled=has_pending || no_car,
                                 on:click=move |_| update(model, Msg::Start),
                             ) {
                                 span(class="icon") { i(class="fa fa-flag-checkered") }
