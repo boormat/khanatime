@@ -938,10 +938,15 @@ async fn read_event_meta(client: &Client, room: &Room) -> Option<String> {
 /// if an alias is already taken it tries to resolve + join, but the directory
 /// GET isn't CORS-enabled on every homeserver (matrix-client.matrix.org among
 /// them), so that fallback is best-effort and surfaces a clear error otherwise.
-pub async fn publish_event(
-    client: &Client,
+/// Create or join the space + timing rooms for an event. Returns the connected
+/// client and both rooms so the caller can run [`finalize_rooms`] separately.
+pub async fn publish_rooms(
     event: &mut crate::event::EventInfo,
-) -> Result<(), String> {
+) -> Result<(Client, Room, Room), String> {
+    let hs = event
+        .primary_homeserver()
+        .ok_or("Pick a homeserver to publish to first.")?;
+    let client = ensure_client_for(hs).await?;
     // The room alias is the human slug (name/club/year), not the random event
     // id — those fields are what makes the event findable in the directory.
     let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
@@ -954,8 +959,8 @@ pub async fn publish_event(
     // The wire identity must be present before the space meta / setup manifest
     // carry it (fresh joins adopt the uid from the space meta).
     event.ensure_uid();
-    let space_alias = alias(client, &slug)?;
-    let timing_alias = alias(client, &format!("{slug}-timing"))?;
+    let space_alias = alias(&client, &slug)?;
+    let timing_alias = alias(&client, &format!("{slug}-timing"))?;
 
     // Join each room by id when it's already known (re-publish / partial
     // recovery), else create-or-join by alias.  Each room's id is recorded on
@@ -968,7 +973,7 @@ pub async fn publish_event(
             .await
             .map_err(|e| e.to_string())?
     } else {
-        create_or_join_space(client, &space_alias, event).await?
+        create_or_join_space(&client, &space_alias, event).await?
     };
     event.space_id = Some(space.room_id().to_string());
 
@@ -979,11 +984,11 @@ pub async fn publish_event(
             .await
             .map_err(|e| e.to_string())?
     } else {
-        create_or_join_timing(client, &timing_alias).await?
+        create_or_join_timing(&client, &timing_alias).await?
     };
     event.timing_id = Some(timing.room_id().to_string());
 
-    finalize_rooms(client, event, &space, &timing).await
+    Ok((client, space, timing))
 }
 
 /// Create the space with its alias, or join the existing one if the alias is
@@ -1036,7 +1041,7 @@ async fn create_or_join_timing(
 
 /// Best-effort resolve an alias to a room id (the directory GET can be
 /// CORS-blocked on some homeservers).
-async fn resolve_alias_id(
+pub async fn resolve_alias_id(
     client: &Client,
     room_alias: &OwnedRoomAliasId,
 ) -> Option<ruma::OwnedRoomId> {
@@ -1049,7 +1054,7 @@ async fn resolve_alias_id(
 
 /// Link the space/timing rooms, write the event meta + topic, seed the setup
 /// manifest, and return the pair.
-async fn finalize_rooms(
+pub async fn finalize_rooms(
     client: &Client,
     event: &crate::event::EventInfo,
     space: &Room,
@@ -1116,19 +1121,6 @@ async fn finalize_rooms(
     }
 
     Ok(())
-}
-
-/// Publish the current event using the logged-in identity (the single account
-/// connected on the Home page).  Errors when no session is active.
-/// Publish the event to its configured homeserver — and only that homeserver.
-/// Uses the active client if it's for that homeserver, else a stored session
-/// for it, else an error (no implicit session/user creation).
-pub async fn publish_current_event(event: &mut crate::event::EventInfo) -> Result<(), String> {
-    let hs = event
-        .primary_homeserver()
-        .ok_or("Pick a homeserver to publish to first.")?;
-    let client = ensure_client_for(hs).await?;
-    publish_event(&client, event).await
 }
 
 /// Return a client connected to `homeserver`: the active one if it matches, or

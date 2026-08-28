@@ -9,6 +9,63 @@ use crate::input::InputMsg;
 // List of Classes. = derived from users?
 use sycamore::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+use ruma::OwnedRoomAliasId;
+
+// ---- publish plan types ----
+
+/// What will happen with the Matrix account during publish.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+enum AccountAction {
+    /// Use an existing stored session.
+    UsingExisting { user_id: String },
+    /// Will create a fresh Shared account on the homeserver.
+    WillCreate { username: String },
+}
+
+/// What will happen with a Matrix room during publish.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+enum RoomAction {
+    /// Room will be created with this alias.
+    WillCreate { alias: String },
+    /// Room already exists; will join by alias.
+    JoinExisting { alias: String },
+    /// Already published; will rejoin by room id.
+    AlreadyJoined { room_id: String },
+}
+
+/// A single step in the publish plan, shown as a checkbox.
+#[derive(Clone, Debug)]
+struct PlanStep {
+    label: String,
+}
+
+/// The computed publish plan, shown in the confirm modal before publishing.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct PublishPlan {
+    event_name: String,
+    slug: String,
+    homeserver: String,
+    account: AccountAction,
+    space: RoomAction,
+    timing: RoomAction,
+    /// Detailed steps in execution order, each becomes a checkbox.
+    steps: Vec<PlanStep>,
+    errors: Vec<String>,
+}
+
+/// Live progress version of a plan step (has a `done` flag for ticking off).
+#[derive(Clone)]
+pub(crate) struct PublishStep {
+    label: String,
+    done: bool,
+}
+
+// ---- end publish plan types ----
+
 #[derive(Clone)]
 pub enum Msg {
     // classes (add / delete only — no rename)
@@ -31,11 +88,16 @@ pub enum Msg {
     StageAdd,
     StageDelete(usize),
     // publish + sync to Matrix
-    Publish,
-    /// Actually publish after confirmation.
-    PublishDo,
+    /// Compute the publish plan (async) and open the confirm modal.
+    PublishCheck,
+    /// Execute the publish with live progress (replaces PublishDo).
+    PublishExecute,
     /// Cancel the publish confirmation.
     PublishCancel,
+    /// Mark step i as done during live publish progress.
+    PublishStepDone(usize),
+    /// Close the publish modal (success or cancel).
+    PublishDone,
     // quick-add entrant
     QuickAdd(InputMsg),
     /// Load an entry into the text box for editing (keyed by car).
@@ -86,6 +148,10 @@ pub struct Model {
     pub editing_entry_car: Signal<Option<String>>,
     /// Publish confirmation dialog.
     pub show_publish_confirm: Signal<bool>,
+    /// The computed publish plan (None while checking).
+    pub(crate) publish_plan: Signal<Option<PublishPlan>>,
+    /// Live progress steps while publishing.
+    pub(crate) publish_steps: Signal<Vec<PublishStep>>,
 }
 
 pub fn init() -> Model {
@@ -108,6 +174,8 @@ pub fn init() -> Model {
         edit_entry_input: crate::input::init(),
         editing_entry_car: create_signal(None),
         show_publish_confirm: create_signal(false),
+        publish_plan: create_signal(None),
+        publish_steps: create_signal(vec![]),
     }
 }
 
@@ -217,16 +285,62 @@ pub fn update(model: crate::Model, msg: Msg) {
             });
             em.edit_rev.set(em.edit_rev.get().wrapping_add(1));
         }
-        Msg::Publish => {
+        Msg::PublishCheck => {
             let em = model.screens.setup;
             em.show_publish_confirm.set(true);
+            em.publish_plan.set(None);
+            em.publish_steps.set(vec![]);
+            #[cfg(target_arch = "wasm32")]
+            {
+                let m = model;
+                wasm_bindgen_futures::spawn_local(async move {
+                    let plan = compute_publish_plan(m).await;
+                    m.screens.setup.publish_plan.set(Some(plan));
+                });
+            }
         }
-        Msg::PublishDo => {
-            model.screens.setup.show_publish_confirm.set(false);
-            publish(model);
+        Msg::PublishExecute => {
+            let em = model.screens.setup;
+            let Some(plan) = em.publish_plan.get_clone() else {
+                return;
+            };
+            // Build the live step list from the plan.
+            let steps: Vec<PublishStep> = plan
+                .steps
+                .iter()
+                .map(|s| PublishStep {
+                    label: s.label.clone(),
+                    done: false,
+                })
+                .collect();
+            em.publish_steps.set(steps);
+            #[cfg(target_arch = "wasm32")]
+            {
+                let m = model;
+                wasm_bindgen_futures::spawn_local(async move {
+                    publish_execute(m, plan).await;
+                });
+            }
         }
         Msg::PublishCancel => {
-            model.screens.setup.show_publish_confirm.set(false);
+            let em = model.screens.setup;
+            em.show_publish_confirm.set(false);
+            em.publish_plan.set(None);
+            em.publish_steps.set(vec![]);
+        }
+        Msg::PublishStepDone(i) => {
+            let em = model.screens.setup;
+            em.publish_steps.update(|v| {
+                if let Some(step) = v.get_mut(i) {
+                    step.done = true;
+                }
+            });
+        }
+        Msg::PublishDone => {
+            let em = model.screens.setup;
+            em.show_publish_confirm.set(false);
+            em.publish_plan.set(None);
+            em.publish_steps.set(vec![]);
         }
         Msg::QuickAdd(InputMsg::DoThing) => {
             let em = model.screens.setup;
@@ -644,25 +758,207 @@ fn publish_validation_errors(
 
 /// Publish the current event to a Matrix space + timing room using the
 /// identity logged in on the Home page.
-fn publish(model: crate::Model) {
-    let em = model.screens.setup;
-    let event = model.khana.event.get_clone();
-    let errs = publish_validation_errors(model, &event, &event);
-    if !errs.is_empty() {
-        em.publish_status
-            .set(Some(format!("Can't publish: {}", errs.join(" "))));
-        return;
+/// Generate a descriptive username for a new event owner account.
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+fn gen_owner_username(event: &crate::event::EventInfo) -> String {
+    let slug = crate::event::slugify(&event.name);
+    let short = crate::ids::gen_short_id().to_lowercase();
+    if slug.is_empty() {
+        format!("kt-{short}")
+    } else {
+        format!("kt-{slug}-{short}")
     }
-    #[cfg(target_arch = "wasm32")]
-    publish_wasm(model);
-    #[cfg(not(target_arch = "wasm32"))]
-    em.publish_status.set(Some(
-        "Matrix publishing is only available in the web build".to_string(),
-    ));
 }
 
+/// Compute the publish plan: what account will be used, whether rooms exist,
+/// and the detailed step list.  Runs async to resolve room aliases.
 #[cfg(target_arch = "wasm32")]
-fn publish_wasm(model: crate::Model) {
+async fn compute_publish_plan(model: crate::Model) -> PublishPlan {
+    let event = model.khana.event.get_clone();
+    let hs = event.event_homeservers.first().cloned().unwrap_or_default();
+    let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
+
+    // ---- account ----
+    let account = if let Some(ref owner) = event.owner {
+        if crate::services::matrix::load_session_for(&hs)
+            .map(|a| a.user_id == *owner)
+            .unwrap_or(false)
+        {
+            AccountAction::UsingExisting {
+                user_id: owner.clone(),
+            }
+        } else {
+            AccountAction::WillCreate {
+                username: gen_owner_username(&event),
+            }
+        }
+    } else {
+        AccountAction::WillCreate {
+            username: gen_owner_username(&event),
+        }
+    };
+
+    // ---- rooms (async probe) ----
+    let space_alias_display = event.space_alias().unwrap_or_default();
+    let timing_alias_display = event.timing_alias().unwrap_or_default();
+
+    let space = if let Some(ref sid) = event.space_id {
+        RoomAction::AlreadyJoined {
+            room_id: sid.clone(),
+        }
+    } else if !space_alias_display.is_empty() {
+        if let Ok(client) = crate::services::matrix::new_client(&hs).await {
+            if let Ok(alias_id) = space_alias_display.parse::<OwnedRoomAliasId>() {
+                if let Some(_room_id) =
+                    crate::services::matrix::resolve_alias_id(&client, &alias_id).await
+                {
+                    RoomAction::JoinExisting {
+                        alias: space_alias_display,
+                    }
+                } else {
+                    RoomAction::WillCreate {
+                        alias: space_alias_display,
+                    }
+                }
+            } else {
+                RoomAction::WillCreate {
+                    alias: space_alias_display,
+                }
+            }
+        } else {
+            RoomAction::WillCreate {
+                alias: space_alias_display,
+            }
+        }
+    } else {
+        RoomAction::WillCreate {
+            alias: String::new(),
+        }
+    };
+
+    let timing = if let Some(ref tid) = event.timing_id {
+        RoomAction::AlreadyJoined {
+            room_id: tid.clone(),
+        }
+    } else if !timing_alias_display.is_empty() {
+        if let Ok(client) = crate::services::matrix::new_client(&hs).await {
+            if let Ok(alias_id) = timing_alias_display.parse::<OwnedRoomAliasId>() {
+                if let Some(_room_id) =
+                    crate::services::matrix::resolve_alias_id(&client, &alias_id).await
+                {
+                    RoomAction::JoinExisting {
+                        alias: timing_alias_display,
+                    }
+                } else {
+                    RoomAction::WillCreate {
+                        alias: timing_alias_display,
+                    }
+                }
+            } else {
+                RoomAction::WillCreate {
+                    alias: timing_alias_display,
+                }
+            }
+        } else {
+            RoomAction::WillCreate {
+                alias: timing_alias_display,
+            }
+        }
+    } else {
+        RoomAction::WillCreate {
+            alias: String::new(),
+        }
+    };
+
+    // ---- steps (detailed, execution order) ----
+    let mut steps: Vec<PlanStep> = Vec::new();
+
+    // Step 0: account
+    match &account {
+        AccountAction::UsingExisting { user_id } => {
+            steps.push(PlanStep {
+                label: format!("Use account {user_id}"),
+            });
+        }
+        AccountAction::WillCreate { username } => {
+            steps.push(PlanStep {
+                label: format!("Create account @{username}:{hs}"),
+            });
+        }
+    }
+
+    // Steps 1-2: rooms
+    match &space {
+        RoomAction::WillCreate { alias } => {
+            steps.push(PlanStep {
+                label: format!("Create space {alias}"),
+            });
+        }
+        RoomAction::JoinExisting { alias } => {
+            steps.push(PlanStep {
+                label: format!("Join existing space {alias}"),
+            });
+        }
+        RoomAction::AlreadyJoined { room_id } => {
+            steps.push(PlanStep {
+                label: format!("Rejoin existing space ({room_id})"),
+            });
+        }
+    }
+    match &timing {
+        RoomAction::WillCreate { alias } => {
+            steps.push(PlanStep {
+                label: format!("Create timing room {alias}"),
+            });
+        }
+        RoomAction::JoinExisting { alias } => {
+            steps.push(PlanStep {
+                label: format!("Join existing timing room {alias}"),
+            });
+        }
+        RoomAction::AlreadyJoined { room_id } => {
+            steps.push(PlanStep {
+                label: format!("Rejoin existing timing room ({room_id})"),
+            });
+        }
+    }
+
+    // Steps 3-N: all tick together when finalize_rooms returns.
+    // Order matches finalize_rooms execution.
+    steps.push(PlanStep {
+        label: "Set history visibility (world_readable)".into(),
+    });
+    steps.push(PlanStep {
+        label: "Link space ↔ timing room".into(),
+    });
+    steps.push(PlanStep {
+        label: "Send event metadata to space room".into(),
+    });
+    steps.push(PlanStep {
+        label: "Set room topic".into(),
+    });
+    for official in &event.organisers {
+        steps.push(PlanStep {
+            label: format!("Invite {} + set admin", official.id),
+        });
+    }
+
+    PublishPlan {
+        event_name: event.name.clone(),
+        slug,
+        homeserver: hs,
+        account,
+        space,
+        timing,
+        steps,
+        errors: vec![],
+    }
+}
+
+/// Execute the publish with live step-by-step progress.
+#[cfg(target_arch = "wasm32")]
+async fn publish_execute(model: crate::Model, plan: PublishPlan) {
     use crate::event::EventStatus;
 
     let em = model.screens.setup;
@@ -672,43 +968,99 @@ fn publish_wasm(model: crate::Model) {
             .set(Some("Save the event first (needs a name)".to_string()));
         return;
     }
-    em.publish_status.set(Some("Publishing...".to_string()));
-    wasm_bindgen_futures::spawn_local(async move {
-        let res = crate::services::matrix::publish_current_event(&mut event).await;
-        // Rooms are recorded on the event *before* finalize, so a partial
-        // publish (rooms created, a later step failed) still has the ids —
-        // persist it so a re-publish joins by id instead of alias resolution.
-        let rooms_created = event.space_id.is_some();
-        if rooms_created {
-            event.status = EventStatus::Published;
-            model.khana.event.set(event.clone());
-            crate::app::enqueue_setup(model);
-        }
-        match (res, rooms_created) {
-            (Ok(_), _) => {
-                em.publish_status.set(Some("Published".to_string()));
-                em.editing.set(false);
-                em.edit_event.set(None);
-                // Join the fresh timing room so the setup (and entrants, which
-                // ride in the manifest) flush into it.
-                crate::sync::join_current_event(model);
+    em.publish_status.set(Some("Publishing...".into()));
+
+    let hs = plan.homeserver.clone();
+    let result = async {
+        // ---- Step 0: Account ----
+        match &plan.account {
+            AccountAction::UsingExisting { .. } => {
+                // Just log in with the existing session.
+                let _ = crate::services::matrix::ensure_client_for(&hs).await?;
             }
-            (Err(e), true) => {
-                em.publish_status.set(Some(format!(
-                    "Rooms created, but setup sync wasn't confirmed ({e}). The event is marked published — use \"Save and Publish\" to finish syncing."
-                )));
-                em.editing.set(false);
-                em.edit_event.set(None);
-                crate::sync::join_current_event(model);
-            }
-            (Err(e), false) => {
-                em.publish_status.set(Some(format!(
-                    "Publish failed: {e} — check you're signed in to {} on Home if the session expired.",
-                    event.primary_homeserver().unwrap_or("a homeserver")
-                )));
+            AccountAction::WillCreate { username } => {
+                let password = crate::ids::gen_short_id();
+                let client = crate::services::matrix::new_client(&hs).await?;
+                crate::services::matrix::register_or_login(&client, username, &password)
+                    .await
+                    .map_err(|e| format!("Account creation failed: {e}"))?;
+                crate::services::matrix::save_session_with_password(&client, &hs, &password);
+                crate::services::matrix::set_session_reg(&hs, crate::event::RegistrationMode::Open);
+                crate::services::matrix::set_client(Some(client.clone()));
+                // Mark as Shared with description.
+                let user_id = client.user_id().map(|u| u.to_string()).unwrap_or_default();
+                let mut accounts = crate::services::matrix::load_accounts();
+                if let Some(a) = accounts
+                    .iter_mut()
+                    .find(|a| a.homeserver == hs && a.user_id == user_id)
+                {
+                    a.account_type = crate::services::matrix::AccountType::Shared;
+                    a.description = event.name.clone();
+                    crate::services::matrix::save_account(a);
+                }
             }
         }
-    });
+        crate::update(
+            model,
+            crate::Msg::EventMsg(crate::khana::page::event::Msg::PublishStepDone(0)),
+        );
+
+        // ---- Steps 1-2: Rooms ----
+        let (client, space, timing) = crate::services::matrix::publish_rooms(&mut event).await?;
+        crate::update(
+            model,
+            crate::Msg::EventMsg(crate::khana::page::event::Msg::PublishStepDone(1)),
+        );
+        crate::update(
+            model,
+            crate::Msg::EventMsg(crate::khana::page::event::Msg::PublishStepDone(2)),
+        );
+
+        // ---- Steps 3-N: finalize_rooms (history, link, metadata, topic, invites, admin) ----
+        crate::services::matrix::finalize_rooms(&client, &event, &space, &timing).await?;
+        // Tick all remaining steps (3 through last).
+        let total_steps = 7 + event.organisers.len(); // 7 fixed steps + invites per org
+        for step_i in 3..total_steps {
+            crate::update(
+                model,
+                crate::Msg::EventMsg(crate::khana::page::event::Msg::PublishStepDone(step_i)),
+            );
+        }
+
+        Ok::<_, String>(())
+    }
+    .await;
+
+    // Record rooms even on partial failure so a re-publish can rejoin.
+    let rooms_created = event.space_id.is_some();
+    if rooms_created {
+        event.status = EventStatus::Published;
+        model.khana.event.set(event.clone());
+        crate::app::enqueue_setup(model);
+    }
+
+    match (result, rooms_created) {
+        (Ok(_), _) => {
+            em.publish_status.set(Some("Published".into()));
+            em.editing.set(false);
+            em.edit_event.set(None);
+            crate::sync::join_current_event(model);
+        }
+        (Err(e), true) => {
+            em.publish_status.set(Some(format!(
+                "Rooms created, but setup sync wasn't confirmed ({e}). The event is marked published — use \"Save and Publish\" to finish syncing."
+            )));
+            em.editing.set(false);
+            em.edit_event.set(None);
+            crate::sync::join_current_event(model);
+        }
+        (Err(e), false) => {
+            em.publish_status.set(Some(format!(
+                "Publish failed: {e} — check you're signed in to {} on Home if the session expired.",
+                event.primary_homeserver().unwrap_or("a homeserver")
+            )));
+        }
+    }
 }
 
 pub fn view(model: crate::Model) -> View {
@@ -907,88 +1259,189 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
     if !em.show_publish_confirm.get() {
         return view! {};
     }
+
+    // Phase 1: validation errors (blocked)
     let event = model.khana.event.get_clone();
     let errs = publish_validation_errors(model, &event, &event);
-    let blocked = !errs.is_empty();
-    let title = if blocked {
-        "Cannot publish"
-    } else {
-        "Confirm publish"
-    };
-    // Pre-render body to avoid closure move issues with String values.
-    let body = if blocked {
+    if !errs.is_empty() {
         let mut items: Vec<View> = Vec::new();
         for e in &errs {
             let msg = e.clone();
             items.push(view! { li(class="has-text-danger") { (msg) } });
         }
-        view! {
-            p(class="has-text-weight-semibold mb-2") { "Fix these issues before publishing:" }
-            ul { (items) }
-        }
-    } else {
-        let slug = crate::event::build_event_id(&event.year, &event.sponsoring_club, &event.name);
-        let name = event.name.clone();
-        let owner = event.owner.clone().unwrap_or_default();
-        let space_alias = event.space_alias().unwrap_or_default();
-        let timing_alias = event.timing_alias().unwrap_or_default();
-        let already_published = event.space_id.is_some();
-        let hs_count = event.event_homeservers.len();
-        let hs_label = if hs_count == 1 {
-            event
-                .event_homeservers
-                .first()
-                .map(|h| crate::page::home::hs_host_port(h))
-                .unwrap_or_default()
-        } else {
-            format!("{} homeservers", hs_count)
-        };
-        let mut parts: Vec<View> = Vec::new();
-        parts.push(view! { p { strong { (name) } } });
-        if !slug.is_empty() {
-            parts.push(view! { p { "Room: " code { "#" (slug) } } });
-        }
-        parts.push(view! { p { "Publish to: " (hs_label) } });
-        if !space_alias.is_empty() {
-            parts.push(view! { p { "Space: " code { (space_alias) } } });
-            parts.push(view! { p { "Timing: " code { (timing_alias) } } });
-        }
-        if !owner.is_empty() {
-            parts.push(view! { p { "Owner: " code { (owner) } } });
-        }
-        let org_ids: Vec<String> = event.organisers.iter().map(|o| o.id.clone()).collect();
-        if !org_ids.is_empty() {
-            parts.push(view! { p { "Organisers: " code { (org_ids.join(", ")) } " (invited + admin PL)" } });
-        }
-        parts.push(
-            view! { p { "History: " code { "world_readable" } " (new joiners see everything)" } },
-        );
-        if already_published {
-            parts.push(view! {
-                div(class="notification is-warning is-light mt-3") {
-                    p { strong { "Already published." } " Room already exists — will join the existing room instead of creating a new one." }
+        return view! {
+            div(class="modal is-active") {
+                div(class="modal-background", on:click=move |_| {
+                    crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                })
+                div(class="modal-card") {
+                    header(class="modal-card-head") {
+                        p(class="modal-card-title") { "Cannot publish" }
+                        button(class="delete", on:click=move |_| {
+                            crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                        })
+                    }
+                    section(class="modal-card-body") {
+                        p(class="has-text-weight-semibold mb-2") { "Fix these issues before publishing:" }
+                        ul { (items) }
+                    }
+                    footer(class="modal-card-foot") {
+                        button(class="button is-link", disabled=true) { "Publish" }
+                        button(class="button", on:click=move |_| {
+                            crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                        }) { "Close" }
+                    }
                 }
+            }
+        };
+    }
+
+    // Phase 2: plan loading (spinner) or plan ready — or Phase 3/4: executing/done.
+    let plan_opt = em.publish_plan.get_clone();
+    let steps_snap = em.publish_steps.get_clone();
+    let doing = !steps_snap.is_empty();
+    let all_done = doing && steps_snap.iter().all(|step| step.done);
+
+    let (title, body, footer) = if doing {
+        // Phase 3 or 4: live progress (or done).
+        let steps = steps_snap;
+        let title = if all_done {
+            "Published!"
+        } else {
+            "Publishing..."
+        };
+        let mut rows: Vec<View> = Vec::new();
+        for step in &steps {
+            let label = step.label.clone();
+            let icon = if step.done {
+                view! { span(class="icon has-text-success") { i(class="fa fa-circle-check") } }
+            } else {
+                view! { span(class="icon has-text-grey") { i(class="fa fa-circle") } }
+            };
+            let cls = if step.done {
+                "has-text-success"
+            } else {
+                "has-text-grey"
+            };
+            rows.push(view! {
+                div(class=cls) { (icon) span { (label) } }
             });
         }
-        view! { (parts) }
-    };
-    let footer = if blocked {
-        view! {
-            button(class="button is-link", disabled=true) { "Publish" }
-            button(class="button", on:click=move |_| {
-                crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
-            }) { "Close" }
+        let footer = if all_done {
+            view! {
+                button(class="button is-success", on:click=move |_| {
+                    crate::update(model, crate::Msg::EventMsg(Msg::PublishDone));
+                }) { "Close" }
+            }
+        } else {
+            view! {}
+        };
+        (title, view! { (rows) }, footer)
+    } else if let Some(plan) = plan_opt {
+        if !plan.errors.is_empty() {
+            // Plan found errors.
+            let mut items: Vec<View> = Vec::new();
+            for e in &plan.errors {
+                let msg = e.clone();
+                items.push(view! { li(class="has-text-danger") { (msg) } });
+            }
+            (
+                "Cannot publish",
+                view! { ul { (items) } },
+                view! {
+                    button(class="button is-link", disabled=true) { "Publish" }
+                    button(class="button", on:click=move |_| {
+                        crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                    }) { "Close" }
+                },
+            )
+        } else {
+            // Phase 2: plan ready — show detailed plan.
+            let event_name = plan.event_name.clone();
+            let slug = plan.slug.clone();
+            let hs_display = crate::page::home::hs_host_port(&plan.homeserver);
+            let hs = plan.homeserver.clone();
+            let account_text = match &plan.account {
+                AccountAction::UsingExisting { user_id } => {
+                    format!("○ Use existing @{user_id}")
+                }
+                AccountAction::WillCreate { username } => {
+                    format!("○ Will create @{username}:{hs}")
+                }
+            };
+            let space_text = match &plan.space {
+                RoomAction::WillCreate { alias } => format!("○ Create {alias}"),
+                RoomAction::JoinExisting { alias } => format!("○ Join existing {alias}"),
+                RoomAction::AlreadyJoined { room_id } => {
+                    format!("○ Rejoin existing ({room_id})")
+                }
+            };
+            let timing_text = match &plan.timing {
+                RoomAction::WillCreate { alias } => format!("○ Create {alias}"),
+                RoomAction::JoinExisting { alias } => format!("○ Join existing {alias}"),
+                RoomAction::AlreadyJoined { room_id } => {
+                    format!("○ Rejoin existing ({room_id})")
+                }
+            };
+            let step_labels: Vec<String> = plan.steps.iter().map(|s| s.label.clone()).collect();
+
+            let mut parts: Vec<View> = Vec::new();
+            parts.push(view! { p { strong { (event_name) } } });
+            if !slug.is_empty() {
+                parts.push(view! { p { "Slug: " code { "#" (slug) } } });
+            }
+            parts.push(view! { p { "Homeserver: " (hs_display) } });
+            parts.push(view! { p(class="has-text-weight-semibold mt-3 mb-1") { "Account" } });
+            parts.push(view! { p { (account_text) } });
+            parts.push(view! { p(class="has-text-weight-semibold mt-3 mb-1") { "Rooms" } });
+            parts.push(view! { p { (space_text) } });
+            parts.push(view! { p { (timing_text) } });
+            parts.push(view! { p(class="has-text-weight-semibold mt-3 mb-1") { "Steps" } });
+            let step_views: Vec<View> = step_labels
+                .into_iter()
+                .map(|label| {
+                    let l = label;
+                    view! { p { "○ " (l) } }
+                })
+                .collect();
+            for sv in step_views {
+                parts.push(sv);
+            }
+
+            (
+                "Confirm publish",
+                view! { (parts) },
+                view! {
+                    button(class="button is-link", on:click=move |_| {
+                        crate::update(model, crate::Msg::EventMsg(Msg::PublishExecute));
+                    }) { "Publish" }
+                    button(class="button", on:click=move |_| {
+                        crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                    }) { "Cancel" }
+                },
+            )
         }
     } else {
-        view! {
-            button(class="button is-link", on:click=move |_| {
-                crate::update(model, crate::Msg::EventMsg(Msg::PublishDo));
-            }) { "Publish" }
-            button(class="button", on:click=move |_| {
-                crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
-            }) { "Cancel" }
-        }
+        // Phase 1: checking...
+        (
+            "Confirm publish",
+            view! {
+                div(class="has-text-centered py-4") {
+                    p { "Checking publish plan..." }
+                    span(class="icon is-large mt-2") {
+                        i(class="fa fa-spinner fa-pulse fa-2x")
+                    }
+                }
+            },
+            view! {
+                button(class="button is-link", disabled=true) { "Publish" }
+                button(class="button", on:click=move |_| {
+                    crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
+                }) { "Cancel" }
+            },
+        )
     };
+
     view! {
         div(class="modal is-active") {
             div(class="modal-background", on:click=move |_| {
@@ -1930,7 +2383,7 @@ fn view_publish_btn(model: crate::Model) -> View {
                     class="button is-link",
                     disabled=!has_hs,
                     title=if has_hs { "" } else { "Select a homeserver in Edit first" },
-                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::Publish)),
+                    on:click=move |_| crate::update(model, crate::Msg::EventMsg(Msg::PublishCheck)),
                 ) {
                     span(class="icon is-small") { i(class="fa fa-paper-plane") }
                     span { "Publish" }
