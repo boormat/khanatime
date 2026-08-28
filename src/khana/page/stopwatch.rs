@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use sycamore::prelude::*;
-use wasm_bindgen::JsCast;
 
 use crate::event::{
     elapsed_ds, pending_for_car, pending_starts, upsert_ktime, KTime, KTimeTime, RunRecord,
@@ -107,6 +106,7 @@ pub struct Model {
     pub penalty: penalty::PenaltyModel,
     pub pending: Signal<Option<PendingFinish>>,
     pub feedback: Signal<Option<String>>,
+    pub show_car_picker: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -118,6 +118,7 @@ pub fn init() -> Model {
         penalty: penalty::init(),
         pending: create_signal(None),
         feedback: create_signal(None),
+        show_car_picker: create_signal(false),
     }
 }
 
@@ -825,23 +826,14 @@ fn view_pending(model: crate::Model) -> View {
             let car = p.car.clone();
             let is_manual = p.mode == PendingMode::Manual;
             let time_ds = p.time_ds;
-            // Build car options list from entries + TBA.
-            let entries = model.khana.event.with(|e| e.entries.clone());
-            let mut options: Vec<(String, String)> = entries
-                .iter()
-                .filter(|e| !e.car.is_empty())
-                .map(|e| {
-                    let label = format!("{} — {}", e.car, e.name);
-                    (e.car.clone(), label)
-                })
-                .collect();
-            options.push(("?".to_string(), "TBA (?)".to_string()));
-            let car_clone = car.clone();
-            let options_view: Vec<View> = options.into_iter().map(|(val, label)| {
-                let selected = val == car_clone;
-                view! { option(value=val, selected=selected) { (label) } }
-            }).collect();
-            let options_html: View = options_view.into();
+            let (entry_name, entry_desc) = model.khana.event.with(|e| {
+                let entry = e.entries.iter().find(|en| en.car == car);
+                match entry {
+                    Some(en) => (en.name.clone(), en.description.clone()),
+                    None => (String::new(), None),
+                }
+            });
+            let desc_text = entry_desc.unwrap_or_default();
             let time_str = if is_manual {
                 "manual".to_string()
             } else {
@@ -849,47 +841,24 @@ fn view_pending(model: crate::Model) -> View {
             };
             view! {
                 div(class="box") {
-                    // Car selector + time
-                    div(class="field has-addons mb-2") {
-                        div(class="control is-expanded") {
-                            div(class="select is-small is-fullwidth") {
-                                select(
-                                    on:change=move |ev: web_sys::Event| {
-                                        let target = ev.target().unwrap();
-                                        let select = target.unchecked_into::<web_sys::HtmlSelectElement>();
-                                        let new_car = select.value();
-                                        update_pending(sm.pending, |p| {
-                                            p.car = new_car;
-                                        });
-                                    },
-                                ) {
-                                    (options_html)
-                                }
+                    // Car tag (clickable to open picker) + time
+                    div(class="level is-mobile mb-1") {
+                        div(class="level-left") {
+                            div(
+                                class="is-clickable",
+                                on:click=move |_| sm.show_car_picker.set(true),
+                            ) {
+                                (crate::view::car_tag(&car))
                             }
-                        }
-                        div(class="control") {
-                            span(class="tag is-light is-small") { (time_str) }
+                            span(class="has-text-weight-semibold ml-2") { (entry_name) }
+                            span(class="has-text-grey ml-2 is-size-7") { (time_str) }
                         }
                     }
-                    // Entry info — reactive to pending.car
-                    (move || {
-                        let current_car = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.clone()).unwrap_or_default());
-                        let (entry_name, entry_desc) = model.khana.event.with(|e| {
-                            let entry = e.entries.iter().find(|en| en.car == current_car);
-                            match entry {
-                                Some(en) => (en.name.clone(), en.description.clone().unwrap_or_default()),
-                                None => (String::new(), String::new()),
-                            }
-                        });
-                        let mut tags: Vec<View> = Vec::new();
-                        if !entry_name.is_empty() {
-                            tags.push(view! { span(class="tag is-info is-light is-small") { (entry_name) } });
-                        }
-                        if !entry_desc.is_empty() {
-                            tags.push(view! { span(class="tag is-info is-light is-small") { (entry_desc) } });
-                        }
-                        let tags_view: View = tags.into();
-                        view! { div(class="tags are-small mb-1 ml-1") { (tags_view) } }
+                    (if !desc_text.is_empty() {
+                        let t = desc_text.clone();
+                        view! { div(class="has-text-grey is-size-7 mb-1 ml-4") { (t) } }
+                    } else {
+                        view! {}
                     })
                     // Manual time input (shown when mode == Manual and time not yet set)
                     (if is_manual && p.time_ds == 0 {
@@ -1083,6 +1052,100 @@ fn view_pending(model: crate::Model) -> View {
                     })
                     // Attached observations (bottom)
                     (view_attached_events(model))
+                }
+            }
+        })
+        // Car picker modal
+        (move || {
+            if !sm.show_car_picker.get_clone() {
+                return view! {};
+            }
+            let entries = model.khana.event.with(|e| e.entries.clone());
+            let current_car = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.clone()).unwrap_or_default());
+            // Group entries by runs remaining.
+            let test = sm.test.get();
+            let (runs_remaining, _unknown_remaining) = compute_runs_remaining(model, test);
+            use crate::event::cmp_car_number;
+            struct CarInfo { car: String, name: String, remaining: u8 }
+            let mut cars: Vec<CarInfo> = entries
+                .iter()
+                .filter(|e| !e.car.is_empty())
+                .map(|e| CarInfo {
+                    car: e.car.clone(),
+                    name: e.name.clone(),
+                    remaining: *runs_remaining.get(&e.car).unwrap_or(&0),
+                })
+                .collect();
+            cars.sort_by(|a, b| {
+                b.remaining.cmp(&a.remaining)
+                    .then_with(|| cmp_car_number(&a.car, &b.car))
+            });
+            let mut groups: std::collections::HashMap<u8, Vec<&CarInfo>> = std::collections::HashMap::new();
+            for c in &cars {
+                groups.entry(c.remaining).or_default().push(c);
+            }
+            let mut group_keys: Vec<u8> = groups.keys().copied().collect();
+            group_keys.sort_by(|a, b| b.cmp(a));
+            let mut rows: Vec<View> = Vec::new();
+            for remaining in group_keys {
+                let car_list = groups.remove(&remaining).unwrap();
+                let badge_label = format!("{remaining}r");
+                let car_views: Vec<View> = car_list.iter().map(|ci| {
+                    let car_set = ci.car.clone();
+                    let car_display = ci.car.clone();
+                    let car_name = ci.name.clone();
+                    let is_active = car_set == current_car;
+                    let cls = if is_active { "button is-link is-small" } else { "button is-light is-small" };
+                    view! {
+                        button(
+                            class=cls,
+                            on:click=move |_| {
+                                update_pending(sm.pending, |p| { p.car = car_set.clone(); });
+                                sm.show_car_picker.set(false);
+                            },
+                        ) {
+                            (crate::view::car_tag(&car_display))
+                            span(class="ml-1 is-size-7") { (car_name) }
+                        }
+                    }
+                }).collect();
+                rows.push(view! {
+                    div(class="field is-grouped is-grouped-multiline is-align-items-center mb-1") {
+                        span(class="tag is-small is-link is-light kt-runs-separator") { (badge_label) }
+                        (car_views)
+                    }
+                });
+            }
+            // TBA chip
+            let is_tba = current_car == "?";
+            let tba_cls = if is_tba { "button is-warning is-small" } else { "button is-light is-small" };
+            rows.push(view! {
+                div(class="field is-grouped is-grouped-multiline is-align-items-center mb-1") {
+                    span(class="tag is-small is-light kt-runs-separator") { "TBA" }
+                    button(
+                        class=tba_cls,
+                        on:click=move |_| {
+                            update_pending(sm.pending, |p| { p.car = "?".to_string(); });
+                            sm.show_car_picker.set(false);
+                        },
+                    ) {
+                        span(class="kt-car-tag has-text-weight-semibold") { "?" }
+                    }
+                }
+            });
+            let picker_content: View = rows.into();
+            view! {
+                div(class="modal is-active") {
+                    div(class="modal-background", on:click=move |_| sm.show_car_picker.set(false))
+                    div(class="modal-card") {
+                        header(class="modal-card-head") {
+                            p(class="modal-card-title") { "Change car" }
+                            button(class="delete", aria-label="close", on:click=move |_| sm.show_car_picker.set(false))
+                        }
+                        section(class="modal-card-body") {
+                            (picker_content)
+                        }
+                    }
                 }
             }
         })
