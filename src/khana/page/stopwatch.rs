@@ -185,9 +185,6 @@ fn start_car(model: crate::Model) {
         sm.feedback.set(Some("Select a car first".to_string()));
         return;
     }
-    if crate::khana::helpers::check_unknown_comment(&car, &sm.comment.get_clone(), &sm.feedback) {
-        return;
-    }
     let test = sm.test.get();
     if pending_for_car(&model.khana.runs.get_clone(), test, &car) {
         sm.feedback
