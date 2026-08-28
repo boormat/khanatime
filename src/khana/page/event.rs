@@ -40,6 +40,8 @@ pub enum Msg {
     QuickAdd(InputMsg),
     /// Load an entry into the text box for editing (keyed by car).
     EditEntry(String),
+    /// Inline edit input for an existing entry (Enter/Escape).
+    EditEntryInput(InputMsg),
     /// Toggle a class on/off for an entry (keyed by car).
     ToggleEntryClass(String, String),
     /// Delete an entry (keyed by car).
@@ -78,11 +80,10 @@ pub struct Model {
     pub show_entrants: Signal<bool>,
     // quick-add entrant
     pub quick_add: InputModel,
-    /// car of the entry being edited (click-to-edit); used to preserve
-    /// the entry when the edited text is re-submitted via quick-add.
+    /// Inline edit input for an existing entry (click-to-edit).
+    pub edit_entry_input: InputModel,
+    /// car of the entry being edited (click-to-edit).
     pub editing_entry_car: Signal<Option<String>>,
-    /// Backup of the entry removed for editing — restored if the user cancels.
-    pub editing_entry_backup: Signal<Option<crate::event::Entry>>,
     /// Publish confirmation dialog.
     pub show_publish_confirm: Signal<bool>,
 }
@@ -104,8 +105,8 @@ pub fn init() -> Model {
         show_tests: create_signal(crate::event::load_collapse("tests", true)),
         show_entrants: create_signal(crate::event::load_collapse("entrants", false)),
         quick_add: crate::input::init(),
+        edit_entry_input: crate::input::init(),
         editing_entry_car: create_signal(None),
-        editing_entry_backup: create_signal(None),
         show_publish_confirm: create_signal(false),
     }
 }
@@ -234,19 +235,10 @@ pub fn update(model: crate::Model, msg: Msg) {
             if input.is_empty() {
                 return;
             }
-            let editing_entry_car = em.editing_entry_car.get_clone();
             let edit_ev = em.edit_event.get_clone().unwrap_or_default();
             match parse_quick_entry(input, &edit_ev) {
                 Ok(qp) => {
                     let mut entry = qp.entry;
-                    if entry.name.is_empty() {
-                        em.feedback.set("Driver name required.".into());
-                        return;
-                    }
-                    if entry.classes.is_empty() {
-                        em.feedback.set("At least one class required.".into());
-                        return;
-                    }
                     if entry.car.is_empty() {
                         let used: std::collections::HashSet<String> = edit_ev
                             .entries
@@ -256,29 +248,24 @@ pub fn update(model: crate::Model, msg: Msg) {
                             .collect();
                         entry.car = crate::event::next_free_number(&used);
                     }
-                    // Preserve car when re-adding an edited entry.
-                    if let Some(orig_car) = editing_entry_car {
-                        entry.car = orig_car;
-                        em.editing_entry_car.set(None);
-                    }
-                    let car = entry.car.clone();
-                    let name = entry.name.clone();
-                    let dup = edit_ev
-                        .entries
-                        .iter()
-                        .any(|e| e.car == car || e.name == name);
-                    if dup {
-                        em.feedback
-                            .set(format!("Car {car} or driver {name} already exists."));
+                    let v = validate_entry(entry, &edit_ev.entries, None);
+                    if !v.errors.is_empty() {
+                        em.feedback.set(v.errors.join(". "));
                         return;
                     }
+                    if !v.warnings.is_empty() {
+                        em.feedback.set(v.warnings.join(". "));
+                    }
+                    let car = v.entry.car.clone();
+                    let name = v.entry.name.clone();
                     em.edit_event.update(|e| {
                         if let Some(ref mut ev) = e {
-                            ev.entries.push(entry);
+                            ev.entries.push(v.entry);
                         }
                     });
-                    em.editing_entry_backup.set(None);
-                    em.feedback.set(format!("Added #{} {}.", car, name));
+                    if em.feedback.get_clone().is_empty() {
+                        em.feedback.set(format!("Added #{} {}.", car, name));
+                    }
                     crate::input::input_clear(em.quick_add);
                 }
                 Err(e) => {
@@ -289,31 +276,71 @@ pub fn update(model: crate::Model, msg: Msg) {
             }
         }
         Msg::QuickAdd(InputMsg::CancelEdit) => {
-            // Restore the entry that was removed for editing
-            if let Some(entry) = model.screens.setup.editing_entry_backup.take() {
-                model.screens.setup.edit_event.update(|e| {
-                    if let Some(ref mut ev) = e {
-                        ev.entries.push(entry);
-                    }
-                });
-            }
             crate::input::input_clear(model.screens.setup.quick_add);
-            model.screens.setup.editing_entry_car.set(None);
         }
         Msg::EditEntry(car) => {
             let em = model.screens.setup;
-            let mut ev = em.edit_event.get_clone().unwrap_or_default();
-            if let Some(pos) = ev.entries.iter().position(|e| e.car == car) {
-                let entry = ev.entries.remove(pos);
-                em.editing_entry_backup.set(Some(entry.clone()));
-                let text = serialize_entry_for_edit(&entry);
-                let car = entry.car.clone();
-                let name = entry.name.clone();
-                em.quick_add.input.set(text);
-                em.edit_event.set(Some(ev));
-                em.editing_entry_car.set(Some(car.clone()));
-                em.feedback.set(format!("Editing {} {}.", car, name));
+            em.feedback.set(String::new());
+            let ev = em.edit_event.get_clone().unwrap_or_default();
+            if let Some(entry) = ev.entries.iter().find(|e| e.car == car) {
+                let text = serialize_entry_for_edit(entry);
+                em.edit_entry_input.input.set(text);
+                em.editing_entry_car.set(Some(car));
             }
+        }
+        Msg::EditEntryInput(InputMsg::DoThing) => {
+            let em = model.screens.setup;
+            let input = em.edit_entry_input.input.get_clone();
+            let input = input.trim();
+            if input.is_empty() {
+                return;
+            }
+            let orig_car = match em.editing_entry_car.get_clone() {
+                Some(c) => c,
+                None => return,
+            };
+            let edit_ev = em.edit_event.get_clone().unwrap_or_default();
+            let edit_pos = edit_ev.entries.iter().position(|e| e.car == orig_car);
+            match parse_quick_entry(input, &edit_ev) {
+                Ok(qp) => {
+                    let mut entry = qp.entry;
+                    if entry.car.is_empty() {
+                        entry.car = orig_car.clone();
+                    }
+                    let v = validate_entry(entry, &edit_ev.entries, edit_pos);
+                    if !v.errors.is_empty() {
+                        em.feedback.set(v.errors.join(". "));
+                        return;
+                    }
+                    if !v.warnings.is_empty() {
+                        em.feedback.set(v.warnings.join(". "));
+                    }
+                    if let Some(pos) = edit_pos {
+                        let car = v.entry.car.clone();
+                        let name = v.entry.name.clone();
+                        em.edit_event.update(|e| {
+                            if let Some(ref mut ev) = e {
+                                ev.entries[pos] = v.entry;
+                            }
+                        });
+                        if em.feedback.get_clone().is_empty() {
+                            em.feedback.set(format!("Updated #{} {}.", car, name));
+                        }
+                    }
+                    em.editing_entry_car.set(None);
+                    crate::input::input_clear(em.edit_entry_input);
+                }
+                Err(e) => {
+                    if !e.is_empty() {
+                        em.feedback.set(e);
+                    }
+                }
+            }
+        }
+        Msg::EditEntryInput(InputMsg::CancelEdit) => {
+            let em = model.screens.setup;
+            em.editing_entry_car.set(None);
+            crate::input::input_clear(em.edit_entry_input);
         }
         Msg::ToggleEntryClass(car, class) => {
             model.screens.setup.edit_event.update(|e| {
@@ -366,6 +393,53 @@ fn serialize_entry_for_edit(entry: &crate::event::Entry) -> String {
         parts.push(s.clone());
     }
     parts.join("  ")
+}
+
+/// Result of validating an entry before add/update.
+pub(crate) struct EntryValidation {
+    pub entry: crate::event::Entry,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// Validate an entry against existing entries.
+/// `exclude_pos` skips the entry at that index (for in-place edits).
+pub(crate) fn validate_entry(
+    entry: crate::event::Entry,
+    existing: &[crate::event::Entry],
+    exclude_pos: Option<usize>,
+) -> EntryValidation {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    if entry.name.is_empty() {
+        errors.push("Driver name required.".into());
+    }
+    if entry.classes.is_empty() {
+        errors.push("At least one class required.".into());
+    }
+
+    let car_dup = existing
+        .iter()
+        .enumerate()
+        .any(|(i, e)| exclude_pos != Some(i) && e.car == entry.car);
+    if car_dup {
+        errors.push(format!("Car {} already exists.", entry.car));
+    }
+
+    let name_dup = existing
+        .iter()
+        .enumerate()
+        .any(|(i, e)| exclude_pos != Some(i) && e.name == entry.name);
+    if name_dup {
+        warnings.push(format!("Driver {} already exists.", entry.name));
+    }
+
+    EntryValidation {
+        entry,
+        errors,
+        warnings,
+    }
 }
 
 /// Build the staged event: committed event + edit-form fields (details,
@@ -422,7 +496,7 @@ fn send_batch(model: crate::Model) {
     em.confirm_warning.set(String::new());
     em.edit_base.set(None);
     em.editing_entry_car.set(None);
-    em.editing_entry_backup.set(None);
+    crate::input::input_clear(em.edit_entry_input);
     em.pre_create.set(None);
     em.saved.set("Saved.".to_string());
 }
@@ -519,7 +593,7 @@ fn discard_edits(model: crate::Model) {
     em.confirm_warning.set(String::new());
     em.edit_base.set(None);
     em.editing_entry_car.set(None);
-    em.editing_entry_backup.set(None);
+    crate::input::input_clear(em.edit_entry_input);
     crate::input::input_clear(em.quick_add);
     let prev = em.pre_create.get_clone();
     em.pre_create.set(None);
@@ -942,15 +1016,6 @@ fn is_published(model: crate::Model) -> bool {
         .with(|e| e.status != crate::event::EventStatus::Draft)
 }
 
-fn view_feedback(model: crate::Model) -> View {
-    let msg = model.screens.setup.feedback.get_clone();
-    if msg.is_empty() {
-        view! {}
-    } else {
-        view! { p(class="help is-danger") { (msg) } }
-    }
-}
-
 /// Edit the current event's details.  Everything is editable while editing —
 /// including a published event (amend-only: no deletions, the class list never
 /// renames, and the publish homeserver/reg lock once published).
@@ -1088,7 +1153,6 @@ fn view_details(model: crate::Model) -> View {
             hr() {}
             (move || view_publish_status(model))
             (move || view_publish_message(model))
-            (move || view_feedback(model))
             (move || {
                 let msg = em.saved.get_clone();
                 if msg.is_empty() {
@@ -1257,6 +1321,151 @@ fn view_class_chips(model: crate::Model, editing: bool) -> View {
     view! { div(class="tags") { (items) } }
 }
 
+/// Shared live preview for the quick-add / inline-edit entry input.
+/// Parses the input text and renders colored tags for each field.
+fn view_entry_live_preview(model: crate::Model, input: &Signal<String>) -> View {
+    let input = input.get_clone();
+    let input = input.trim().to_string();
+    if input.is_empty() {
+        return view! {};
+    }
+    let event = if model.screens.setup.editing.get() {
+        model
+            .screens
+            .setup
+            .edit_event
+            .with(|e| e.clone().unwrap_or_default())
+    } else {
+        model.khana.event.get_clone()
+    };
+    match parse_quick_entry(&input, &event) {
+        Ok(qp) => {
+            let entry = &qp.entry;
+            let cf = qp.cursor_field;
+            let defaulted = &qp.defaulted;
+            let name_present = !entry.name.is_empty();
+            let classes_present = !entry.classes.is_empty();
+            let is_ready = name_present && classes_present;
+
+            let mut tags: Vec<View> = vec![];
+
+            if entry.car.is_empty() {
+                let used: std::collections::HashSet<String> = event
+                    .entries
+                    .iter()
+                    .map(|e| e.car.clone())
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                let predicted = crate::event::next_free_number(&used);
+                tags.push(view! { span(class="tag is-warning is-light kt-car-tag") { i(class="fa fa-car") { " " } (predicted) " \u{26A1}" } });
+            } else {
+                tags.push(crate::view::car_tag(&entry.car));
+            }
+
+            if !entry.name.is_empty() {
+                let n = format!("Name: {}", entry.name);
+                let cls = if cf == 0 {
+                    "tag is-link"
+                } else {
+                    "tag is-link is-light"
+                };
+                tags.push(view! { span(class=cls) { (n) } });
+            }
+
+            for cl in &entry.classes {
+                let cl_text = format!("Class: {cl}");
+                let cls = if cf == 1 {
+                    "tag is-info"
+                } else {
+                    "tag is-info is-light"
+                };
+                tags.push(view! { span(class=cls) { (cl_text) } });
+            }
+
+            if is_ready {
+                tags.push(view! { span(class="tag is-success is-light") { "\u{2713} Ready" } });
+            }
+
+            if let Some(ref v) = entry.vehicle {
+                if !v.is_empty() {
+                    let v_text = format!("Vehicle: {v}");
+                    let cls = if cf == 2 {
+                        "tag is-link"
+                    } else {
+                        "tag is-light"
+                    };
+                    tags.push(view! { span(class=cls) { (v_text) } });
+                } else if cf == 2 {
+                    tags.push(view! { span(class="tag is-link") { "Vehicle: ?" } });
+                } else if cf > 2 {
+                    tags.push(view! { span(class="tag is-light") { "Vehicle: ?" } });
+                }
+            } else if cf == 2 {
+                tags.push(view! { span(class="tag is-link") { "Vehicle: ?" } });
+            } else if cf > 2 {
+                tags.push(view! { span(class="tag is-light") { "Vehicle: ?" } });
+            }
+
+            let has_desc_default = defaulted.contains(&"Description");
+            if let Some(ref d) = entry.description {
+                let d_text = format!("Desc: {d}");
+                let cls = if cf == 3 {
+                    "tag is-link"
+                } else if has_desc_default {
+                    "tag is-warning is-light"
+                } else {
+                    "tag is-light"
+                };
+                let suffix = if has_desc_default && cf != 3 {
+                    "\u{26A1}"
+                } else {
+                    ""
+                };
+                let text = format!("{d_text}{suffix}");
+                tags.push(view! { span(class=cls) { (text) } });
+            } else if cf == 3 {
+                tags.push(view! { span(class="tag is-link") { "Desc: ?" } });
+            } else if cf > 3 {
+                tags.push(view! { span(class="tag is-warning is-light") { "Desc: ?" } });
+            }
+
+            if let Some(ref s) = entry.shared {
+                let s_text = format!("Shared: {s}");
+                let cls = if cf == 4 {
+                    "tag is-link"
+                } else {
+                    "tag is-light"
+                };
+                tags.push(view! { span(class=cls) { (s_text) } });
+            } else if cf == 4 {
+                tags.push(view! { span(class="tag is-link") { "Shared: ?" } });
+            }
+
+            let error_view = match &qp.extra_warning {
+                Some(w) => {
+                    let w = w.clone();
+                    view! { span(class="tag is-danger is-light ml-2") { (w) } }
+                }
+                None => view! {},
+            };
+
+            view! {
+                div(class="tags are-small mt-1") {
+                    (tags)
+                    (error_view)
+                }
+            }
+        }
+        Err(e) => {
+            if e.is_empty() {
+                view! {}
+            } else {
+                view! { p(class="help is-danger mt-1") { (e) } }
+            }
+        }
+    }
+}
+
 /// Quick-add entrant: text field + staged entries preview (edit mode only).
 fn view_quick_add(model: crate::Model) -> View {
     let em = model.screens.setup;
@@ -1289,135 +1498,7 @@ fn view_quick_add(model: crate::Model) -> View {
                             view! { p(class="help is-danger") { (fb) } }
                         }
                     })
-                    // Live preview: parse on every keystroke and show result
-                    (move || {
-                        let input = em.quick_add.input.get_clone();
-                        let input = input.trim().to_string();
-                        if input.is_empty() {
-                            return view! {};
-                        }
-                        let event = if model.screens.setup.editing.get() {
-                            model.screens.setup.edit_event.with(|e| e.clone().unwrap_or_default())
-                        } else {
-                            model.khana.event.get_clone()
-                        };
-                        match parse_quick_entry(&input, &event) {
-                            Ok(qp) => {
-                                let entry = &qp.entry;
-                                let cf = qp.cursor_field;
-                                let defaulted = &qp.defaulted;
-                                let name_present = !entry.name.is_empty();
-                                let classes_present = !entry.classes.is_empty();
-                                let is_ready = name_present && classes_present;
-
-                                let mut tags: Vec<View> = vec![];
-
-                                // Car (black if typed, light warning if auto-assigned)
-                                if entry.car.is_empty() {
-                                    let used: std::collections::HashSet<String> = event
-                                        .entries
-                                        .iter()
-                                        .map(|e| e.car.clone())
-                                        .filter(|c| !c.is_empty())
-                                        .collect();
-                                    let predicted = crate::event::next_free_number(&used);
-                                    tags.push(view! { span(class="tag is-warning is-light kt-car-tag") { i(class="fa fa-car") { " " } (predicted) " \u{26A1}" } });
-                                } else {
-                                    tags.push(crate::view::car_tag(&entry.car));
-                                }
-
-                                // Name (link-blue)
-                                if !entry.name.is_empty() {
-                                    let n = format!("Name: {}", entry.name);
-                                    let cls = if cf == 0 { "tag is-link" } else { "tag is-link is-light" };
-                                    tags.push(view! { span(class=cls) { (n) } });
-                                }
-
-                                // Classes (info-blue, one per class)
-                                for cl in &entry.classes {
-                                    let cl_text = format!("Class: {cl}");
-                                    let cls = if cf == 1 { "tag is-info" } else { "tag is-info is-light" };
-                                    tags.push(view! { span(class=cls) { (cl_text) } });
-                                }
-
-                                // Ready indicator (green)
-                                if is_ready {
-                                    tags.push(view! { span(class="tag is-success is-light") { "\u{2713} Ready" } });
-                                }
-
-                                // Vehicle (always show)
-                                if let Some(ref v) = entry.vehicle {
-                                    if !v.is_empty() {
-                                        let v_text = format!("Vehicle: {v}");
-                                        let cls = if cf == 2 { "tag is-link" } else { "tag is-light" };
-                                        tags.push(view! { span(class=cls) { (v_text) } });
-                                    } else if cf == 2 {
-                                        tags.push(view! { span(class="tag is-link") { "Vehicle: ?" } });
-                                    } else if cf > 2 {
-                                        tags.push(view! { span(class="tag is-light") { "Vehicle: ?" } });
-                                    }
-                                } else if cf == 2 {
-                                    tags.push(view! { span(class="tag is-link") { "Vehicle: ?" } });
-                                } else if cf > 2 {
-                                    tags.push(view! { span(class="tag is-light") { "Vehicle: ?" } });
-                                }
-
-                                // Description (always show)
-                                let has_desc_default = defaulted.contains(&"Description");
-                                if let Some(ref d) = entry.description {
-                                    let d_text = format!("Desc: {d}");
-                                    let cls = if cf == 3 {
-                                        "tag is-link"
-                                    } else if has_desc_default {
-                                        "tag is-warning is-light"
-                                    } else {
-                                        "tag is-light"
-                                    };
-                                    let suffix = if has_desc_default && cf != 3 { "\u{26A1}" } else { "" };
-                                    let text = format!("{d_text}{suffix}");
-                                    tags.push(view! { span(class=cls) { (text) } });
-                                } else if cf == 3 {
-                                    tags.push(view! { span(class="tag is-link") { "Desc: ?" } });
-                                } else if cf > 3 {
-                                    tags.push(view! { span(class="tag is-warning is-light") { "Desc: ?" } });
-                                }
-
-                                // Shared car group (always show)
-                                if let Some(ref s) = entry.shared {
-                                    let s_text = format!("Shared: {s}");
-                                    let cls = if cf == 4 { "tag is-link" } else { "tag is-light" };
-                                    tags.push(view! { span(class=cls) { (s_text) } });
-                                } else if cf == 4 {
-                                    tags.push(view! { span(class="tag is-link") { "Shared: ?" } });
-                                } else if !is_ready {
-                                    // Show ⚡ for shared when not ready and not yet reached
-                                }
-
-                                // Error indicator (red)
-                                let error_view = match &qp.extra_warning {
-                                    Some(w) => {
-                                        let w = w.clone();
-                                        view! { span(class="tag is-danger is-light ml-2") { (w) } }
-                                    }
-                                    None => view! {},
-                                };
-
-                                view! {
-                                    div(class="tags are-small mt-1") {
-                                        (tags)
-                                        (error_view)
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                if e.is_empty() {
-                                    view! {}
-                                } else {
-                                    view! { p(class="help is-danger mt-1") { (e) } }
-                                }
-                            }
-                        }
-                    })
+                    (move || view_entry_live_preview(model, &em.quick_add.input))
                 }
             }
         })
@@ -1487,6 +1568,38 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
             let vehicle = e.vehicle.clone().unwrap_or_default();
             let desc = e.description.clone().unwrap_or_default();
             let shared = e.shared.clone().unwrap_or_default();
+
+            // Inline edit form when this entry is being edited
+            if editing && em.editing_entry_car.with(|c| c.as_deref() == Some(&car)) {
+                let dispatch = move |msg: InputMsg| {
+                    crate::update(model, crate::Msg::EventMsg(Msg::EditEntryInput(msg)))
+                };
+                return view! {
+                    li(style="display: block; width: 100%;") {
+                        div(class="kt-entrant-line") {
+                            (crate::view::car_tag(&car))
+                            div(class="control is-expanded") {
+                                input(
+                                    class="input is-small",
+                                    style="width: 100%",
+                                    bind:value=em.edit_entry_input.input,
+                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                        match ev.key_code() {
+                                            13 => dispatch(InputMsg::DoThing),
+                                            27 => dispatch(InputMsg::CancelEdit),
+                                            _ => {}
+                                        }
+                                    },
+                                    on:blur=move |_| {
+                                        dispatch(InputMsg::CancelEdit);
+                                    },
+                                )
+                            }
+                        }
+                        (move || view_entry_live_preview(model, &em.edit_entry_input.input))
+                    }
+                };
+            }
 
             // Class checkboxes (if editing) or class tags (if viewing)
             let class_display: Vec<View> = if editing {
@@ -2692,15 +2805,9 @@ fn parse_quick_entry(input: &str, event: &crate::event::EventInfo) -> Result<Qui
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Duplicate checks.
+    // Empty input guard (empty name AND empty car = nothing to parse).
     if name.is_empty() && car.is_empty() {
         return Err(String::new());
-    }
-    if !car.is_empty() && event.entries.iter().any(|e| e.car == car) {
-        return Err(format!("Car number {car} already exists."));
-    }
-    if !name.is_empty() && event.entries.iter().any(|e| e.name == name) {
-        return Err(format!("Driver '{name}' already exists."));
     }
 
     // Classes: resolve each space-separated token against the event's class list.
@@ -2948,18 +3055,6 @@ mod tests {
         let qp = parse_quick_entry("1 x  Outright  car  Rego  Group", &ev).unwrap();
         assert_eq!(qp.entry.description.as_deref(), Some("Rego"));
         assert_eq!(qp.entry.shared.as_deref(), Some("Group"));
-    }
-
-    #[test]
-    fn parse_duplicate_car_errors() {
-        let ev = test_event();
-        assert!(parse_quick_entry("99 x  Outright", &ev).is_err());
-    }
-
-    #[test]
-    fn parse_duplicate_name_errors() {
-        let ev = test_event();
-        assert!(parse_quick_entry("1 Existing Driver  Outright", &ev).is_err());
     }
 
     #[test]
