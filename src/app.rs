@@ -801,6 +801,24 @@ pub fn setup_effects(model: Model) {
         let cmd = crate::khana::page::timekeeper::parse_command(&input);
         model.screens.timekeeper.preview.set(cmd);
     });
+    // Cascading field-clear on the create-account modal.  Driven by reactive
+    // effects (not on:change handlers) so the closures can't be dropped by a
+    // re-render that fires mid-invocation — see wasm-bindgen "closure invoked
+    // recursively or after being dropped".
+    let am = model.screens.accounts;
+    create_effect(move || {
+        let _hs = am.create_hs.get_clone();
+        am.create_user.set(String::new());
+        am.create_pass.set(String::new());
+        am.create_desc.set(String::new());
+        am.create_event.set(String::new());
+    });
+    create_effect(move || {
+        let _eid = am.create_event.get_clone();
+        am.create_user.set(String::new());
+        am.create_pass.set(String::new());
+        am.create_desc.set(String::new());
+    });
     #[cfg(target_arch = "wasm32")]
     start_tick_timer(model);
     #[cfg(target_arch = "wasm32")]

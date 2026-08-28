@@ -559,11 +559,7 @@ fn view_create_modal(model: crate::Model) -> View {
                     div(class="is-flex", style="gap: 0.5rem;") {
                         div(class="control is-flex-grow-1") {
                             div(class="select is-fullwidth") {
-                                select(bind:value=sm.create_event, disabled=event_empty, on:change=move |_| {
-                                    sm.create_user.set(String::new());
-                                    sm.create_pass.set(String::new());
-                                    sm.create_desc.set(String::new());
-                                }) {
+                                select(bind:value=sm.create_event, disabled=event_empty) {
                                     option(value="") { "Select event…" }
                                     (event_opts)
                                 }
@@ -644,12 +640,7 @@ fn view_create_modal(model: crate::Model) -> View {
                                 label(class="label") { "Homeserver" }
                                 div(class="control") {
                                     div(class="select is-fullwidth") {
-                                        select(bind:value=sm.create_hs, disabled=hs_empty, on:change=move |_| {
-                                            sm.create_user.set(String::new());
-                                            sm.create_pass.set(String::new());
-                                            sm.create_desc.set(String::new());
-                                            sm.create_event.set(String::new());
-                                        }) {
+                                        select(bind:value=sm.create_hs, disabled=hs_empty) {
                                             option(value="") { "Select…" }
                                             (hs_opts)
                                         }
