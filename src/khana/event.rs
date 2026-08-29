@@ -48,6 +48,10 @@ pub struct RunRecord {
     /// Derived (replay) state: the observation was `void`ed.  Never on the wire.
     #[serde(skip)]
     pub voided: bool,
+    /// Provisional finish: created locally on Stop but not yet in the outbox.
+    /// The edit form serves as the confirm interface; only confirmed records sync.
+    #[serde(skip)]
+    pub provisional: bool,
 }
 
 /// Timing method for a test.  Stopwatch = lowest elapsed time wins.
@@ -1731,6 +1735,7 @@ pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
         comment: te.comment.clone(),
         refs: te.refs.clone(),
         voided: false,
+        provisional: false,
     }
 }
 

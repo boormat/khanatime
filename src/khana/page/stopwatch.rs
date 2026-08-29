@@ -1,18 +1,15 @@
-use serde::{Deserialize, Serialize};
 use sycamore::prelude::*;
 
 use crate::event::{
-    elapsed_ds, pending_for_car, pending_starts, upsert_ktime, KTime, KTimeTime, RunRecord,
-    RUN_FINISH, RUN_START, RUN_STOP,
+    elapsed_ds, pending_for_car, pending_starts, upsert_ktime, RunRecord, RUN_FINISH, RUN_START,
+    RUN_STOP,
 };
 use crate::khana::page::penalty;
 
-// Cooperative stopwatch: START sends a start event, STOP sends a stop event
-// and opens a confirm panel with auto-attached observations, CONFIRM sends a
-// finish event referencing the attached UIDs.
+// Cooperative stopwatch: START sends a start event, STOP creates a provisional
+// finish in the log, CONFIRM sends it to the outbox.
 //
-// Workflow: Select car → Start (or Manual) → Stop → Confirm penalties → Done.
-// Only one pending finish at a time.
+// Workflow: Select car → Start (or Manual) → Stop → Edit penalties in log → Confirm → Done.
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -23,74 +20,11 @@ pub enum Msg {
     Test(u8),
     Start,
     Stop,
-    /// Toggle attachment of an event in the pending confirm panel (attached_idx).
-    ToggleAttach(usize),
     Commit,
     Cancel,
     /// Open the confirm panel with a manual time input (requires car selected).
     ManualTime,
     Void(String),
-}
-
-// ---------------------------------------------------------------------------
-// Attached event (shown in confirm panel)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AttachedEvent {
-    pub uid: String,
-    pub r#type: String,
-    pub ts: i64,
-    pub car: String,
-    pub attached: bool,
-}
-
-// ---------------------------------------------------------------------------
-// Pending finish
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub enum PendingMode {
-    Stopwatch,
-    Manual,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PendingFinish {
-    pub car: String,
-    pub time_ds: u16,
-    pub status: String,
-    pub flags: u8,
-    pub garage: bool,
-    pub comment: String,
-    pub attached: Vec<AttachedEvent>,
-    pub mode: PendingMode,
-}
-
-impl PendingFinish {
-    fn refs(&self) -> Vec<String> {
-        self.attached
-            .iter()
-            .filter(|a| a.attached)
-            .map(|a| a.uid.clone())
-            .collect()
-    }
-
-    /// Build a KTime directly from this finish's penalty fields (no signal
-    /// round-trip — safe for concurrent pending finishes).
-    pub fn to_ktime(&self) -> KTime {
-        match self.status.as_str() {
-            "dns" => KTime::NOSHO,
-            "dnf" => KTime::DNF,
-            "fts" => KTime::FTS,
-            "wd" => KTime::WD,
-            _ => KTime::Time(KTimeTime {
-                time_ds: self.time_ds,
-                flags: self.flags,
-                garage: self.garage,
-            }),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +38,7 @@ pub struct Model {
     pub comment: Signal<String>,
     pub time: Signal<String>,
     pub penalty: penalty::PenaltyModel,
-    pub pending: Signal<Option<PendingFinish>>,
+    pub provisional_uid: Signal<Option<String>>,
     pub feedback: Signal<Option<String>>,
     pub show_car_picker: Signal<bool>,
     pub editing_observation: Signal<Option<String>>,
@@ -118,7 +52,7 @@ pub fn init() -> Model {
         comment: create_signal(String::new()),
         time: create_signal(String::new()),
         penalty: penalty::init(),
-        pending: create_signal(None),
+        provisional_uid: create_signal(None),
         feedback: create_signal(None),
         show_car_picker: create_signal(false),
         editing_observation: create_signal(None),
@@ -131,7 +65,6 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::Test(t) => model.screens.stopwatch.test.set(t),
         Msg::Start => start_car(model),
         Msg::Stop => stop_car(model),
-        Msg::ToggleAttach(attached_idx) => toggle_attach(model, attached_idx),
         Msg::Commit => commit(model),
         Msg::Cancel => cancel(model),
         Msg::ManualTime => manual_time(model),
@@ -156,26 +89,20 @@ fn finish_refs_used(runs: &[RunRecord]) -> std::collections::HashSet<String> {
 /// - not DNS
 /// - not already referenced by another finish's refs
 ///
-/// Sorted by timestamp (oldest first).
-fn auto_attach(runs: &[RunRecord], test: u8, car: &str) -> Vec<AttachedEvent> {
+/// Returns UIDs sorted by timestamp (oldest first).
+fn auto_attach(runs: &[RunRecord], test: u8, car: &str) -> Vec<String> {
     let used = finish_refs_used(runs);
-    let mut events: Vec<AttachedEvent> = runs
+    let mut events: Vec<(i64, String)> = runs
         .iter()
         .filter(|r| r.test == test && r.car == car)
         .filter(|r| r.r#type == RUN_START || r.r#type == RUN_STOP)
         .filter(|r| !r.voided)
         .filter(|r| r.status.as_deref() != Some("dns"))
         .filter(|r| !used.contains(&r.uid))
-        .map(|r| AttachedEvent {
-            uid: r.uid.clone(),
-            r#type: r.r#type.clone(),
-            ts: r.ts,
-            car: r.car.clone(),
-            attached: true,
-        })
+        .map(|r| (r.ts, r.uid.clone()))
         .collect();
-    events.sort_by_key(|a| a.ts);
-    events
+    events.sort_by_key(|a| a.0);
+    events.into_iter().map(|(_, uid)| uid).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +137,7 @@ fn start_car(model: crate::Model) {
         voided: false,
         comment: comment_opt,
         refs: vec![],
+        provisional: false,
     };
     crate::khana::helpers::enqueue_run(model, &record);
     sm.feedback.set(None);
@@ -235,85 +163,62 @@ fn stop_car(model: crate::Model) {
         .find(|r| r.car == car)
         .map(|s| elapsed_ds(s.ts, now))
         .unwrap_or(0);
-    let comment = sm.comment.get_clone();
-    let comment_opt = non_empty(comment);
+    // Auto-attach all matching start/stop observations.
+    let attached = auto_attach(&runs, test, &car);
+    let refs: Vec<String> = attached;
+    let uid = crate::ids::gen_short_id();
+    let comment = non_empty(sm.comment.get_clone());
     let record = RunRecord {
-        uid: String::new(),
-        r#type: RUN_STOP.to_string(),
+        uid: uid.clone(),
+        r#type: RUN_FINISH.to_string(),
         test,
         car: car.clone(),
         ts: now,
         time_ds: Some(elapsed),
         status: Some("clean".to_string()),
-        flags: None,
+        flags: Some(0),
         official_id: Some(model.sync.identity.get_clone()),
         voided: false,
-        comment: comment_opt,
-        refs: vec![],
+        comment,
+        refs,
+        provisional: true,
     };
-    crate::khana::helpers::enqueue_run(model, &record);
-
-    let runs = model.khana.runs.get_clone();
-    let attached = auto_attach(&runs, test, &car);
-    set_pending(
-        sm.pending,
-        Some(PendingFinish {
-            car,
-            time_ds: elapsed,
-            status: "clean".to_string(),
-            flags: 0,
-            garage: false,
-            comment: String::new(),
-            attached,
-            mode: PendingMode::Stopwatch,
-        }),
-    );
+    model.khana.runs.update(|runs| {
+        crate::khana::event::add_run(runs, record);
+    });
+    sm.provisional_uid.set(Some(uid));
     sm.feedback.set(None);
     sm.car.set(String::new());
     save_car("");
 }
 
-fn toggle_attach(model: crate::Model, attached_idx: usize) {
-    let sm = model.screens.stopwatch;
-    update_pending(sm.pending, |p| {
-        if let Some(a) = p.attached.get_mut(attached_idx) {
-            a.attached = !a.attached;
-        }
-    });
-}
-
 fn commit(model: crate::Model) {
     let sm = model.screens.stopwatch;
-    let pending = sm.pending.with(|p| p.as_ref().cloned());
-    let pending = match pending {
-        Some(p) => p,
+    let uid = match sm.provisional_uid.get_clone() {
+        Some(uid) => uid,
         None => return,
     };
-    let now = js_sys::Date::now() as i64;
-    let time_ds = pending.time_ds;
-    let ktime = pending.to_ktime();
-    let refs = pending.refs();
-    let comment = sm.comment.get_clone();
-    let car = pending.car;
-    let record = RunRecord {
-        uid: String::new(),
-        r#type: RUN_FINISH.to_string(),
-        test: sm.test.get(),
-        car: car.clone(),
-        ts: now,
-        time_ds: Some(time_ds),
-        status: Some(pending.status),
-        flags: Some(pending.flags),
-        official_id: Some(model.sync.identity.get_clone()),
-        voided: false,
-        comment: Some(comment).filter(|c| !c.is_empty()),
-        refs,
+    let runs = model.khana.runs.get_clone();
+    let record = match runs.iter().find(|r| r.uid == uid && r.provisional) {
+        Some(r) => r.clone(),
+        None => return,
     };
+    let car = record.car.clone();
+    let test = record.test;
+    // Build KTime from the record's current penalty fields.
+    let ktime = crate::khana::event::finish_to_ktime(&record);
     model.khana.scores.update(|s| {
-        upsert_ktime(s, sm.test.get(), &car, ktime);
+        upsert_ktime(s, test, &car, ktime);
     });
+    // Enqueue to outbox (the record is already in runs from stop_car).
     crate::khana::helpers::enqueue_run(model, &record);
-    set_pending(sm.pending, None);
+    // Clear provisional flag — the record is now confirmed.
+    model.khana.runs.update(|runs| {
+        if let Some(r) = runs.iter_mut().find(|r| r.uid == uid) {
+            r.provisional = false;
+        }
+    });
+    sm.provisional_uid.set(None);
     sm.car.set(String::new());
     save_car("");
     sm.comment.set(String::new());
@@ -325,16 +230,13 @@ fn commit(model: crate::Model) {
 
 fn cancel(model: crate::Model) {
     let sm = model.screens.stopwatch;
-    let pending = sm.pending.with(|p| p.as_ref().cloned());
-    if let Some(p) = pending {
-        let test = sm.test.get();
-        for a in &p.attached {
-            if a.attached {
-                crate::khana::helpers::enqueue_void(model, &a.uid, test, &a.car);
-            }
-        }
+    if let Some(uid) = sm.provisional_uid.get_clone() {
+        // Remove the provisional record from runs — it was never sent.
+        model.khana.runs.update(|runs| {
+            runs.retain(|r| r.uid != uid);
+        });
     }
-    set_pending(sm.pending, None);
+    sm.provisional_uid.set(None);
     sm.time.set(String::new());
     sm.feedback.set(None);
     penalty::clear(sm.penalty);
@@ -350,19 +252,27 @@ fn manual_time(model: crate::Model) {
     if crate::khana::helpers::check_unknown_comment(&car, &sm.comment.get_clone(), &sm.feedback) {
         return;
     }
-    set_pending(
-        sm.pending,
-        Some(PendingFinish {
-            car,
-            time_ds: 0,
-            status: "clean".to_string(),
-            flags: 0,
-            garage: false,
-            comment: String::new(),
-            attached: vec![],
-            mode: PendingMode::Manual,
-        }),
-    );
+    let uid = crate::ids::gen_short_id();
+    let comment = non_empty(sm.comment.get_clone());
+    let record = RunRecord {
+        uid: uid.clone(),
+        r#type: RUN_FINISH.to_string(),
+        test: sm.test.get(),
+        car: car.clone(),
+        ts: js_sys::Date::now() as i64,
+        time_ds: Some(0),
+        status: Some("clean".to_string()),
+        flags: Some(0),
+        official_id: Some(model.sync.identity.get_clone()),
+        voided: false,
+        comment,
+        refs: vec![],
+        provisional: true,
+    };
+    model.khana.runs.update(|runs| {
+        crate::khana::event::add_run(runs, record);
+    });
+    sm.provisional_uid.set(Some(uid));
     sm.feedback.set(None);
 }
 
@@ -431,73 +341,10 @@ fn load_comment() -> String {
         .unwrap_or_default()
 }
 
-fn save_pending(pending: &PendingFinish) {
-    if let Some(st) = session_storage() {
-        if let Ok(json) = serde_json::to_string(pending) {
-            let _ = st.set_item("kt_sw_pending", &json);
-        }
-    }
-}
-
-fn load_pending() -> Option<PendingFinish> {
-    session_storage()
-        .and_then(|st| st.get_item("kt_sw_pending").ok().flatten())
-        .and_then(|json| serde_json::from_str(&json).ok())
-}
-
-fn clear_pending_storage() {
-    if let Some(st) = session_storage() {
-        let _ = st.remove_item("kt_sw_pending");
-    }
-}
-
-/// Set the pending finish and persist to sessionStorage.
-fn set_pending(pending: Signal<Option<PendingFinish>>, p: Option<PendingFinish>) {
-    if let Some(ref p) = p {
-        save_pending(p);
-    } else {
-        clear_pending_storage();
-    }
-    pending.set(p);
-}
-
-/// Update the pending finish in-place and persist to sessionStorage.
-fn update_pending(pending: Signal<Option<PendingFinish>>, f: impl FnOnce(&mut PendingFinish)) {
-    pending.update(|p| {
-        if let Some(pending) = p.as_mut() {
-            f(pending);
-            save_pending(pending);
-        }
-    });
-}
-
-/// On reload: restore car selection and pending finish from sessionStorage.
-/// Merges persisted penalty/comment/mode with fresh auto-attached observations.
+/// On reload: restore car selection and comment from sessionStorage.
 pub fn restore_session(model: crate::Model) {
     let sm = model.screens.stopwatch;
-    let test = sm.test.get();
     let car = load_car();
-
-    if let Some(mut saved) = load_pending() {
-        // Re-run auto_attach to get fresh observations from the runs log.
-        let runs = model.khana.runs.get_clone();
-        let fresh = auto_attach(&runs, test, &saved.car);
-        // Merge: keep user's attached toggles for known UIDs, default new ones.
-        let merged: Vec<AttachedEvent> = fresh
-            .into_iter()
-            .map(|a| {
-                let attached = saved
-                    .attached
-                    .iter()
-                    .find(|s| s.uid == a.uid)
-                    .map(|s| s.attached)
-                    .unwrap_or(true);
-                AttachedEvent { attached, ..a }
-            })
-            .collect();
-        saved.attached = merged;
-        set_pending(sm.pending, Some(saved));
-    }
     if !car.is_empty() {
         sm.car.set(car);
     }
@@ -550,14 +397,14 @@ pub fn view(model: crate::Model) -> View {
     view! {
         div {
             (move || {
-                if sm.pending.with(|p| p.is_some()) {
+                if sm.provisional_uid.with(|p| p.is_some()) {
                     view! {}
                 } else {
                     view_action_buttons(model)
                 }
             })
             (move || {
-                if sm.pending.with(|p| p.is_some()) {
+                if sm.provisional_uid.with(|p| p.is_some()) {
                     view! {}
                 } else {
                     view! {
@@ -565,8 +412,8 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             })
-            (view_pending(model))
-            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation)))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation), Some(sm.provisional_uid)))
+            (view_car_picker_modal(model))
         }
     }
 }
@@ -580,7 +427,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                 (move || {
                     let car = sm.car.get_clone();
                     let trimmed = car.trim().to_string();
-                    let has_pending = sm.pending.with(|p| p.is_some());
+                    let has_provisional = sm.provisional_uid.with(|p| p.is_some());
                     if trimmed.is_empty() {
                         return view! {
                             div(class="box kt-selected-car has-text-grey") {
@@ -615,7 +462,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                     let run_number = finished + 1;
                     let at_max = remaining == 0;
                     let run_label = format!("{}/{}", run_number, runs_total);
-                    let cls = if has_pending || is_on_course {
+                    let cls = if has_provisional || is_on_course {
                         "box kt-selected-car"
                     } else {
                         "box kt-selected-car is-clickable"
@@ -651,7 +498,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                         div(
                             class=cls,
                             on:click=move |_| {
-                                if !has_pending && !is_on_course {
+                                if !has_provisional && !is_on_course {
                                     sm.car.set(String::new());
                                     save_car("");
                                 }
@@ -671,7 +518,7 @@ fn view_action_buttons(model: crate::Model) -> View {
             div(class="column is-narrow is-flex is-align-items-center") {
                 (move || {
                     let car = sm.car.get_clone();
-                    let has_pending = sm.pending.with(|p| p.is_some());
+                    let has_provisional = sm.provisional_uid.with(|p| p.is_some());
                     let trimmed = car.trim();
                     let is_on_course = pending_for_car(
                         &model.khana.runs.get_clone(),
@@ -680,11 +527,11 @@ fn view_action_buttons(model: crate::Model) -> View {
                     );
                     let no_car = trimmed.is_empty();
                     // Show Stop when car is on course, Start otherwise.
-                    if is_on_course && !has_pending {
+                    if is_on_course && !has_provisional {
                         view! {
                             button(
                                 class="button is-danger",
-                                disabled=has_pending || no_car,
+                                disabled=has_provisional || no_car,
                                 on:click=move |_| update(model, Msg::Stop),
                             ) {
                                 span(class="icon") { i(class="fa fa-flag-checkered") }
@@ -692,7 +539,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                             }
                         }
                     } else {
-                        let cls = if no_car || has_pending {
+                        let cls = if no_car || has_provisional {
                             "button"
                         } else {
                             "button is-success"
@@ -700,7 +547,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                         view! {
                             button(
                                 class=cls,
-                                disabled=has_pending || no_car,
+                                disabled=has_provisional || no_car,
                                 on:click=move |_| update(model, Msg::Start),
                             ) {
                                 span(class="icon") { i(class="fa fa-flag-checkered") }
@@ -713,10 +560,10 @@ fn view_action_buttons(model: crate::Model) -> View {
             div(class="column is-narrow is-flex is-align-items-center") {
                 (move || {
                     let car = sm.car.get_clone();
-                    let has_pending = sm.pending.with(|p| p.is_some());
+                    let has_provisional = sm.provisional_uid.with(|p| p.is_some());
                     let trimmed = car.trim();
                     let no_car = trimmed.is_empty();
-                    if no_car || has_pending {
+                    if no_car || has_provisional {
                         view! {
                             button(class="button", disabled=true) {
                                 span(class="icon") { i(class="fa fa-keyboard") }
@@ -821,170 +668,27 @@ fn view_car_chips(model: crate::Model) -> View {
 }
 
 /// Single pending confirm panel — replaces the old stacked view.
-fn view_pending(model: crate::Model) -> View {
+fn view_car_picker_modal(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
     view! {
-        (move || {
-            let pending = sm.pending.with(|p| p.as_ref().cloned());
-            let p = match pending {
-                Some(p) => p,
-                None => return view! {},
-            };
-            let car = p.car.clone();
-            let is_manual = p.mode == PendingMode::Manual;
-            let time_ds = p.time_ds;
-            let (entry_name, entry_desc) = model.khana.event.with(|e| {
-                let entry = e.entries.iter().find(|en| en.car == car);
-                match entry {
-                    Some(en) => (en.name.clone(), en.description.clone()),
-                    None => (String::new(), None),
-                }
-            });
-            let desc_text = entry_desc.unwrap_or_default();
-            let time_str = if is_manual {
-                "manual".to_string()
-            } else {
-                format!("{:.1}s", time_ds as f32 / 10.0)
-            };
-            view! {
-                div(class="box") {
-                    // Car tag (clickable to open picker) + time
-                    div(class="level is-mobile mb-1") {
-                        div(class="level-left") {
-                            div(
-                                class="is-clickable",
-                                on:click=move |_| sm.show_car_picker.set(true),
-                            ) {
-                                (crate::view::car_tag(&car))
-                            }
-                            span(class="has-text-weight-semibold ml-2") { (entry_name) }
-                            span(class="has-text-grey ml-2 is-size-7") { (time_str) }
-                        }
-                    }
-                    (if !desc_text.is_empty() {
-                        let t = desc_text.clone();
-                        view! { div(class="has-text-grey is-size-7 mb-1 ml-4") { (t) } }
-                    } else {
-                        view! {}
-                    })
-                    // Manual time input (shown when mode == Manual and time not yet set)
-                    (if is_manual && p.time_ds == 0 {
-                        view! {
-                            div(class="field has-addons mb-2") {
-                                div(class="control is-expanded") {
-                                    input(
-                                        class="input is-small",
-                                        r#type="text",
-                                        placeholder="Time in seconds",
-                                        bind:value=sm.time,
-                                    )
-                                }
-                                div(class="control") {
-                                    button(
-                                        class="button is-primary is-small",
-                                        on:click=move |_| {
-                                            let time_str = sm.time.get_clone();
-                                            let elapsed = match time_str.trim().parse::<f32>() {
-                                                Ok(v) if v > 0.0 => (v * 10.0).round() as u16,
-                                                _ => {
-                                                    sm.feedback
-                                                        .set(Some("Enter a valid time in seconds".to_string()));
-                                                    return;
-                                                }
-                                            };
-                                            update_pending(sm.pending, |p| {
-                                                p.time_ds = elapsed;
-                                            });
-                                            sm.time.set(String::new());
-                                            sm.feedback.set(None);
-                                        },
-                                    ) { "Set" }
-                                }
-                            }
-                        }
-                    } else if is_manual {
-                        // Manual time already set — show it
-                        view! {}
-                    } else {
-                        view! {}
-                    })
-                    // Status chips + Garage + Flags — shared penalty row
-                    (move || {
-                        let status_str = sm.pending.with(|p| p.as_ref().map(|pp| pp.status.clone()).unwrap_or_default());
-                        let flags_val = sm.pending.with(|p| p.as_ref().map(|pp| pp.flags).unwrap_or(0));
-                        let garage_val = sm.pending.with(|p| p.as_ref().map(|pp| pp.garage).unwrap_or(false));
-                        let time_ds = sm.pending.with(|p| p.as_ref().map(|pp| pp.time_ds).unwrap_or(0));
-                        let is_manual = sm.pending.with(|p| p.as_ref().map(|pp| pp.mode == PendingMode::Manual).unwrap_or(false));
-                        let status_sig = create_signal(status_str);
-                        let flags_sig = create_signal(flags_val);
-                        let garage_sig = create_signal(garage_val);
-                        let sync = move || {
-                            let s = status_sig.get_clone();
-                            let f = flags_sig.get();
-                            let g = garage_sig.get();
-                            update_pending(sm.pending, |p| {
-                                p.status = s;
-                                p.flags = f;
-                                p.garage = g;
-                            });
-                        };
-                        penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds, is_manual, sync)
-                    })
-                    // Comment — highlighted when TBA (car == "?")
-                    (move || {
-                        let is_tba = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.as_str()) == Some("?"));
-                        let input_cls = if is_tba { "input is-small is-warning" } else { "input is-small" };
-                        let placeholder = if is_tba { "Comment (required for TBA)" } else { "Comment (required for #?)" };
-                        view! {
-                            div(class="field mb-2") {
-                                input(class=input_cls, r#type="text", placeholder=placeholder, bind:value=sm.comment)
-                            }
-                        }
-                    })
-                    // CONFIRM / Cancel
-                    (move || {
-                        let is_tba = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.as_str()) == Some("?"));
-                        let comment_empty = sm.comment.get_clone().trim().is_empty();
-                        let confirm_disabled = is_tba && comment_empty;
-                        view! {
-                            div(class="field is-grouped is-grouped-centered") {
-                                div(class="control") {
-                                    button(
-                                        class="button is-success is-small",
-                                        disabled=confirm_disabled,
-                                        on:click=move |_| update(model, Msg::Commit),
-                                    ) {
-                                        span(class="icon is-small") { i(class="fa fa-flag-checkered") }
-                                        span { " CONFIRM" }
-                                    }
-                                }
-                                div(class="control") {
-                                    button(
-                                        class="button is-light is-small",
-                                        on:click=move |_| update(model, Msg::Cancel),
-                                    ) { "Cancel" }
-                                }
-                            }
-                        }
-                    })
-                    // Attached observations (bottom)
-                    (view_attached_events(model))
-                }
-            }
-        })
-        // Car picker modal
         (move || {
             if !sm.show_car_picker.get_clone() {
                 return view! {};
             }
             let entries = model.khana.event.with(|e| e.entries.clone());
-            let current_car = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.clone()).unwrap_or_default());
+            // Current car = the provisional record's car.
+            let current_car = sm.provisional_uid.with(|uid| {
+                uid.as_ref().and_then(|u| {
+                    model.khana.runs.with(|runs| {
+                        runs.iter().find(|r| r.uid == *u).map(|r| r.car.clone())
+                    })
+                })
+            }).unwrap_or_default();
             // Initialize selected_picker_car to the current car on open.
             if sm.selected_picker_car.with(|c| c.is_none()) {
                 sm.selected_picker_car.set(Some(current_car.clone()));
             }
             let selected = sm.selected_picker_car.with(|c| c.clone().unwrap_or_default());
-            // Group entries by runs remaining.
             let test = sm.test.get();
             let (runs_remaining, _unknown_remaining) = compute_runs_remaining(model, test);
             use crate::event::cmp_car_number;
@@ -1077,8 +781,14 @@ fn view_pending(model: crate::Model) -> View {
             let apply_car = {
                 let close = close_picker;
                 move || {
-                    if let Some(car) = sm.selected_picker_car.get_clone() {
-                        update_pending(sm.pending, |p| { p.car = car; });
+                    if let Some(new_car) = sm.selected_picker_car.get_clone() {
+                        if let Some(uid) = sm.provisional_uid.get_clone() {
+                            model.khana.runs.update(|runs| {
+                                if let Some(r) = runs.iter_mut().find(|r| r.uid == uid) {
+                                    r.car = new_car;
+                                }
+                            });
+                        }
                     }
                     close();
                 }
@@ -1108,65 +818,5 @@ fn view_pending(model: crate::Model) -> View {
                 }
             }
         })
-    }
-}
-
-fn view_attached_events(model: crate::Model) -> View {
-    let sm = model.screens.stopwatch;
-    view! {
-        div(class="mt-2") {
-            (move || {
-                let _now = model.tick.get();
-                let now = js_sys::Date::now() as i64;
-                let events = sm.pending.with(|p| {
-                    p.as_ref()
-                        .map(|pp| pp.attached.clone())
-                        .unwrap_or_default()
-                });
-                if events.is_empty() {
-                    return view! {};
-                }
-                let views: Vec<View> = events
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| {
-                        let (icon_char, icon_class) = if a.r#type == RUN_START {
-                            ("\u{25B6}", "has-text-success")
-                        } else {
-                            ("\u{23F9}", "has-text-danger")
-                        };
-                        let is_attached = a.attached;
-                        let car = a.car.clone();
-                        let ts = crate::khana::helpers::fmt_ts(a.ts, now);
-                        let strike = if is_attached { "" } else { "has-text-grey-light has-text-decoration-line-through" };
-                        view! {
-                            div(class="level is-mobile mb-0") {
-                                div(class="level-left") {
-                                    span(class="is-size-7") {
-                                        span(class=icon_class) { (icon_char) }
-                                        span(class=strike) { (format!(" {} {}", car, ts)) }
-                                    }
-                                }
-                                div(class="level-right") {
-                                    button(
-                                        class=format!("button is-small {}", if is_attached { "is-light is-danger" } else { "is-light" }),
-                                        on:click=move |_| {
-                                            sycamore::reactive::untrack(move || {
-                                                update(model, Msg::ToggleAttach(i));
-                                            });
-                                        },
-                                    ) {
-                                        span(class="icon is-small") {
-                                            i(class=if is_attached { "fa fa-xmark" } else { "fa fa-plus" })
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    })
-                    .collect();
-                views.into()
-            })
-        }
     }
 }

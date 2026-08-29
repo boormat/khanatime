@@ -68,6 +68,7 @@ fn start_car(model: crate::Model) {
         voided: false,
         comment: comment_opt,
         refs: vec![],
+        provisional: false,
     };
     crate::khana::helpers::enqueue_run(model, &record_run);
     sm.feedback.set(None);
@@ -97,6 +98,7 @@ fn mark_dns(model: crate::Model) {
         voided: false,
         comment: None,
         refs: vec![],
+        provisional: false,
     };
     crate::khana::helpers::enqueue_run(model, &record_run);
     // NOSHO score so the results cell reads "DNS".
@@ -156,7 +158,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
-            (crate::khana::helpers::view_timing_log(model, sm.test.get(), None))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), None, None))
         }
     }
 }

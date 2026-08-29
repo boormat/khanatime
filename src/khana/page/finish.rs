@@ -119,6 +119,7 @@ fn do_finish(model: crate::Model) {
         voided: false,
         comment: comment_opt,
         refs: vec![],
+        provisional: false,
     };
 
     model.khana.scores.update(|s| {
@@ -203,7 +204,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
-            (crate::khana::helpers::view_timing_log(model, sm.test.get(), None))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), None, None))
         }
     }
 }

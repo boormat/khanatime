@@ -163,10 +163,13 @@ pub fn check_unknown_comment(
 ///
 /// When `editing_uid` is `Some(signal)`, finish records show an edit button
 /// that opens an inline amend form.  Pass `None` for read-only logs.
+/// `provisional_uid` is the UID of a provisional finish record that should
+/// auto-open in edit mode (the confirm interface).
 pub fn view_timing_log(
     model: crate::Model,
     test: u8,
     editing_uid: Option<Signal<Option<String>>>,
+    provisional_uid: Option<Signal<Option<String>>>,
 ) -> View {
     use super::super::view as show;
     use crate::event::{KTime, KTimeTime, RunRecord, RUN_FINISH, RUN_START, RUN_STOP};
@@ -195,13 +198,17 @@ pub fn view_timing_log(
                     return view! { p(class="help") { "No timing observations yet." } };
                 }
                 let editing: Option<String> = editing_uid.as_ref().and_then(|s| s.get_clone());
+                // Auto-open provisional records in edit mode.
+                let provisional: Option<String> = provisional_uid.as_ref().and_then(|s| s.get_clone());
+                let effective_editing = editing.clone().or_else(|| provisional.clone());
                 let views: Vec<View> = runs
                     .iter()
                     .map(|r| {
                         let uid = r.uid.clone();
-                        if r.r#type == RUN_FINISH && editing.as_deref() == Some(&uid) {
+                        if r.r#type == RUN_FINISH && effective_editing.as_deref() == Some(&uid) {
                             let r = r.clone();
-                            return view_edit_row(model, &r, &editing_uid, now);
+                            let is_provisional = r.provisional;
+                            return view_edit_row(model, &r, &editing_uid, &provisional_uid, is_provisional, now);
                         }
                         let (icon_char, icon_class) = if r.r#type == RUN_START {
                             ("\u{25B6}", "has-text-success")
@@ -299,17 +306,147 @@ pub fn view_timing_log(
     }
 }
 
+struct EditSignals {
+    time: Signal<String>,
+    flags: Signal<u8>,
+    garage: Signal<bool>,
+    status: Signal<String>,
+    comment: Signal<String>,
+}
+
+/// Buttons for confirming a provisional finish record.
+fn view_provisional_buttons(
+    model: crate::Model,
+    r: crate::event::RunRecord,
+    editing_signal: Signal<Option<String>>,
+    provisional_signal: Signal<Option<String>>,
+    sigs: EditSignals,
+) -> View {
+    use crate::event::{KTime, KTimeTime};
+    let prov_uid = r.uid.clone();
+    let prov_uid2 = prov_uid.clone();
+    let car = r.car.clone();
+    let time_sig = sigs.time;
+    let flags_sig = sigs.flags;
+    let garage_sig = sigs.garage;
+    let status_sig = sigs.status;
+    let comment_sig = sigs.comment;
+    view! {
+        div(class="buttons are-small") {
+            button(
+                class="button is-link",
+                on:click=move |_| {
+                    let t: String = time_sig.get_clone();
+                    let f = flags_sig.get();
+                    let g = garage_sig.get();
+                    let st: String = status_sig.get_clone();
+                    let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
+                    let kt = if st == "dnf" { KTime::DNF }
+                        else if st == "fts" { KTime::FTS }
+                        else if st == "wd" { KTime::WD }
+                        else { KTime::Time(KTimeTime { time_ds, flags: f, garage: g }) };
+                    let c: String = comment_sig.get_clone();
+                    let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
+                    model.khana.runs.update(|runs| {
+                        if let Some(r) = runs.iter_mut().find(|r| r.uid == prov_uid) {
+                            r.time_ds = Some(time_ds);
+                            r.status = Some(if g { "garage".to_string() } else { st });
+                            r.flags = Some(f);
+                            r.comment = comment_opt;
+                            r.provisional = false;
+                        }
+                    });
+                    let record = model.khana.runs.with(|runs| {
+                        runs.iter().find(|r| r.uid == prov_uid).cloned()
+                    });
+                    if let Some(record) = record {
+                        crate::khana::helpers::enqueue_run(model, &record);
+                    }
+                    let test = model.screens.stopwatch.test.get();
+                    model.khana.scores.update(|s| {
+                        crate::event::upsert_ktime(s, test, &car, kt);
+                    });
+                    editing_signal.set(None);
+                    provisional_signal.set(None);
+                },
+            ) { "Confirm" }
+            button(
+                class="button is-light",
+                on:click=move |_| {
+                    model.khana.runs.update(|runs| {
+                        runs.retain(|r| r.uid != prov_uid2);
+                    });
+                    editing_signal.set(None);
+                    provisional_signal.set(None);
+                },
+            ) { "Cancel" }
+        }
+    }
+}
+
+/// Buttons for saving edits to an existing (confirmed) finish record.
+fn view_edit_buttons(
+    model: crate::Model,
+    r: crate::event::RunRecord,
+    editing_signal: Signal<Option<String>>,
+    sigs: EditSignals,
+) -> View {
+    use crate::event::{KTime, KTimeTime};
+    let save_uid = r.uid.clone();
+    let car_save = r.car.clone();
+    let time_sig = sigs.time;
+    let flags_sig = sigs.flags;
+    let garage_sig = sigs.garage;
+    let status_sig = sigs.status;
+    let comment_sig = sigs.comment;
+    view! {
+        div(class="buttons are-small") {
+            button(
+                class="button is-link",
+                on:click=move |_| {
+                    let t: String = time_sig.get_clone();
+                    let f = flags_sig.get();
+                    let g = garage_sig.get();
+                    let st: String = status_sig.get_clone();
+                    let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
+                    let kt = if st == "dnf" { KTime::DNF }
+                        else if st == "fts" { KTime::FTS }
+                        else if st == "wd" { KTime::WD }
+                        else { KTime::Time(KTimeTime { time_ds, flags: f, garage: g }) };
+                    let c: String = comment_sig.get_clone();
+                    let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
+                    crate::khana::helpers::enqueue_amend(
+                        model, &save_uid, model.screens.stopwatch.test.get(),
+                        &car_save, &kt, comment_opt,
+                    );
+                    editing_signal.set(None);
+                },
+            ) { "Save" }
+            button(
+                class="button is-light",
+                on:click=move |_| editing_signal.set(None),
+            ) { "Cancel" }
+        }
+    }
+}
+
 /// Inline edit form for a finish record (replaces the normal log row).
+/// For provisional records, shows Confirm/Cancel instead of Save/Cancel.
 fn view_edit_row(
     model: crate::Model,
     r: &crate::event::RunRecord,
     editing_uid: &Option<Signal<Option<String>>>,
+    provisional_uid: &Option<Signal<Option<String>>>,
+    is_provisional: bool,
     _now: i64,
 ) -> View {
     use super::super::view as show;
     use crate::event::{KTime, KTimeTime};
     use crate::khana::page::penalty;
     let signal = editing_uid.unwrap();
+    let prov_signal = provisional_uid.and_then(Some);
+    let r_for_provisional = r.clone();
+    let r_for_edit = r.clone();
     let car = r.car.clone();
     let status_str = r.status.clone().unwrap_or_default();
     let time_s = r
@@ -349,9 +486,27 @@ fn view_edit_row(
         }
     };
 
-    let save_uid = r.uid.clone();
     let car_display = car.clone();
-    let car_save = car.clone();
+
+    let buttons: View = if is_provisional {
+        let sigs = EditSignals {
+            time: time_sig,
+            flags: flags_sig,
+            garage: garage_sig,
+            status: status_sig,
+            comment: comment_sig,
+        };
+        view_provisional_buttons(model, r_for_provisional, signal, prov_signal.unwrap(), sigs)
+    } else {
+        let sigs = EditSignals {
+            time: time_sig,
+            flags: flags_sig,
+            garage: garage_sig,
+            status: status_sig,
+            comment: comment_sig,
+        };
+        view_edit_buttons(model, r_for_edit, signal, sigs)
+    };
 
     view! {
         div(class="box has-background-light") {
@@ -399,33 +554,7 @@ fn view_edit_row(
                 }
             }
             (penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds_val, false, || {}))
-            div(class="buttons are-small") {
-                button(
-                    class="button is-link",
-                    on:click=move |_| {
-                        let t: String = time_sig.get_clone();
-                        let f = flags_sig.get();
-                        let g = garage_sig.get();
-                        let st: String = status_sig.get_clone();
-                        let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
-                        let kt = if st == "dnf" { KTime::DNF }
-                            else if st == "fts" { KTime::FTS }
-                            else if st == "wd" { KTime::WD }
-                            else { KTime::Time(KTimeTime { time_ds, flags: f, garage: g }) };
-                        let c: String = comment_sig.get_clone();
-                        let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
-                        crate::khana::helpers::enqueue_amend(
-                            model, &save_uid, model.screens.stopwatch.test.get(),
-                            &car_save, &kt, comment_opt,
-                        );
-                        signal.set(None);
-                    },
-                ) { "Save" }
-                button(
-                    class="button is-light",
-                    on:click=move |_| signal.set(None),
-                ) { "Cancel" }
-            }
+            (buttons)
         }
     }
 }
