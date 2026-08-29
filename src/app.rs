@@ -972,8 +972,14 @@ fn start_tick_timer(model: Model) {
 fn listen_for_history(model: Model) {
     use wasm_bindgen::JsCast;
     let on_nav = move |_: web_sys::Event| {
-        // Close burger menu on any navigation
-        model.screens.home.burger_open.set(false);
+        // Close burger menu on any navigation — deferred to avoid
+        // BorrowMutError when a reactive effect already holds the signal.
+        let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::once(move || {
+            model.screens.home.burger_open.set(false);
+        });
+        let window = web_sys::window().expect("window exists");
+        let _ = window.request_animation_frame(cb.as_ref().unchecked_ref());
+        cb.forget();
         let Some(screen) = screen_from_url() else {
             return;
         };
