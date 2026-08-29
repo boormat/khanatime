@@ -108,6 +108,7 @@ pub struct Model {
     pub feedback: Signal<Option<String>>,
     pub show_car_picker: Signal<bool>,
     pub editing_observation: Signal<Option<String>>,
+    pub selected_picker_car: Signal<Option<String>>,
 }
 
 pub fn init() -> Model {
@@ -121,6 +122,7 @@ pub fn init() -> Model {
         feedback: create_signal(None),
         show_car_picker: create_signal(false),
         editing_observation: create_signal(None),
+        selected_picker_car: create_signal(None),
     }
 }
 
@@ -547,7 +549,13 @@ pub fn view(model: crate::Model) -> View {
     let sm = model.screens.stopwatch;
     view! {
         div {
-            (view_action_buttons(model))
+            (move || {
+                if sm.pending.with(|p| p.is_some()) {
+                    view! {}
+                } else {
+                    view_action_buttons(model)
+                }
+            })
             (move || {
                 if sm.pending.with(|p| p.is_some()) {
                     view! {}
@@ -900,117 +908,27 @@ fn view_pending(model: crate::Model) -> View {
                     } else {
                         view! {}
                     })
-                    // Status chips + Garage + Flags (working on PendingFinish fields directly)
+                    // Status chips + Garage + Flags — shared penalty row
                     (move || {
-                        let status = sm.pending.with(|p| p.as_ref().map(|pp| pp.status.clone()).unwrap_or_default());
-                        let on = sm.pending.with(|p| p.as_ref().map(|pp| pp.garage).unwrap_or(false));
-                        let flags = sm.pending.with(|p| p.as_ref().map(|pp| pp.flags).unwrap_or(0));
+                        let status_str = sm.pending.with(|p| p.as_ref().map(|pp| pp.status.clone()).unwrap_or_default());
+                        let flags_val = sm.pending.with(|p| p.as_ref().map(|pp| pp.flags).unwrap_or(0));
+                        let garage_val = sm.pending.with(|p| p.as_ref().map(|pp| pp.garage).unwrap_or(false));
                         let time_ds = sm.pending.with(|p| p.as_ref().map(|pp| pp.time_ds).unwrap_or(0));
                         let is_manual = sm.pending.with(|p| p.as_ref().map(|pp| pp.mode == PendingMode::Manual).unwrap_or(false));
-                        let mut chips: Vec<View> = penalty::STATUS_CHIPS.iter().map(|(val, label, cls)| {
-                            let val = *val;
-                            let label = *label;
-                            let cls = *cls;
-                            let active = status == val;
-                            view! {
-                                button(
-                                    class=format!("button is-small {}", if active { cls } else { "is-light" }),
-                                    on:click=move |_| {
-                                        update_pending(sm.pending, |p| {
-                                            if active {
-                                                p.status = "clean".to_string();
-                                            } else {
-                                                p.status = val.to_string();
-                                            }
-                                        });
-                                    },
-                                ) { (label) }
-                            }
-                        }).collect();
-                        if is_manual {
-                            let active = status == "dns";
-                            chips.push(view! {
-                                button(
-                                    class=format!("button is-small {}", if active { "is-warning" } else { "is-light" }),
-                                    on:click=move |_| {
-                                        update_pending(sm.pending, |p| {
-                                            if active {
-                                                p.status = "clean".to_string();
-                                            } else {
-                                                p.status = "dns".to_string();
-                                            }
-                                        });
-                                    },
-                                ) { "DNS" }
+                        let status_sig = create_signal(status_str);
+                        let flags_sig = create_signal(flags_val);
+                        let garage_sig = create_signal(garage_val);
+                        let sync = move || {
+                            let s = status_sig.get_clone();
+                            let f = flags_sig.get();
+                            let g = garage_sig.get();
+                            update_pending(sm.pending, |p| {
+                                p.status = s;
+                                p.flags = f;
+                                p.garage = g;
                             });
-                        }
-                        let chips_view: View = chips.into();
-                        view! {
-                            div(class="level is-mobile mb-2") {
-                                div(class="level-left") {
-                                    (chips_view)
-                                    button(
-                                        class=format!("button is-small ml-2 {}", if on { "is-warning" } else { "is-light" }),
-                                    on:click=move |_| {
-                                        update_pending(sm.pending, |p| {
-                                            p.garage = !p.garage;
-                                        });
-                                    },
-                                    ) {
-                                        span(class="icon is-small") { i(class="fa fa-warehouse") }
-                                    }
-                                    div(class="buttons has-addons ml-2") {
-                                        button(
-                                            class="button is-small",
-                                            disabled=flags == 0,
-                                            on:click=move |_| {
-                                                update_pending(sm.pending, |p| {
-                                                    p.flags = p.flags.saturating_sub(1);
-                                                });
-                                            },
-                                        ) { "\u{2212}" }
-                                        span(class="button is-small is-static") {
-                                            span(class="icon is-small has-text-warning") { i(class="fa fa-flag") }
-                                            span { (flags) }
-                                        }
-                                        button(
-                                            class="button is-small",
-                                            disabled=flags >= 9,
-                                            on:click=move |_| {
-                                                update_pending(sm.pending, |p| {
-                                                    p.flags += 1;
-                                                });
-                                            },
-                                        ) { "+" }
-                                    }
-                                }
-                            }
-                            (move || {
-                                let net = penalty::net_ds(time_ds, flags, on);
-                                let is_terminal = status == "dns" || status == "dnf" || status == "fts" || status == "wd";
-                                if is_terminal {
-                                    let upper = status.to_uppercase();
-                                    view! {
-                                        div(class="notification is-warning is-light has-text-centered") {
-                                            ("Result: ") (upper)
-                                        }
-                                    }
-                                } else {
-                                    let raw = format!("{:.1}", time_ds as f32 / 10.0);
-                                    let net_str = format!("{:.1}", net as f32 / 10.0);
-                                    let penalized = net > time_ds as u32;
-                                    view! {
-                                        div(class=if penalized {
-                                            "notification is-warning is-light has-text-centered"
-                                        } else {
-                                            "notification is-success is-light has-text-centered"
-                                        }) {
-                                            ("Elapsed ") (raw) (" s → ") ("Net ") (net_str) (" s")
-                                        }
-                                    }
-                                }
-                            })
-                        }
+                        };
+                        penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds, is_manual, sync)
                     })
                     // Comment — highlighted when TBA (car == "?")
                     (move || {
@@ -1061,6 +979,11 @@ fn view_pending(model: crate::Model) -> View {
             }
             let entries = model.khana.event.with(|e| e.entries.clone());
             let current_car = sm.pending.with(|p| p.as_ref().map(|pp| pp.car.clone()).unwrap_or_default());
+            // Initialize selected_picker_car to the current car on open.
+            if sm.selected_picker_car.with(|c| c.is_none()) {
+                sm.selected_picker_car.set(Some(current_car.clone()));
+            }
+            let selected = sm.selected_picker_car.with(|c| c.clone().unwrap_or_default());
             // Group entries by runs remaining.
             let test = sm.test.get();
             let (runs_remaining, _unknown_remaining) = compute_runs_remaining(model, test);
@@ -1090,17 +1013,24 @@ fn view_pending(model: crate::Model) -> View {
                 let car_list = groups.remove(&remaining).unwrap();
                 let badge_label = format!("{remaining}r");
                 let car_views: Vec<View> = car_list.iter().map(|ci| {
-                    let car_set = ci.car.clone();
+                    let car_key = ci.car.clone();
                     let car_display = ci.car.clone();
                     let car_name = ci.name.clone();
-                    let is_active = car_set == current_car;
-                    let cls = if is_active { "button is-link is-small" } else { "button is-light is-small" };
+                    let is_current = car_key == current_car;
+                    let is_selected = car_key == selected;
+                    let cls = if is_selected {
+                        "button is-warning is-small"
+                    } else if is_current {
+                        "button is-link is-small"
+                    } else {
+                        "button is-light is-small"
+                    };
+                    let picker_sig = sm.selected_picker_car;
                     view! {
                         button(
                             class=cls,
                             on:click=move |_| {
-                                update_pending(sm.pending, |p| { p.car = car_set.clone(); });
-                                sm.show_car_picker.set(false);
+                                picker_sig.set(Some(car_key.clone()));
                             },
                         ) {
                             (crate::view::car_tag(&car_display))
@@ -1116,16 +1046,23 @@ fn view_pending(model: crate::Model) -> View {
                 });
             }
             // TBA chip
-            let is_tba = current_car == "?";
-            let tba_cls = if is_tba { "button is-warning is-small" } else { "button is-light is-small" };
+            let is_tba_selected = selected == "?";
+            let is_tba_current = current_car == "?";
+            let tba_cls = if is_tba_selected {
+                "button is-warning is-small"
+            } else if is_tba_current {
+                "button is-link is-small"
+            } else {
+                "button is-light is-small"
+            };
+            let picker_sig = sm.selected_picker_car;
             rows.push(view! {
                 div(class="field is-grouped is-grouped-multiline is-align-items-center mb-1") {
                     span(class="tag is-small is-light kt-runs-separator") { "TBA" }
                     button(
                         class=tba_cls,
                         on:click=move |_| {
-                            update_pending(sm.pending, |p| { p.car = "?".to_string(); });
-                            sm.show_car_picker.set(false);
+                            picker_sig.set(Some("?".to_string()));
                         },
                     ) {
                         span(class="kt-car-tag has-text-weight-semibold") { "?" }
@@ -1133,16 +1070,39 @@ fn view_pending(model: crate::Model) -> View {
                 }
             });
             let picker_content: View = rows.into();
+            let close_picker = move || {
+                sm.show_car_picker.set(false);
+                sm.selected_picker_car.set(None);
+            };
+            let apply_car = {
+                let close = close_picker;
+                move || {
+                    if let Some(car) = sm.selected_picker_car.get_clone() {
+                        update_pending(sm.pending, |p| { p.car = car; });
+                    }
+                    close();
+                }
+            };
             view! {
                 div(class="modal is-active") {
-                    div(class="modal-background", on:click=move |_| sm.show_car_picker.set(false))
+                    div(class="modal-background", on:click=move |_| close_picker())
                     div(class="modal-card") {
                         header(class="modal-card-head") {
                             p(class="modal-card-title") { "Change car" }
-                            button(class="delete", aria-label="close", on:click=move |_| sm.show_car_picker.set(false))
+                            button(class="delete", aria-label="close", on:click=move |_| close_picker())
                         }
                         section(class="modal-card-body") {
                             (picker_content)
+                        }
+                        footer(class="modal-card-foot is-justify-content-center") {
+                            button(
+                                class="button is-link",
+                                on:click=move |_| apply_car(),
+                            ) { "Change" }
+                            button(
+                                class="button",
+                                on:click=move |_| close_picker(),
+                            ) { "Cancel" }
                         }
                     }
                 }

@@ -308,6 +308,7 @@ fn view_edit_row(
 ) -> View {
     use super::super::view as show;
     use crate::event::{KTime, KTimeTime};
+    use crate::khana::page::penalty;
     let signal = editing_uid.unwrap();
     let car = r.car.clone();
     let status_str = r.status.clone().unwrap_or_default();
@@ -315,12 +316,13 @@ fn view_edit_row(
         .time_ds
         .map(|ds| format!("{:.1}", ds as f32 / 10.0))
         .unwrap_or_default();
-    let flags_s = r.flags.map(|f| f.to_string()).unwrap_or_else(|| "0".into());
+    let flags_val = r.flags.unwrap_or(0);
     let is_garage = status_str == "garage";
     let comment = r.comment.clone().unwrap_or_default();
+    let time_ds_val = r.time_ds.unwrap_or(0);
 
     let time_sig = create_signal(time_s);
-    let flags_sig = create_signal(flags_s);
+    let flags_sig = create_signal(flags_val);
     let garage_sig = create_signal(is_garage);
     let comment_sig = create_signal(comment);
     let status_initial = if is_garage {
@@ -332,8 +334,8 @@ fn view_edit_row(
 
     let time_display = move || {
         let t = time_sig.get_clone();
-        let f: u8 = flags_sig.get_clone().parse().unwrap_or(0);
-        let g = garage_sig.get_clone();
+        let f = flags_sig.get();
+        let g = garage_sig.get();
         match t.parse::<f32>() {
             Ok(secs) => {
                 let kt = KTime::Time(KTimeTime {
@@ -379,58 +381,6 @@ fn view_edit_row(
                         },
                     )
                 }
-                div(class="column is-narrow") {
-                    p(class="label is-small mb-1") { "Flags" }
-                    input(
-                        class="input is-small",
-                        r#type="number",
-                        min="0",
-                        style="width: 4rem",
-                        prop:value=move || flags_sig.get_clone(),
-                        on:input=move |e: web_sys::Event| {
-                            if let Some(target) = e.target() {
-                                if let Some(el) = target.dyn_ref::<web_sys::HtmlInputElement>() {
-                                    flags_sig.set(el.value());
-                                }
-                            }
-                        },
-                    )
-                }
-                div(class="column is-narrow ml-2") {
-                    p(class="label is-small mb-1") { "Garage" }
-                    label(class="checkbox") {
-                        input(
-                            r#type="checkbox",
-                            prop:checked=move || garage_sig.get_clone(),
-                            on:change=move |_| {
-                                let v = garage_sig.get_clone();
-                                garage_sig.set(!v);
-                            },
-                        )
-                    }
-                }
-            }
-            div(class="columns is-mobile is-vcentered is-gapless mb-2") {
-                div(class="column") {
-                    p(class="label is-small mb-1") { "Status" }
-                    div(class="select is-small") {
-                        select(
-                            prop:value=move || status_sig.get_clone(),
-                            on:change=move |e: web_sys::Event| {
-                                if let Some(target) = e.target() {
-                                    if let Some(el) = target.dyn_ref::<web_sys::HtmlSelectElement>() {
-                                        status_sig.set(el.value());
-                                    }
-                                }
-                            },
-                        ) {
-                            option(value="clean") { "Clean" }
-                            option(value="dnf") { "DNF" }
-                            option(value="fts") { "FTS" }
-                            option(value="wd") { "WD" }
-                        }
-                    }
-                }
                 div(class="column") {
                     p(class="label is-small mb-1") { "Comment" }
                     input(
@@ -448,13 +398,14 @@ fn view_edit_row(
                     )
                 }
             }
+            (penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds_val, false, || {}))
             div(class="buttons are-small") {
                 button(
                     class="button is-link",
                     on:click=move |_| {
                         let t: String = time_sig.get_clone();
-                        let f: u8 = flags_sig.get_clone().parse().unwrap_or(0);
-                        let g = garage_sig.get_clone();
+                        let f = flags_sig.get();
+                        let g = garage_sig.get();
                         let st: String = status_sig.get_clone();
                         let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
                         let kt = if st == "dnf" { KTime::DNF }

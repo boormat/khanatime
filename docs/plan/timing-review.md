@@ -115,3 +115,15 @@ Select → Start/Manual → Stop → Confirm workflow.
 ### T19. Stop record time — grey italic provisional display ✅ DONE
 **File:** `src/khana/helpers.rs` — `view_timing_log()`
 **Detail:** `RUN_STOP` records display `time_ds` as elapsed time in `has-text-grey-light` italic style. Visually marks it as provisional (will be superseded by the finish record's time).
+
+### T20. Hide action buttons during confirm ✅ DONE
+**File:** `src/khana/page/stopwatch.rs` — `view_buttons()`
+**Detail:** Action buttons (Start, Stop, Manual, etc.) are hidden when the confirm panel is open (`sm.pending.is_some()`). Prevents confusing dual-state where both the confirm panel and timing buttons are visible simultaneously.
+
+### T21. Car picker modal — select + confirm flow ✅ DONE
+**File:** `src/khana/page/stopwatch.rs` — car picker modal
+**Detail:** Modal now uses a two-step flow: click to highlight (yellow `is-warning`), then "Change" button to apply. Current car is `is-link`, selected car is `is-warning`, others are `is-light`. Footer has Change + Cancel buttons. Added `selected_picker_car: Signal<Option<String>>` to Model. Selection is reset when the modal closes.
+
+### T22. Shared penalty row layout ✅ DONE
+**File:** `src/khana/page/penalty.rs` — `view_penalty_row()`, `src/khana/helpers.rs` — `view_edit_row()`
+**Detail:** Extracted a compact `view_penalty_row(status, flags, garage, time_ds, is_manual, on_change)` function used by both the confirm panel (sync callback writes PendingFinish fields) and the inline edit form (no-op callback). Eliminates duplicate status/garage/flags rendering between confirm and edit. The `on_change` closure must be `Clone + 'static`.
