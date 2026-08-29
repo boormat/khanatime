@@ -127,3 +127,7 @@ Select → Start/Manual → Stop → Confirm workflow.
 ### T22. Shared penalty row layout ✅ DONE
 **File:** `src/khana/page/penalty.rs` — `view_penalty_row()`, `src/khana/helpers.rs` — `view_edit_row()`
 **Detail:** Extracted a compact `view_penalty_row(status, flags, garage, time_ds, is_manual, on_change)` function used by both the confirm panel (sync callback writes PendingFinish fields) and the inline edit form (no-op callback). Eliminates duplicate status/garage/flags rendering between confirm and edit. The `on_change` closure must be `Clone + 'static`.
+
+### T23. Provisional finish flow ✅ DONE
+**File:** `src/khana/event.rs`, `src/khana/page/stopwatch.rs`, `src/khana/helpers.rs`
+**Detail:** Major architecture change: Stop now creates a provisional `RUN_FINISH` record in the log (not in outbox), auto-opens the inline edit form, and Confirm sends it to the outbox. Manual time entry uses the same flow. Replaced `PendingFinish`/`AttachedEvent`/`PendingMode` with `provisional_uid: Signal<Option<String>>`. Added `provisional: bool` field to `RunRecord` (serde skip). Removed the separate confirm panel (`view_pending`) and attached events view. Edit form shows Confirm/Cancel for provisional, Save/Cancel for existing. Car picker modal extracted to standalone `view_car_picker_modal`. All 187 tests pass.
