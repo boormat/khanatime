@@ -1590,9 +1590,6 @@ fn view_entrant_list_readonly(model: crate::Model) -> View {
                                             _ => {}
                                         }
                                     },
-                                    on:blur=move |_| {
-                                        dispatch(InputMsg::CancelEdit);
-                                    },
                                 )
                             }
                         }
