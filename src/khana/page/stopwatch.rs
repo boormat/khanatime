@@ -28,20 +28,6 @@ pub enum Msg {
 }
 
 // ---------------------------------------------------------------------------
-// Edit state (cached signals for the inline edit form)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct EditState {
-    pub uid: String,
-    pub time: Signal<String>,
-    pub flags: Signal<u8>,
-    pub garage: Signal<bool>,
-    pub status: Signal<String>,
-    pub comment: Signal<String>,
-}
-
-// ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
@@ -56,7 +42,12 @@ pub struct Model {
     pub feedback: Signal<Option<String>>,
     pub show_car_picker: Signal<bool>,
     pub editing_observation: Signal<Option<String>>,
-    pub edit_state: Signal<Option<EditState>>,
+    pub edit_uid: Signal<Option<String>>,
+    pub edit_time: Signal<String>,
+    pub edit_flags: Signal<u8>,
+    pub edit_garage: Signal<bool>,
+    pub edit_status: Signal<String>,
+    pub edit_comment: Signal<String>,
     pub selected_picker_car: Signal<Option<String>>,
 }
 
@@ -71,9 +62,36 @@ pub fn init() -> Model {
         feedback: create_signal(None),
         show_car_picker: create_signal(false),
         editing_observation: create_signal(None),
-        edit_state: create_signal(None),
+        edit_uid: create_signal(None),
+        edit_time: create_signal(String::new()),
+        edit_flags: create_signal(0u8),
+        edit_garage: create_signal(false),
+        edit_status: create_signal(String::new()),
+        edit_comment: create_signal(String::new()),
         selected_picker_car: create_signal(None),
     }
+}
+
+/// Populate the edit-form signals from a run record. Safe to call from any
+/// context (no `create_signal` — only `.set()` on pre-existing signals).
+pub fn populate_edit(model: crate::Model, r: &crate::event::RunRecord) {
+    let sm = model.screens.stopwatch;
+    sm.edit_uid.set(Some(r.uid.clone()));
+    sm.edit_time.set(
+        r.time_ds
+            .map(|ds| format!("{:.1}", ds as f32 / 10.0))
+            .unwrap_or_default(),
+    );
+    sm.edit_flags.set(r.flags.unwrap_or(0));
+    let is_garage = r.status.as_deref() == Some("garage");
+    sm.edit_garage.set(is_garage);
+    let status_str = r.status.clone().unwrap_or_default();
+    sm.edit_status.set(if is_garage {
+        "clean".to_string()
+    } else {
+        status_str
+    });
+    sm.edit_comment.set(r.comment.clone().unwrap_or_default());
 }
 
 pub fn update(model: crate::Model, msg: Msg) {
@@ -236,7 +254,7 @@ fn commit(model: crate::Model) {
     });
     sm.provisional_uid.set(None);
     sm.editing_observation.set(None);
-    sm.edit_state.set(None);
+    sm.edit_uid.set(None);
     sm.car.set(String::new());
     save_car("");
     sm.comment.set(String::new());
@@ -256,7 +274,7 @@ fn cancel(model: crate::Model) {
     }
     sm.provisional_uid.set(None);
     sm.editing_observation.set(None);
-    sm.edit_state.set(None);
+    sm.edit_uid.set(None);
     sm.time.set(String::new());
     sm.feedback.set(None);
     penalty::clear(sm.penalty);
@@ -432,7 +450,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             })
-            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation), Some(sm.provisional_uid), Some(sm.edit_state)))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation), Some(sm.provisional_uid)))
             (view_car_picker_modal(model))
         }
     }

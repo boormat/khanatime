@@ -801,23 +801,30 @@ pub fn setup_effects(model: Model) {
         let cmd = crate::khana::page::timekeeper::parse_command(&input);
         model.screens.timekeeper.preview.set(cmd);
     });
-    // Cascading field-clear on the create-account modal.  Driven by reactive
-    // effects (not on:change handlers) so the closures can't be dropped by a
-    // re-render that fires mid-invocation — see wasm-bindgen "closure invoked
-    // recursively or after being dropped".
+    // Cascading field-clear on the create-account modal.  Deferred via
+    // spawn_local to avoid BorrowMutError: a synchronous .set() inside
+    // create_effect triggers Sycamore's scheduler, which re-runs view
+    // closures that already hold RefCell read-borrows on the same signals.
     let am = model.screens.accounts;
     create_effect(move || {
         let _hs = am.create_hs.get_clone();
-        am.create_user.set(String::new());
-        am.create_pass.set(String::new());
-        am.create_desc.set(String::new());
-        am.create_event.set(String::new());
+        let _type = am.create_type.get();
+        let am2 = am;
+        wasm_bindgen_futures::spawn_local(async move {
+            am2.create_user.set(String::new());
+            am2.create_pass.set(String::new());
+            am2.create_desc.set(String::new());
+            am2.create_event.set(String::new());
+        });
     });
     create_effect(move || {
         let _eid = am.create_event.get_clone();
-        am.create_user.set(String::new());
-        am.create_pass.set(String::new());
-        am.create_desc.set(String::new());
+        let am2 = am;
+        wasm_bindgen_futures::spawn_local(async move {
+            am2.create_user.set(String::new());
+            am2.create_pass.set(String::new());
+            am2.create_desc.set(String::new());
+        });
     });
     // Live homeserver connectivity status (wasm only — needs the network stack).
     #[cfg(target_arch = "wasm32")]
@@ -950,20 +957,18 @@ fn push_screen_hash(screen: Screen) {
 
 /// Start a 1-second timer that updates `model.tick` so reactive closures
 /// reading relative timestamps ("42s ago") re-render each second.
+///
+/// Uses `spawn_local` + `sleep` instead of `setInterval` so the tick write
+/// happens as a microtask — after any in-progress reactive propagation
+/// completes — avoiding BorrowMutError on `root.nodes`.
 #[cfg(target_arch = "wasm32")]
 fn start_tick_timer(model: Model) {
-    use wasm_bindgen::JsCast;
-    let window = web_sys::window().expect("window");
-    let closure = wasm_bindgen::closure::Closure::<dyn FnMut()>::wrap(Box::new(move || {
-        model.tick.set(js_sys::Date::now() as i64);
-    }));
-    window
-        .set_interval_with_callback_and_timeout_and_arguments_0(
-            closure.as_ref().unchecked_ref(),
-            1000,
-        )
-        .unwrap_or_default();
-    closure.forget();
+    wasm_bindgen_futures::spawn_local(async move {
+        loop {
+            gloo_timers::future::sleep(std::time::Duration::from_secs(1)).await;
+            model.tick.set(js_sys::Date::now() as i64);
+        }
+    });
 }
 
 /// Back/forward and manual hash edits: turn the URL back into a screen change

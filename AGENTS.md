@@ -259,6 +259,78 @@ the app.
   or the timing pages.
 - Bug reports go in `docs/bugs.md` (not at the repo root).
 
+## Sycamore reactive patterns
+
+These patterns prevent two classes of runtime panic that recur in this
+codebase.  Follow them whenever you touch view closures or `create_effect`.
+
+### BorrowMutError — re-entrant signal mutation
+
+**Never call `.set()` or `.update()` synchronously inside `create_effect`.**
+Sycamore runs the effect immediately, and the `.set()` triggers the reactive
+scheduler to re-run dependent view closures — which may already hold
+RefCell read-borrows on the same signal.  The result is
+`cannot update signal while reading: BorrowMutError`.
+
+**Architecture note:** All signals in Sycamore 0.9 share a single
+`RefCell<SlotMap<NodeId, ReactiveNode>>` (`root.nodes` in `sycamore-reactive`).
+Reading ANY signal borrows it immutably; writing ANY signal borrows it
+mutably.  A write fails if ANY signal is currently being read — not just
+the same signal.  `create_signal()` also writes to `root.nodes` (to insert
+the new node), so calling it inside a reactive closure that is reading
+other signals causes BorrowMutError.
+
+**Fix:** Wrap the writes in `wasm_bindgen_futures::spawn_local` so they
+execute on the next microtask, after the current render cycle completes:
+
+```rust
+create_effect(move || {
+    let _track = some_signal.get_clone();
+    let model2 = model; // Copy the Rc-based Model
+    wasm_bindgen_futures::spawn_local(async move {
+        model2.some_signal.set(new_value);  // deferred — safe
+    });
+});
+```
+
+**Timer pattern:** Never use raw `setInterval`/`setTimeout` to write to
+signals.  Use `wasm_bindgen_futures::spawn_local` + `gloo_timers::future::sleep`
+instead.  The `spawn_local` callback runs as a microtask, after any
+in-progress reactive propagation completes.  `setInterval` runs as a
+macrotask that can interleave with propagation.
+
+### Closure-drop — wasm-bindgen "closure invoked after being dropped"
+
+**Avoid `on:change` / `on:blur` handlers on `<select>` or `<input>`
+elements that call `.set()` on signals.**  The `.set()` triggers a
+synchronous re-render which replaces the DOM element, dropping the
+closure mid-execution.
+
+**Fix:** Use a reactive `create_effect` (with `spawn_local` defer) instead
+of an inline event handler.  The effect lives outside the view tree and
+can't be dropped by a re-render.
+
+### Redundant signal writes
+
+**Don't duplicate signal-clearing logic across both event handlers and
+reactive effects.**  Two code paths writing to the same signal during the
+same render cycle race each other.  Pick one: either the event handler
+sets a trigger signal and a reactive effect does the cascading clear, or
+the event handler does everything inline.  Don't do both.
+
+### Signal disposal inside reactive closures
+
+**Don't call `create_signal()` inside a reactive closure that reads other
+signals.**  Signals created inside a reactive scope are disposed when that
+scope re-runs.  If DOM nodes from the previous render still reference the
+old signals (via `prop:value`, `on:click`, etc.), they panic with
+"signal was disposed".
+
+**Fix:** Use `get_clone_untracked()` instead of `get_clone()` when reading
+a signal that is written to inside the same reactive closure.  This
+prevents the closure from tracking the signal as a dependency, so writes
+to it don't trigger re-runs that dispose the signals you just created.
+
 ## Post-plan checklist
 
 After completing a multi-file change or feature:

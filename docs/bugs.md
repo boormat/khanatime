@@ -155,6 +155,31 @@
 
 ---
 
+### ~~B5. BorrowMutError / signal disposal — multiple crash sites~~ ✅ DONE
+**Files:** `src/app.rs` (`setup_effects`, `start_tick_timer`), `src/khana/helpers.rs` (`make_edit_state`)
+**Severity:** High
+**Detail:** Three distinct crash sites, all caused by Sycamore 0.9's single
+`RefCell<SlotMap>` architecture (`root.nodes`).  Reading ANY signal borrows
+the entire node arena immutably; writing ANY signal borrows it mutably.
+**Crash sites:**
+1. `app.rs:965` — `tick.set()` from `setInterval` macrotask fires while
+   reactive effects hold immutable borrows on `root.nodes`.
+2. `app.rs:914` — `hs_status.update()` from `spawn_local` async probe
+   fires during tick-triggered re-render.
+3. `helpers.rs:335` — `create_signal()` inside `make_edit_state` (called
+   from the timing log's reactive closure) creates signals in the
+   closure's reactive scope.  When the closure re-runs on `tick`, the old
+   signals are disposed but DOM nodes still reference them.
+**Fixes:**
+- Timer: replaced `setInterval` + `Closure::forget` with
+  `spawn_local` + `gloo_timers::future::sleep` (microtask, not macrotask).
+- Cascading effects: deferred `.set()` calls via `spawn_local` (existing).
+- EditState: changed `get_clone()` to `get_clone_untracked()` when reading
+  `edit_state` in `view_edit_row`, preventing the timing log closure from
+  tracking it as a dependency.
+
+---
+
 ## Priority Suggestion
 
 **Phase 1 — Critical bugs:** ✅ Complete (B1–B3)

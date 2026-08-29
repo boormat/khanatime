@@ -165,13 +165,11 @@ pub fn check_unknown_comment(
 /// that opens an inline amend form.  Pass `None` for read-only logs.
 /// `provisional_uid` is the UID of a provisional finish record that should
 /// auto-open in edit mode (the confirm interface).
-/// `edit_state` caches the edit form signals across renders.
 pub fn view_timing_log(
     model: crate::Model,
     test: u8,
     editing_uid: Option<Signal<Option<String>>>,
     provisional_uid: Option<Signal<Option<String>>>,
-    edit_state: Option<Signal<Option<crate::khana::page::stopwatch::EditState>>>,
 ) -> View {
     use super::super::view as show;
     use crate::event::{KTime, KTimeTime, RunRecord, RUN_FINISH, RUN_START, RUN_STOP};
@@ -210,7 +208,7 @@ pub fn view_timing_log(
                         if r.r#type == RUN_FINISH && effective_editing.as_deref() == Some(&uid) {
                             let r = r.clone();
                             let is_provisional = r.provisional;
-                            return view_edit_row(model, &r, &editing_uid, &provisional_uid, &edit_state, is_provisional, now);
+                            return view_edit_row(model, &r, &editing_uid, &provisional_uid, is_provisional, now);
                         }
                         let (icon_char, icon_class) = if r.r#type == RUN_START {
                             ("\u{25B6}", "has-text-success")
@@ -308,36 +306,14 @@ pub fn view_timing_log(
     }
 }
 
+/// Grouped edit-form signals (all `Copy`, just a convenience wrapper).
+#[derive(Clone, Copy)]
 struct EditSignals {
     time: Signal<String>,
     flags: Signal<u8>,
     garage: Signal<bool>,
     status: Signal<String>,
     comment: Signal<String>,
-}
-
-fn make_edit_state(r: &crate::event::RunRecord) -> crate::khana::page::stopwatch::EditState {
-    let status_str = r.status.clone().unwrap_or_default();
-    let is_garage = status_str == "garage";
-    let time_s = r
-        .time_ds
-        .map(|ds| format!("{:.1}", ds as f32 / 10.0))
-        .unwrap_or_default();
-    let flags_val = r.flags.unwrap_or(0);
-    let comment = r.comment.clone().unwrap_or_default();
-    let status_initial = if is_garage {
-        "clean".to_string()
-    } else {
-        status_str
-    };
-    crate::khana::page::stopwatch::EditState {
-        uid: r.uid.clone(),
-        time: create_signal(time_s),
-        flags: create_signal(flags_val),
-        garage: create_signal(is_garage),
-        status: create_signal(status_initial),
-        comment: create_signal(comment),
-    }
 }
 
 /// Buttons for confirming a provisional finish record.
@@ -463,7 +439,6 @@ fn view_edit_row(
     r: &crate::event::RunRecord,
     editing_uid: &Option<Signal<Option<String>>>,
     provisional_uid: &Option<Signal<Option<String>>>,
-    edit_state: &Option<Signal<Option<crate::khana::page::stopwatch::EditState>>>,
     is_provisional: bool,
     _now: i64,
 ) -> View {
@@ -502,42 +477,18 @@ fn view_edit_row(
         .collect();
     let time_display_str = format!("{:.1}s", time_ds_val as f32 / 10.0);
 
-    // Use cached edit state if available and matching this record's uid;
-    // otherwise create fresh signals and cache them.
-    let (time_sig, flags_sig, garage_sig, status_sig, comment_sig) = {
-        let cached = edit_state.and_then(|s| s.get_clone());
-        if let Some(ref c) = cached {
-            if c.uid == r.uid {
-                (c.time, c.flags, c.garage, c.status, c.comment)
-            } else {
-                let state = make_edit_state(r);
-                let sigs = (
-                    state.time,
-                    state.flags,
-                    state.garage,
-                    state.status,
-                    state.comment,
-                );
-                if let Some(es) = edit_state {
-                    es.set(Some(state));
-                }
-                sigs
-            }
-        } else {
-            let state = make_edit_state(r);
-            let sigs = (
-                state.time,
-                state.flags,
-                state.garage,
-                state.status,
-                state.comment,
-            );
-            if let Some(es) = edit_state {
-                es.set(Some(state));
-            }
-            sigs
-        }
-    };
+    // Populate the edit-form signals for this record if not already set.
+    // populate_edit only calls .set() on pre-existing signals (created once
+    // in init()), so it's safe inside this reactive closure.
+    let sm = model.screens.stopwatch;
+    if sm.edit_uid.get_clone().as_ref() != Some(&r.uid) {
+        crate::khana::page::stopwatch::populate_edit(model, r);
+    }
+    let time_sig = sm.edit_time;
+    let flags_sig = sm.edit_flags;
+    let garage_sig = sm.edit_garage;
+    let status_sig = sm.edit_status;
+    let comment_sig = sm.edit_comment;
 
     let car_display = car.clone();
 
@@ -562,7 +513,7 @@ fn view_edit_row(
         view! {}
     };
 
-    let buttons: View = if is_provisional {
+    let buttons: View = {
         let sigs = EditSignals {
             time: time_sig,
             flags: flags_sig,
@@ -570,16 +521,11 @@ fn view_edit_row(
             status: status_sig,
             comment: comment_sig,
         };
-        view_provisional_buttons(model, r_for_provisional, signal, prov_signal.unwrap(), sigs)
-    } else {
-        let sigs = EditSignals {
-            time: time_sig,
-            flags: flags_sig,
-            garage: garage_sig,
-            status: status_sig,
-            comment: comment_sig,
-        };
-        view_edit_buttons(model, r_for_edit, signal, sigs)
+        if is_provisional {
+            view_provisional_buttons(model, r_for_provisional, signal, prov_signal.unwrap(), sigs)
+        } else {
+            view_edit_buttons(model, r_for_edit, signal, sigs)
+        }
     };
 
     view! {

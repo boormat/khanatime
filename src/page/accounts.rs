@@ -710,10 +710,7 @@ fn view_create_modal(model: crate::Model) -> View {
                                         input(r#type="radio", name="ct", checked=move || sm.create_type.get() == 0,
                                             on:input=move |_| {
                                                 sm.create_type.set(0);
-                                                sm.create_user.set(String::new());
-                                                sm.create_pass.set(String::new());
-                                                sm.create_desc.set(String::new());
-                                                sm.create_event.set(String::new());
+                                                // Field-clear handled by reactive effect in setup_effects
                                             })
                                         " Personal"
                                     }
@@ -721,10 +718,7 @@ fn view_create_modal(model: crate::Model) -> View {
                                         input(r#type="radio", name="ct", checked=move || sm.create_type.get() == 1,
                                             on:input=move |_| {
                                                 sm.create_type.set(1);
-                                                sm.create_user.set(String::new());
-                                                sm.create_pass.set(String::new());
-                                                sm.create_desc.set(String::new());
-                                                sm.create_event.set(String::new());
+                                                // Field-clear handled by reactive effect in setup_effects
                                             })
                                         " Shared"
                                     }
