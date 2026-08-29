@@ -107,6 +107,7 @@ pub struct Model {
     pub pending: Signal<Option<PendingFinish>>,
     pub feedback: Signal<Option<String>>,
     pub show_car_picker: Signal<bool>,
+    pub editing_observation: Signal<Option<String>>,
 }
 
 pub fn init() -> Model {
@@ -119,6 +120,7 @@ pub fn init() -> Model {
         pending: create_signal(None),
         feedback: create_signal(None),
         show_car_picker: create_signal(false),
+        editing_observation: create_signal(None),
     }
 }
 
@@ -556,7 +558,7 @@ pub fn view(model: crate::Model) -> View {
                 }
             })
             (view_pending(model))
-            (crate::khana::helpers::view_timing_log(model, sm.test.get()))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation)))
         }
     }
 }

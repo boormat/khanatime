@@ -1,4 +1,5 @@
 use sycamore::prelude::*;
+use wasm_bindgen::JsCast;
 
 // ---------------------------------------------------------------------------
 // Signing helper
@@ -159,8 +160,17 @@ pub fn check_unknown_comment(
 
 /// Shared timing log: all starts and finishes for a test, newest first, with
 /// void buttons.  Used by all timing screens.
-pub fn view_timing_log(model: crate::Model, test: u8) -> View {
-    use crate::khana::event::{RunRecord, RUN_FINISH, RUN_START, RUN_STOP};
+///
+/// When `editing_uid` is `Some(signal)`, finish records show an edit button
+/// that opens an inline amend form.  Pass `None` for read-only logs.
+pub fn view_timing_log(
+    model: crate::Model,
+    test: u8,
+    editing_uid: Option<Signal<Option<String>>>,
+) -> View {
+    use super::super::view as show;
+    use crate::event::{KTime, KTimeTime, RunRecord, RUN_FINISH, RUN_START, RUN_STOP};
+    use std::collections::HashSet;
     view! {
         div(class="box") {
             h3(class="title is-6") { "Log" }
@@ -174,14 +184,25 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                         .cloned()
                         .collect()
                 });
+                // T16: hide start/stop records already referenced by a finish.
+                let finish_refs: HashSet<String> = runs.iter()
+                    .filter(|r| r.r#type == RUN_FINISH)
+                    .flat_map(|r| r.refs.iter().cloned())
+                    .collect();
+                runs.retain(|r| r.r#type == RUN_FINISH || !finish_refs.contains(&r.uid));
                 runs.sort_by_key(|r| std::cmp::Reverse(r.ts));
                 if runs.is_empty() {
                     return view! { p(class="help") { "No timing observations yet." } };
                 }
+                let editing: Option<String> = editing_uid.as_ref().and_then(|s| s.get_clone());
                 let views: Vec<View> = runs
                     .iter()
                     .map(|r| {
                         let uid = r.uid.clone();
+                        if r.r#type == RUN_FINISH && editing.as_deref() == Some(&uid) {
+                            let r = r.clone();
+                            return view_edit_row(model, &r, &editing_uid, now);
+                        }
                         let (icon_char, icon_class) = if r.r#type == RUN_START {
                             ("\u{25B6}", "has-text-success")
                         } else if r.r#type == RUN_STOP {
@@ -191,6 +212,33 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                         };
                         let car_text = format!(" #{}", r.car);
                         let ts = fmt_ts(r.ts, now);
+                        let time_view: View = if r.r#type == RUN_FINISH {
+                            let kt = match r.status.as_deref() {
+                                Some("dnf") => KTime::DNF,
+                                Some("fts") => KTime::FTS,
+                                Some("wd") => KTime::WD,
+                                Some("nosho") => KTime::NOSHO,
+                                _ => match r.time_ds {
+                                    Some(ds) => KTime::Time(KTimeTime {
+                                        time_ds: ds,
+                                        flags: r.flags.unwrap_or(0),
+                                        garage: r.status.as_deref() == Some("garage"),
+                                    }),
+                                    None => KTime::NOSHO,
+                                },
+                            };
+                            show::ktime(&kt)
+                        } else if r.r#type == RUN_STOP {
+                            match r.time_ds {
+                                Some(ds) => {
+                                    let text = format!("{:.1}s", ds as f32 / 10.0);
+                                    view! { span(class="has-text-grey-light", style="font-style: italic") { (text) } }
+                                }
+                                None => view! {},
+                            }
+                        } else {
+                            view! {}
+                        };
                         let official_view: View = match &r.official_id {
                             Some(o) if !o.is_empty() => {
                                 let text = format!("by {}", o);
@@ -205,20 +253,41 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                             }
                             _ => view! {},
                         };
+                        let is_finish = r.r#type == RUN_FINISH;
+                        let uid2 = uid.clone();
+                        let uid3 = uid.clone();
                         view! {
                             div(class="level is-mobile") {
                                 div(class="level-left") {
                                     span(class=icon_class) { (icon_char) }
                                     span(class="has-text-weight-semibold") { (car_text) }
                                     span(class="has-text-grey ml-2") { (ts) }
+                                    span(class="ml-2") { (time_view) }
                                     (official_view)
                                     (comment_view)
                                 }
                                 div(class="level-right") {
-                                    button(
-                                        class="button is-small is-light is-danger",
-                                        on:click=move |_| crate::update(model, crate::Msg::VoidObservation(uid.clone())),
-                                    ) { span(class="icon is-small") { i(class="fa fa-xmark") } }
+                                    span(class="buttons are-small") {
+                                        (if is_finish {
+                                            if let Some(ref edit_sig) = editing_uid {
+                                                let edit_sig = *edit_sig;
+                                                view! {
+                                                    button(
+                                                        class="button is-small is-link is-light",
+                                                        on:click=move |_| edit_sig.set(Some(uid2.clone())),
+                                                    ) { span(class="icon is-small") { i(class="fa fa-pen") } }
+                                                }
+                                            } else {
+                                                view! {}
+                                            }
+                                        } else {
+                                            view! {}
+                                        })
+                                        button(
+                                            class="button is-small is-light is-danger",
+                                            on:click=move |_| crate::update(model, crate::Msg::VoidObservation(uid3.clone())),
+                                        ) { span(class="icon is-small") { i(class="fa fa-xmark") } }
+                                    }
                                 }
                             }
                         }
@@ -226,6 +295,186 @@ pub fn view_timing_log(model: crate::Model, test: u8) -> View {
                     .collect();
                 views.into()
             })
+        }
+    }
+}
+
+/// Inline edit form for a finish record (replaces the normal log row).
+fn view_edit_row(
+    model: crate::Model,
+    r: &crate::event::RunRecord,
+    editing_uid: &Option<Signal<Option<String>>>,
+    _now: i64,
+) -> View {
+    use super::super::view as show;
+    use crate::event::{KTime, KTimeTime};
+    let signal = editing_uid.unwrap();
+    let car = r.car.clone();
+    let status_str = r.status.clone().unwrap_or_default();
+    let time_s = r
+        .time_ds
+        .map(|ds| format!("{:.1}", ds as f32 / 10.0))
+        .unwrap_or_default();
+    let flags_s = r.flags.map(|f| f.to_string()).unwrap_or_else(|| "0".into());
+    let is_garage = status_str == "garage";
+    let comment = r.comment.clone().unwrap_or_default();
+
+    let time_sig = create_signal(time_s);
+    let flags_sig = create_signal(flags_s);
+    let garage_sig = create_signal(is_garage);
+    let comment_sig = create_signal(comment);
+    let status_initial = if is_garage {
+        "clean".to_string()
+    } else {
+        status_str
+    };
+    let status_sig = create_signal(status_initial);
+
+    let time_display = move || {
+        let t = time_sig.get_clone();
+        let f: u8 = flags_sig.get_clone().parse().unwrap_or(0);
+        let g = garage_sig.get_clone();
+        match t.parse::<f32>() {
+            Ok(secs) => {
+                let kt = KTime::Time(KTimeTime {
+                    time_ds: (10.0 * secs) as u16,
+                    flags: f,
+                    garage: g,
+                });
+                show::ktime(&kt)
+            }
+            Err(_) => view! { span { (t) } },
+        }
+    };
+
+    let save_uid = r.uid.clone();
+    let car_display = car.clone();
+    let car_save = car.clone();
+
+    view! {
+        div(class="box has-background-light") {
+            div(class="columns is-mobile is-vcentered is-gapless mb-2") {
+                div(class="column is-narrow mr-3") {
+                    span(class="has-text-weight-semibold") { (format!(" #{}", car_display)) }
+                }
+                div(class="column") {
+                    p(class="label is-small mb-1") { "Preview" }
+                    div { (time_display()) }
+                }
+            }
+            div(class="columns is-mobile is-vcentered is-gapless mb-2") {
+                div(class="column") {
+                    p(class="label is-small mb-1") { "Time (s)" }
+                    input(
+                        class="input is-small",
+                        r#type="text",
+                        placeholder="e.g. 12.5",
+                        prop:value=move || time_sig.get_clone(),
+                        on:input=move |e: web_sys::Event| {
+                            if let Some(target) = e.target() {
+                                if let Some(el) = target.dyn_ref::<web_sys::HtmlInputElement>() {
+                                    time_sig.set(el.value());
+                                }
+                            }
+                        },
+                    )
+                }
+                div(class="column is-narrow") {
+                    p(class="label is-small mb-1") { "Flags" }
+                    input(
+                        class="input is-small",
+                        r#type="number",
+                        min="0",
+                        style="width: 4rem",
+                        prop:value=move || flags_sig.get_clone(),
+                        on:input=move |e: web_sys::Event| {
+                            if let Some(target) = e.target() {
+                                if let Some(el) = target.dyn_ref::<web_sys::HtmlInputElement>() {
+                                    flags_sig.set(el.value());
+                                }
+                            }
+                        },
+                    )
+                }
+                div(class="column is-narrow ml-2") {
+                    p(class="label is-small mb-1") { "Garage" }
+                    label(class="checkbox") {
+                        input(
+                            r#type="checkbox",
+                            prop:checked=move || garage_sig.get_clone(),
+                            on:change=move |_| {
+                                let v = garage_sig.get_clone();
+                                garage_sig.set(!v);
+                            },
+                        )
+                    }
+                }
+            }
+            div(class="columns is-mobile is-vcentered is-gapless mb-2") {
+                div(class="column") {
+                    p(class="label is-small mb-1") { "Status" }
+                    div(class="select is-small") {
+                        select(
+                            prop:value=move || status_sig.get_clone(),
+                            on:change=move |e: web_sys::Event| {
+                                if let Some(target) = e.target() {
+                                    if let Some(el) = target.dyn_ref::<web_sys::HtmlSelectElement>() {
+                                        status_sig.set(el.value());
+                                    }
+                                }
+                            },
+                        ) {
+                            option(value="clean") { "Clean" }
+                            option(value="dnf") { "DNF" }
+                            option(value="fts") { "FTS" }
+                            option(value="wd") { "WD" }
+                        }
+                    }
+                }
+                div(class="column") {
+                    p(class="label is-small mb-1") { "Comment" }
+                    input(
+                        class="input is-small",
+                        r#type="text",
+                        placeholder="comment",
+                        prop:value=move || comment_sig.get_clone(),
+                        on:input=move |e: web_sys::Event| {
+                            if let Some(target) = e.target() {
+                                if let Some(el) = target.dyn_ref::<web_sys::HtmlInputElement>() {
+                                    comment_sig.set(el.value());
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            div(class="buttons are-small") {
+                button(
+                    class="button is-link",
+                    on:click=move |_| {
+                        let t: String = time_sig.get_clone();
+                        let f: u8 = flags_sig.get_clone().parse().unwrap_or(0);
+                        let g = garage_sig.get_clone();
+                        let st: String = status_sig.get_clone();
+                        let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
+                        let kt = if st == "dnf" { KTime::DNF }
+                            else if st == "fts" { KTime::FTS }
+                            else if st == "wd" { KTime::WD }
+                            else { KTime::Time(KTimeTime { time_ds, flags: f, garage: g }) };
+                        let c: String = comment_sig.get_clone();
+                        let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
+                        crate::khana::helpers::enqueue_amend(
+                            model, &save_uid, model.screens.stopwatch.test.get(),
+                            &car_save, &kt, comment_opt,
+                        );
+                        signal.set(None);
+                    },
+                ) { "Save" }
+                button(
+                    class="button is-light",
+                    on:click=move |_| signal.set(None),
+                ) { "Cancel" }
+            }
         }
     }
 }

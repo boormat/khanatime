@@ -97,3 +97,21 @@ Select → Start/Manual → Stop → Confirm workflow.
 
 - **T6** — Low priority, no change needed.
 - **T8** — Finish screen timestamp inconsistency, separate concern.
+
+## Log improvements (2026-08-29)
+
+### T16. Compact log — hide paired start/stop records ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`
+**Detail:** Build a `HashSet` of UIDs from `RUN_FINISH.refs`. Filter the log: keep all finish records, plus any start/stop whose UID is NOT in that set. Collapses raw observations into just the finish record for completed runs. Orphaned starts/stops (active on-course cars) remain visible.
+
+### T17. Click-to-edit finish records ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`, `view_edit_row()`
+**Detail:** Added pencil button on each `RUN_FINISH` row. Clicking it opens an inline edit form replacing the log row. Form shows: car (read-only), time (editable seconds), status (clean/DNF/FTS/WD dropdown), flags count, garage toggle, comment text. Save calls `enqueue_amend`; cancel closes the form. Only available when `editing_uid` signal is passed (stopwatch page). New model field: `editing_observation: Signal<Option<String>>` on `StopwatchModel`.
+
+### T18. Rework time presentation in log ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`
+**Detail:** Replaced raw `format!("{:.1}", ds/10.0)` with the existing `show::ktime()` renderer. Finish records show time + flag icons + garage icon. Terminal statuses (DNF/FTS/WD/DNS) show status tags.
+
+### T19. Stop record time — grey italic provisional display ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`
+**Detail:** `RUN_STOP` records display `time_ds` as elapsed time in `has-text-grey-light` italic style. Visually marks it as provisional (will be superseded by the finish record's time).
