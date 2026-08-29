@@ -135,10 +135,30 @@
 
 ---
 
+## Timing Log Improvements
+
+### ~~U8. Compact timing log — hide paired start/stop records~~ ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`
+**Detail:** Start/stop observations already referenced by a finish record's `refs` are noise. Filter them out, keeping only orphaned starts/stops (active on-course cars) and all finish records.
+
+### ~~U9. Click-to-edit finish records in timing log~~ ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`, `view_edit_row()`
+**Detail:** Pencil button on finish records opens an inline edit form (time, flags, garage, status, comment). Save calls `enqueue_amend`. Only available on stopwatch page via `editing_observation` signal.
+
+### ~~U10. Rework time presentation in timing log~~ ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`
+**Detail:** Replace raw `format!("{:.1}", ds/10.0)` with `show::ktime()` renderer. Finish records show time + flag icons + garage icon. Terminal statuses show status tags.
+
+### ~~U11. Stop record provisional time display~~ ✅ DONE
+**File:** `src/khana/helpers.rs` — `view_timing_log()`
+**Detail:** `RUN_STOP` records display `time_ds` in grey italic to indicate provisional status (will be superseded by finish record).
+
+---
+
 ## Priority Suggestion
 
 **Phase 1 — Critical bugs:** ✅ Complete (B1–B3)
 
 **Phase 2 — Navigation restructure:** ✅ Complete (F1–F3, U5–U7)
 
-**Phase 3 — Validation + polish:** ✅ Complete (V1✅ V2❌dropped V3✅ U1–U4✅)
+**Phase 3 — Validation + polish:** ✅ Complete (V1✅ V2❌dropped V3✅ U1–U4✅, U8–U11✅)
