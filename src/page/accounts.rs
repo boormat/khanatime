@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use sycamore::prelude::*;
 
 /// UI state for the accounts page.
@@ -29,6 +31,10 @@ pub struct Model {
     pub contact_name: Signal<String>,
     pub contact_desc: Signal<String>,
     pub contact_phone: Signal<String>,
+    /// Connectivity status per homeserver URL (keyed by the homeserver's `url`).
+    pub hs_status: Signal<HashMap<String, ConnStatus>>,
+    /// Monotonic token used to debounce the add-homeserver URL probe.
+    pub hs_check_seq: Signal<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -37,6 +43,19 @@ pub enum QrTarget {
     Account { homeserver: String, personal: bool },
     /// Share as contact (no credentials).
     Contact(String),
+}
+
+/// Reachability state of a Matrix homeserver, shown as a status chip.
+#[derive(Clone, PartialEq)]
+pub enum ConnStatus {
+    /// Not yet checked (or no homeserver selected).
+    Unknown,
+    /// A probe is in flight.
+    Checking,
+    /// Server answered `/_matrix/client/versions`.
+    Reachable,
+    /// Network-level failure (server down / unreachable). Holds the message.
+    Unreachable(String),
 }
 
 impl Model {
@@ -63,12 +82,31 @@ impl Model {
             contact_name: create_signal(String::new()),
             contact_desc: create_signal(String::new()),
             contact_phone: create_signal(String::new()),
+            hs_status: create_signal(HashMap::new()),
+            hs_check_seq: create_signal(0u32),
         }
     }
 }
 
 pub fn init() -> Model {
     Model::new()
+}
+
+/// Render a small connectivity status chip for a homeserver.
+#[cfg(target_arch = "wasm32")]
+pub fn view_hs_status(status: ConnStatus) -> View {
+    match status {
+        ConnStatus::Reachable => view! {
+            span(class="tag is-success is-light is-small") { "online" }
+        },
+        ConnStatus::Checking => view! {
+            span(class="tag is-warning is-light is-small") { "checking…" }
+        },
+        ConnStatus::Unreachable(msg) => view! {
+            span(class="tag is-danger is-light is-small", title=msg) { "unreachable" }
+        },
+        ConnStatus::Unknown => view! {},
+    }
 }
 
 pub fn view(model: crate::Model) -> View {
@@ -219,8 +257,17 @@ fn view_homeservers(model: crate::Model) -> View {
         boxes.push(view! {
             div(class="box") {
                 div(class="is-flex is-justify-content-space-between is-align-items-center") {
-                    div {
+                    div(class="is-flex is-align-items-center", style="gap: 0.5rem;") {
                         h2(class="title is-5 mb-0") { (label) }
+                        (move || {
+                            let s = sm
+                                .hs_status
+                                .get_clone()
+                                .get(&hs.url)
+                                .cloned()
+                                .unwrap_or(ConnStatus::Unknown);
+                            view_hs_status(s)
+                        })
                     }
                     (if account_count == 0 {
                         view! {
@@ -646,6 +693,15 @@ fn view_create_modal(model: crate::Model) -> View {
                                         }
                                     }
                                 }
+                                p(class="help") {
+                                    (move || view_hs_status(
+                                        sm.hs_status
+                                            .get_clone()
+                                            .get(&sm.create_hs.get_clone())
+                                            .cloned()
+                                            .unwrap_or(ConnStatus::Unknown),
+                                    ))
+                                }
                             }
                             div(class="field") {
                                 label(class="label") { "Account type" }
@@ -810,6 +866,15 @@ fn view_add_hs_modal(model: crate::Model) -> View {
                         label(class="label") { "URL" }
                         div(class="control") {
                             input(class="input", placeholder="https://matrix.org", bind:value=sm.add_hs_url)
+                        }
+                        p(class="help") {
+                            (move || view_hs_status(
+                                sm.hs_status
+                                    .get_clone()
+                                    .get(&sm.add_hs_url.get_clone())
+                                    .cloned()
+                                    .unwrap_or(ConnStatus::Unknown),
+                            ))
                         }
                     }
                     div(class="field") {

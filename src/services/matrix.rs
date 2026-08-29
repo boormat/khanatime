@@ -26,7 +26,7 @@ use matrix_sdk::{
     deserialized_responses::{TimelineEvent, TimelineEventKind},
     store::RoomLoadSettings,
     utils::UrlOrQuery,
-    Client, Room, SessionMeta,
+    Client, ClientBuildError, HttpError, Room, SessionMeta,
 };
 use ruma::{
     api::{
@@ -683,13 +683,49 @@ fn resolved_homeserver_url(homeserver: &str) -> &str {
 
 pub async fn new_client(homeserver: &str) -> Result<Client, String> {
     let url = resolved_homeserver_url(homeserver);
+    let label = url.to_string();
     Client::builder()
         .homeserver_url(url)
         .indexeddb_store(STORE_NAME, None)
         .handle_refresh_tokens()
         .build()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| describe_build_error(&e, &label))
+}
+
+/// Probe whether a homeserver is reachable. Builds a throwaway client (no
+/// store, no auth) and forces a live `/_matrix/client/versions` request so the
+/// result reflects the server's *current* state, not a cached/discovery state.
+pub async fn check_homeserver(homeserver: &str) -> crate::page::accounts::ConnStatus {
+    let url = resolved_homeserver_url(homeserver);
+    let label = url.to_string();
+    let client = match Client::builder().homeserver_url(url).build().await {
+        Ok(c) => c,
+        Err(_) => {
+            return crate::page::accounts::ConnStatus::Unreachable(format!(
+                "Homeserver at {label} is unreachable."
+            ))
+        }
+    };
+    match client.supported_versions().await {
+        Ok(_) => crate::page::accounts::ConnStatus::Reachable,
+        Err(_) => crate::page::accounts::ConnStatus::Unreachable(format!(
+            "Homeserver at {label} is unreachable."
+        )),
+    }
+}
+
+/// Map a client-build failure to a short, user-facing message. Network-level
+/// failures mean the homeserver is unreachable; other failures surface their
+/// detail (e.g. an invalid server name).
+fn describe_build_error(e: &ClientBuildError, label: &str) -> String {
+    if let ClientBuildError::Http(http) = e {
+        let inner: &HttpError = http;
+        if let HttpError::Reqwest(_) = inner {
+            return format!("Homeserver at {label} is unreachable.");
+        }
+    }
+    e.to_string()
 }
 
 /// Why a registration attempt failed.

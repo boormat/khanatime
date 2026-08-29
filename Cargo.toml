@@ -38,6 +38,7 @@ web-sys = { version = "0.3", features = [
     "HtmlVideoElement",
 ] }
 wasm-bindgen-futures = "0.4"
+gloo-timers = "0.3"
 
 # getrandom needs its wasm JS backend on wasm32-unknown-unknown
 getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }

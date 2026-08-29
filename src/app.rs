@@ -819,6 +819,103 @@ pub fn setup_effects(model: Model) {
         am.create_pass.set(String::new());
         am.create_desc.set(String::new());
     });
+    // Live homeserver connectivity status (wasm only — needs the network stack).
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Probe every saved homeserver when the list changes (incl. first load).
+        create_effect(move || {
+            am.refresh.get(); // track the list
+            let homeservers = crate::services::matrix::load_homeservers();
+            for hs in homeservers {
+                let url = hs.url.clone();
+                let am2 = am;
+                wasm_bindgen_futures::spawn_local(async move {
+                    am2.hs_status.update(|m| {
+                        m.insert(url.clone(), crate::page::accounts::ConnStatus::Checking);
+                    });
+                    let s = crate::services::matrix::check_homeserver(&url).await;
+                    am2.hs_status.update(|m| {
+                        m.insert(url, s);
+                    });
+                });
+            }
+        });
+
+        // Probe the homeserver selected in the create-account modal (and when
+        // the modal opens, so a stale "online" is refreshed).
+        create_effect(move || {
+            let _ = am.show_create.get();
+            let url = am.create_hs.get_clone();
+            if url.is_empty() {
+                return;
+            }
+            let am2 = am;
+            wasm_bindgen_futures::spawn_local(async move {
+                am2.hs_status.update(|m| {
+                    m.insert(url.clone(), crate::page::accounts::ConnStatus::Checking);
+                });
+                let s = crate::services::matrix::check_homeserver(&url).await;
+                am2.hs_status.update(|m| {
+                    m.insert(url, s);
+                });
+            });
+        });
+
+        // Debounced probe of the typed homeserver URL in the add-homeserver modal.
+        let check_seq = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        create_effect({
+            let check_seq = check_seq.clone();
+            move || {
+                let _ = am.show_add_hs.get();
+                let url = am.add_hs_url.get_clone(); // tracked source
+                let seq = check_seq.get() + 1;
+                check_seq.set(seq); // non-reactive guard; doesn't retrigger this effect
+                if url.is_empty() {
+                    return;
+                }
+                let am2 = am;
+                let cs = check_seq.clone(); // own clone for the spawned task
+                wasm_bindgen_futures::spawn_local(async move {
+                    gloo_timers::future::sleep(std::time::Duration::from_millis(400)).await;
+                    if cs.get() != seq {
+                        return; // superseded by a newer keystroke
+                    }
+                    am2.hs_status.update(|m| {
+                        m.insert(url.clone(), crate::page::accounts::ConnStatus::Checking);
+                    });
+                    let s = crate::services::matrix::check_homeserver(&url).await;
+                    if cs.get() != seq {
+                        return;
+                    }
+                    am2.hs_status.update(|m| {
+                        m.insert(url, s);
+                    });
+                });
+            }
+        });
+
+        // Periodic re-probe so the status stays live — catches a server going
+        // down (or coming back up) while the Accounts screen is open. 30s.
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                gloo_timers::future::sleep(std::time::Duration::from_millis(30_000)).await;
+                let homeservers = crate::services::matrix::load_homeservers();
+                for hs in homeservers {
+                    let url = hs.url.clone();
+                    let am2 = am;
+                    wasm_bindgen_futures::spawn_local(async move {
+                        am2.hs_status.update(|m| {
+                            m.insert(url.clone(), crate::page::accounts::ConnStatus::Checking);
+                        });
+                        let s = crate::services::matrix::check_homeserver(&url).await;
+                        am2.hs_status.update(|m| {
+                            m.insert(url, s);
+                        });
+                    });
+                }
+            }
+        });
+    }
     #[cfg(target_arch = "wasm32")]
     start_tick_timer(model);
     #[cfg(target_arch = "wasm32")]
