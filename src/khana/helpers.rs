@@ -165,11 +165,13 @@ pub fn check_unknown_comment(
 /// that opens an inline amend form.  Pass `None` for read-only logs.
 /// `provisional_uid` is the UID of a provisional finish record that should
 /// auto-open in edit mode (the confirm interface).
+/// `edit_state` caches the edit form signals across renders.
 pub fn view_timing_log(
     model: crate::Model,
     test: u8,
     editing_uid: Option<Signal<Option<String>>>,
     provisional_uid: Option<Signal<Option<String>>>,
+    edit_state: Option<Signal<Option<crate::khana::page::stopwatch::EditState>>>,
 ) -> View {
     use super::super::view as show;
     use crate::event::{KTime, KTimeTime, RunRecord, RUN_FINISH, RUN_START, RUN_STOP};
@@ -208,7 +210,7 @@ pub fn view_timing_log(
                         if r.r#type == RUN_FINISH && effective_editing.as_deref() == Some(&uid) {
                             let r = r.clone();
                             let is_provisional = r.provisional;
-                            return view_edit_row(model, &r, &editing_uid, &provisional_uid, is_provisional, now);
+                            return view_edit_row(model, &r, &editing_uid, &provisional_uid, &edit_state, is_provisional, now);
                         }
                         let (icon_char, icon_class) = if r.r#type == RUN_START {
                             ("\u{25B6}", "has-text-success")
@@ -312,6 +314,30 @@ struct EditSignals {
     garage: Signal<bool>,
     status: Signal<String>,
     comment: Signal<String>,
+}
+
+fn make_edit_state(r: &crate::event::RunRecord) -> crate::khana::page::stopwatch::EditState {
+    let status_str = r.status.clone().unwrap_or_default();
+    let is_garage = status_str == "garage";
+    let time_s = r
+        .time_ds
+        .map(|ds| format!("{:.1}", ds as f32 / 10.0))
+        .unwrap_or_default();
+    let flags_val = r.flags.unwrap_or(0);
+    let comment = r.comment.clone().unwrap_or_default();
+    let status_initial = if is_garage {
+        "clean".to_string()
+    } else {
+        status_str
+    };
+    crate::khana::page::stopwatch::EditState {
+        uid: r.uid.clone(),
+        time: create_signal(time_s),
+        flags: create_signal(flags_val),
+        garage: create_signal(is_garage),
+        status: create_signal(status_initial),
+        comment: create_signal(comment),
+    }
 }
 
 /// Buttons for confirming a provisional finish record.
@@ -437,56 +463,104 @@ fn view_edit_row(
     r: &crate::event::RunRecord,
     editing_uid: &Option<Signal<Option<String>>>,
     provisional_uid: &Option<Signal<Option<String>>>,
+    edit_state: &Option<Signal<Option<crate::khana::page::stopwatch::EditState>>>,
     is_provisional: bool,
     _now: i64,
 ) -> View {
-    use super::super::view as show;
-    use crate::event::{KTime, KTimeTime};
+    use crate::event::RUN_START;
     use crate::khana::page::penalty;
     let signal = editing_uid.unwrap();
     let prov_signal = provisional_uid.and_then(Some);
     let r_for_provisional = r.clone();
     let r_for_edit = r.clone();
     let car = r.car.clone();
-    let status_str = r.status.clone().unwrap_or_default();
-    let time_s = r
-        .time_ds
-        .map(|ds| format!("{:.1}", ds as f32 / 10.0))
-        .unwrap_or_default();
-    let flags_val = r.flags.unwrap_or(0);
-    let is_garage = status_str == "garage";
-    let comment = r.comment.clone().unwrap_or_default();
+
     let time_ds_val = r.time_ds.unwrap_or(0);
+    let entry_name = model.khana.event.with(|e| {
+        e.entries
+            .iter()
+            .find(|en| en.car == car)
+            .map(|en| en.name.clone())
+            .unwrap_or_default()
+    });
+    // Look up attached observations (start/stop records referenced by this finish's refs).
+    let attached_uids: Vec<String> = r.refs.clone();
+    let runs_clone = model.khana.runs.with(|runs| runs.clone());
+    let attached_records: Vec<(String, String, String)> = attached_uids
+        .iter()
+        .filter_map(|uid| {
+            runs_clone.iter().find(|r| r.uid == *uid).map(|r| {
+                let icon = if r.r#type == RUN_START {
+                    "\u{25B6}"
+                } else {
+                    "\u{23F9}"
+                };
+                let ts = fmt_ts(r.ts, js_sys::Date::now() as i64);
+                (icon.to_string(), r.car.clone(), ts)
+            })
+        })
+        .collect();
+    let time_display_str = format!("{:.1}s", time_ds_val as f32 / 10.0);
 
-    let time_sig = create_signal(time_s);
-    let flags_sig = create_signal(flags_val);
-    let garage_sig = create_signal(is_garage);
-    let comment_sig = create_signal(comment);
-    let status_initial = if is_garage {
-        "clean".to_string()
-    } else {
-        status_str
-    };
-    let status_sig = create_signal(status_initial);
-
-    let time_display = move || {
-        let t = time_sig.get_clone();
-        let f = flags_sig.get();
-        let g = garage_sig.get();
-        match t.parse::<f32>() {
-            Ok(secs) => {
-                let kt = KTime::Time(KTimeTime {
-                    time_ds: (10.0 * secs) as u16,
-                    flags: f,
-                    garage: g,
-                });
-                show::ktime(&kt)
+    // Use cached edit state if available and matching this record's uid;
+    // otherwise create fresh signals and cache them.
+    let (time_sig, flags_sig, garage_sig, status_sig, comment_sig) = {
+        let cached = edit_state.and_then(|s| s.get_clone());
+        if let Some(ref c) = cached {
+            if c.uid == r.uid {
+                (c.time, c.flags, c.garage, c.status, c.comment)
+            } else {
+                let state = make_edit_state(r);
+                let sigs = (
+                    state.time,
+                    state.flags,
+                    state.garage,
+                    state.status,
+                    state.comment,
+                );
+                if let Some(es) = edit_state {
+                    es.set(Some(state));
+                }
+                sigs
             }
-            Err(_) => view! { span { (t) } },
+        } else {
+            let state = make_edit_state(r);
+            let sigs = (
+                state.time,
+                state.flags,
+                state.garage,
+                state.status,
+                state.comment,
+            );
+            if let Some(es) = edit_state {
+                es.set(Some(state));
+            }
+            sigs
         }
     };
 
     let car_display = car.clone();
+
+    let attached_obs: View = if !attached_records.is_empty() {
+        let views: Vec<View> = attached_records
+            .into_iter()
+            .map(|(icon, a_car, a_ts)| {
+                view! {
+                    div(class="level is-mobile mb-0") {
+                        div(class="level-left") {
+                            span(class="is-size-7") {
+                                span { (icon) }
+                                span { (format!(" {} {}", a_car, a_ts)) }
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
+        views.into()
+    } else {
+        view! {}
+    };
 
     let buttons: View = if is_provisional {
         let sigs = EditSignals {
@@ -510,13 +584,11 @@ fn view_edit_row(
 
     view! {
         div(class="box has-background-light") {
-            div(class="columns is-mobile is-vcentered is-gapless mb-2") {
-                div(class="column is-narrow mr-3") {
-                    span(class="has-text-weight-semibold") { (format!(" #{}", car_display)) }
-                }
-                div(class="column") {
-                    p(class="label is-small mb-1") { "Preview" }
-                    div { (time_display()) }
+            div(class="level is-mobile mb-1") {
+                div(class="level-left") {
+                    (crate::view::car_tag(&car_display))
+                    span(class="has-text-weight-semibold ml-2") { (entry_name) }
+                    span(class="has-text-grey ml-2 is-size-7") { (time_display_str) }
                 }
             }
             div(class="columns is-mobile is-vcentered is-gapless mb-2") {
@@ -554,6 +626,7 @@ fn view_edit_row(
                 }
             }
             (penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds_val, false, || {}))
+            (attached_obs)
             (buttons)
         }
     }

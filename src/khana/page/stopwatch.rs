@@ -28,6 +28,20 @@ pub enum Msg {
 }
 
 // ---------------------------------------------------------------------------
+// Edit state (cached signals for the inline edit form)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct EditState {
+    pub uid: String,
+    pub time: Signal<String>,
+    pub flags: Signal<u8>,
+    pub garage: Signal<bool>,
+    pub status: Signal<String>,
+    pub comment: Signal<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
@@ -42,6 +56,7 @@ pub struct Model {
     pub feedback: Signal<Option<String>>,
     pub show_car_picker: Signal<bool>,
     pub editing_observation: Signal<Option<String>>,
+    pub edit_state: Signal<Option<EditState>>,
     pub selected_picker_car: Signal<Option<String>>,
 }
 
@@ -56,6 +71,7 @@ pub fn init() -> Model {
         feedback: create_signal(None),
         show_car_picker: create_signal(false),
         editing_observation: create_signal(None),
+        edit_state: create_signal(None),
         selected_picker_car: create_signal(None),
     }
 }
@@ -219,6 +235,8 @@ fn commit(model: crate::Model) {
         }
     });
     sm.provisional_uid.set(None);
+    sm.editing_observation.set(None);
+    sm.edit_state.set(None);
     sm.car.set(String::new());
     save_car("");
     sm.comment.set(String::new());
@@ -237,6 +255,8 @@ fn cancel(model: crate::Model) {
         });
     }
     sm.provisional_uid.set(None);
+    sm.editing_observation.set(None);
+    sm.edit_state.set(None);
     sm.time.set(String::new());
     sm.feedback.set(None);
     penalty::clear(sm.penalty);
@@ -412,7 +432,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             })
-            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation), Some(sm.provisional_uid)))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), Some(sm.editing_observation), Some(sm.provisional_uid), Some(sm.edit_state)))
             (view_car_picker_modal(model))
         }
     }

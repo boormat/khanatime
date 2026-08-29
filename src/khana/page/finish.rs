@@ -204,7 +204,7 @@ pub fn view(model: crate::Model) -> View {
                     }
                 }
             }
-            (crate::khana::helpers::view_timing_log(model, sm.test.get(), None, None))
+            (crate::khana::helpers::view_timing_log(model, sm.test.get(), None, None, None))
         }
     }
 }
