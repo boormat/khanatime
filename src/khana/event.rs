@@ -843,7 +843,10 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
             if slowest == 0 {
                 0
             } else {
-                slowest.min(fastest * 2) as u16
+                // A penalised slowest time can exceed u16::MAX ds; saturate to
+                // the largest finite base instead of silently wrapping to a
+                // tiny value (which would corrupt the slowest-time-plus-5 rule).
+                u16::try_from(slowest.min(fastest * 2)).unwrap_or(u16::MAX)
             }
         })
         .collect()
@@ -1011,7 +1014,10 @@ pub fn create_outright_view(event: &EventInfo, runs: &[RunRecord]) -> ResultView
 /// (zero total), so the cumulative chain runs straight through it.
 pub fn calc_cumulative_times(rv: &mut ResultView) {
     for row in rv.rows.values_mut() {
-        let mut score = 0;
+        // Accumulate in u32: a penalised/long event can exceed u16::MAX ds for
+        // the running total.  Saturate into Pos (which stores u16) rather than
+        // overflowing (debug builds panic, release silently wraps).
+        let mut score: u32 = 0;
         let mut broken = false;
         for rs in row.columns.iter_mut() {
             if broken {
@@ -1023,8 +1029,8 @@ pub fn calc_cumulative_times(rv: &mut ResultView) {
             match rs {
                 Some(rs) => match &rs.stage_pos {
                     Some(sp) => {
-                        score += sp.score_ds;
-                        rs.cum_pos = Some(Pos::init(score));
+                        score += sp.score_ds as u32;
+                        rs.cum_pos = Some(Pos::init(score.min(u16::MAX as u32) as u16));
                     }
                     None => {
                         rs.cum_pos = None;
@@ -2046,6 +2052,62 @@ mod tests {
         assert_eq!(elapsed_ds(0, 0), 0);
         assert_eq!(elapsed_ds(1000, 1000 + 12350), 124); // 12.35s -> 124ds
         assert_eq!(elapsed_ds(1000, 500), 0);
+    }
+
+    #[test]
+    fn base_times_for_saturates_past_u16() {
+        // A penalised slow run can score > u16::MAX ds (time_ds max + 50*flags).
+        // `base_times_for` must saturate to u16::MAX, not wrap to a tiny value.
+        let ev = demo_event();
+        let mut near = run("finish", 1, "7", 100);
+        near.time_ds = Some(65_000);
+        near.flags = Some(10); // 65000 + 500 = 65500 -> fits, exercise near edge
+        let base = base_times_for(&ev, &[near]);
+        assert_eq!(base[0], 65_500);
+
+        // Beyond u16::MAX: flag-bloated time. Must not wrap.
+        let mut big = run("finish", 1, "8", 200);
+        big.time_ds = Some(65_500);
+        big.flags = Some(10); // 65500 + 500 = 66000 > u16::MAX
+        let base = base_times_for(&ev, &[big]);
+        assert_eq!(base[0], u16::MAX);
+    }
+
+    #[test]
+    fn calc_cumulative_does_not_overflow() {
+        // Twelve long stages at ~40 000 ds each sum to ~480 000 ds, far past
+        // u16::MAX.  The cumulative path must saturate into Pos, not panic
+        // (debug builds) or wrap (release).
+        let mut ev = demo_event();
+        ev.stages = vec![
+            crate::khana::event::Stage {
+                num: 1,
+                name: "S1".into(),
+                runs_total: 1,
+                runs_scored: 1,
+                timing: crate::khana::event::TimingStyle::Stopwatch,
+            };
+            12
+        ];
+        let runs: Vec<RunRecord> = (1..=12u8)
+            .map(|t| {
+                let mut r = run("finish", t, "1", t as i64);
+                r.time_ds = Some(40_000);
+                r
+            })
+            .collect();
+        let mut rv = create_result_view(&ev, &runs, "Outright");
+        calc_cumulative_times(&mut rv);
+        let cum = rv.rows["1"]
+            .columns
+            .iter()
+            .map(|c| c.as_ref().unwrap().cum_pos.as_ref().unwrap().score_ds)
+            .collect::<Vec<_>>();
+        // Each stage adds 40 000; cumulative after k stages = 40k*k, saturated.
+        assert_eq!(cum[0], 40_000);
+        assert_eq!(cum[1], 80_000.min(u16::MAX as u32) as u16);
+        // The chain saturates at u16::MAX rather than overflowing.
+        assert_eq!(*cum.last().unwrap(), u16::MAX);
     }
 
     #[test]

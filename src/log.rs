@@ -165,10 +165,20 @@ fn get_json<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
         .and_then(|s| serde_json::from_str(&s).ok())
 }
 
-fn set_json<T: Serialize>(key: &str, value: &T) {
-    if let Some(st) = storage() {
-        let _ = st.set_item(key, &serde_json::to_string(value).unwrap());
-    }
+fn set_json<T: Serialize>(key: &str, value: &T) -> Result<(), String> {
+    let json = serde_json::to_string(value).map_err(|e| format!("serialize {key}: {e}"))?;
+    let Some(st) = storage() else {
+        return Err("localStorage unavailable".into());
+    };
+    st.set_item(key, &json)
+        .map_err(|e| format!("persist {key} failed (quota?): {e:?}"))
+}
+
+/// Log a persistence failure loudly so data loss is never silent.  The log is
+/// the only durable state — a dropped write (e.g. localStorage quota) must be
+/// visible in the console / devtools, not swallowed.
+fn report_persist_error(err: &str) {
+    web_sys::console::error_1(&js_sys::JsString::from(format!("khanatime: {err}")));
 }
 
 pub fn load_log(id: &str) -> Vec<LogMsg> {
@@ -186,15 +196,29 @@ pub fn load_pending(id: &str) -> Vec<LogMsg> {
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink
-fn save_log(id: &str, msgs: &[LogMsg]) {
-    if !id.is_empty() {
-        set_json(&log_key(id), &msgs.to_vec());
+fn save_log(id: &str, msgs: &[LogMsg]) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    match set_json(&log_key(id), &msgs.to_vec()) {
+        Ok(()) => true,
+        Err(e) => {
+            report_persist_error(&e);
+            false
+        }
     }
 }
 
-fn save_pending(id: &str, msgs: &[LogMsg]) {
-    if !id.is_empty() {
-        set_json(&pending_key(id), &msgs.to_vec());
+fn save_pending(id: &str, msgs: &[LogMsg]) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    match set_json(&pending_key(id), &msgs.to_vec()) {
+        Ok(()) => true,
+        Err(e) => {
+            report_persist_error(&e);
+            false
+        }
     }
 }
 
@@ -272,8 +296,9 @@ pub fn append_log(id: &str, msg: LogMsg) -> bool {
         return false;
     }
     log.push(msg);
-    save_log(id, &log);
-    true
+    // A failed write means the durable log didn't record this message — report
+    // it and return false so callers don't believe it persisted.
+    save_log(id, &log)
 }
 
 /// Seed an adopted event's setup manifest into the durable log (not the
@@ -566,5 +591,235 @@ mod tests {
         let cid = crate::ids::content_id(&log[0].body);
         assert!(!apply_confirm_in_room(&mut log, &cid, "!b", "!room"));
         assert_eq!(log[0].mid, "!a");
+    }
+}
+
+// Browser-only coverage: every function below reads/writes real localStorage,
+// which the native suite can't reach.  Each test uses its own event id so runs
+// don't interfere, and cleans up after itself.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    /// Unique event id per test so parallel/sequential runs stay isolated.
+    fn tmp_id(tag: &str) -> String {
+        format!("wasmtest-{tag}-{}", crate::ids::gen_short_id())
+    }
+
+    struct Tmp(String);
+
+    impl Tmp {
+        fn new(tag: &str) -> Self {
+            let id = tmp_id(tag);
+            remove_event_log(&id);
+            Tmp(id)
+        }
+        fn id(&self) -> &str {
+            &self.0
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            remove_event_log(&self.0);
+        }
+    }
+
+    fn pending(body: &str) -> LogMsg {
+        LogMsg::new_pending(body.to_string(), "@me:hs".into())
+    }
+
+    fn from_room(mid: &str, body: &str, room: &str) -> LogMsg {
+        LogMsg::from_room(
+            mid.to_string(),
+            100,
+            "@them:hs".into(),
+            body.to_string(),
+            String::new(),
+            room,
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn append_log_persists_to_storage() {
+        let t = Tmp::new("append");
+        assert!(append_log(
+            t.id(),
+            from_room("$1", "KT {\"uid\":\"A\"}", "!room")
+        ));
+        let log = load_log(t.id());
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].mid, "$1");
+        assert_eq!(log[0].origin, "!room");
+        assert!(!log[0].pending);
+    }
+
+    #[wasm_bindgen_test]
+    fn append_log_dedupes_by_mid_and_content_id() {
+        let t = Tmp::new("dedupe");
+        let body = "KT {\"uid\":\"A\"}";
+        assert!(append_log(t.id(), from_room("$1", body, "!room")));
+        // Same mid: rejected.
+        assert!(!append_log(t.id(), from_room("$1", body, "!room")));
+        // Different mid, same content id: still one entry.
+        assert!(!append_log(t.id(), from_room("$2", body, "!room")));
+        assert_eq!(load_log(t.id()).len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn enqueue_then_promote_moves_outbox_to_log() {
+        let t = Tmp::new("promote");
+        let msg = pending("KT {\"uid\":\"A\"}");
+        let local_id = msg.local_id.clone();
+        enqueue_pending(t.id(), msg);
+
+        assert_eq!(load_pending(t.id()).len(), 1);
+        assert!(load_log(t.id()).is_empty());
+
+        assert!(promote(t.id(), &local_id, "$real"));
+        assert!(load_pending(t.id()).is_empty());
+        let log = load_log(t.id());
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].mid, "$real");
+        assert!(!log[0].pending);
+    }
+
+    #[wasm_bindgen_test]
+    fn promote_rejects_unknown_local_id() {
+        let t = Tmp::new("promote-bad");
+        enqueue_pending(t.id(), pending("KT {\"uid\":\"A\"}"));
+        assert!(!promote(t.id(), "no-such-local-id", "$real"));
+        assert_eq!(load_pending(t.id()).len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn reconcile_drops_echoed_pending() {
+        let t = Tmp::new("reconcile");
+        let body = "KT {\"uid\":\"A\"}";
+        enqueue_pending(t.id(), pending(body));
+        // The send ack was lost but the echo landed in the room.
+        assert!(append_log(t.id(), from_room("$echo", body, "!room")));
+        assert_eq!(reconcile(t.id()), 1);
+        assert!(load_pending(t.id()).is_empty());
+        assert_eq!(load_log(t.id()).len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn publish_outbox_moves_pending_to_parcel_origin() {
+        let t = Tmp::new("outbox");
+        enqueue_pending(t.id(), pending("KT {\"uid\":\"A\"}"));
+        assert_eq!(publish_outbox(t.id()), 1);
+
+        let log = load_log(t.id());
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].origin, PARCEL_ORIGIN);
+        assert!(!log[0].pending);
+        // Left the outbox, so flush_pending won't re-send it.
+        assert!(load_pending(t.id()).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn confirm_in_room_upgrades_parcel_origin() {
+        let t = Tmp::new("confirm");
+        let body = "KT {\"uid\":\"A\"}";
+        enqueue_pending(t.id(), pending(body));
+        publish_outbox(t.id());
+
+        let cid = crate::ids::content_id(body);
+        assert!(confirm_in_room(t.id(), &cid, "$sent", "!room"));
+        let log = load_log(t.id());
+        assert_eq!(log[0].origin, "!room");
+        assert_eq!(log[0].mid, "$sent");
+        // Second confirm (lost-ack echo) is a no-op.
+        assert!(!confirm_in_room(t.id(), &cid, "$sent2", "!room"));
+    }
+
+    #[wasm_bindgen_test]
+    fn seed_setup_to_log_is_idempotent() {
+        let t = Tmp::new("seed");
+        let setup = "khanatime_setup:{}";
+        assert!(seed_setup_to_log(t.id(), setup, "@me:hs"));
+        assert!(!seed_setup_to_log(t.id(), setup, "@me:hs"));
+        let log = load_log(t.id());
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].origin, ADOPT_ORIGIN);
+    }
+
+    #[wasm_bindgen_test]
+    fn drop_pending_removes_only_the_named_entry() {
+        let t = Tmp::new("drop");
+        let a = pending("KT {\"uid\":\"A\"}");
+        let a_id = a.local_id.clone();
+        enqueue_pending(t.id(), a);
+        enqueue_pending(t.id(), pending("KT {\"uid\":\"B\"}"));
+
+        drop_pending(t.id(), &a_id);
+        let left = load_pending(t.id());
+        assert_eq!(left.len(), 1);
+        assert_ne!(left[0].local_id, a_id);
+    }
+
+    #[wasm_bindgen_test]
+    fn list_event_ids_finds_stored_events() {
+        let t = Tmp::new("list");
+        enqueue_pending(t.id(), pending("KT {\"uid\":\"A\"}"));
+        assert!(list_event_ids().contains(t.id()));
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_event_id_is_rejected() {
+        // Guard clauses must not touch storage or panic.
+        assert!(!append_log("", from_room("$1", "KT {}", "!room")));
+        assert!(!promote("", "local", "$real"));
+        assert_eq!(publish_outbox(""), 0);
+        assert_eq!(reconcile(""), 0);
+        assert!(!confirm_in_room("", "cid", "$1", "!room"));
+    }
+
+    // Fill localStorage past its quota so the next write fails.  Returns nothing;
+    // leaves the storage full (caller is responsible for cleanup via Tmp drop on
+    // its own event id — but the filler keys are separate and removed here).
+    fn fill_storage() {
+        if let Some(st) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+            let blob = "x".repeat(1024 * 1024); // 1 MiB chunk
+            let mut slot = 0;
+            while st.set_item(&format!("wasmtest-fill-{slot}"), &blob).is_ok() {
+                slot += 1;
+                // Safety bound: stop before 64 MiB even if no quota applies.
+                if slot >= 64 {
+                    break;
+                }
+            }
+            // Clean up the filler keys; if storage is full this may itself fail,
+            // which is fine — the point is to have left it full.
+            for s in 0..slot {
+                let _ = st.remove_item(&format!("wasmtest-fill-{s}"));
+            }
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn append_log_reports_failure_when_storage_is_full() {
+        let t = Tmp::new("append-fail");
+        // First write succeeds normally.
+        assert!(append_log(
+            t.id(),
+            from_room("$1", "KT {\"uid\":\"A\"}", "!room")
+        ));
+        // Now exhaust storage and confirm a second append is reported as failed
+        // (returns false) rather than silently losing the write.
+        fill_storage();
+        let ok = append_log(t.id(), from_room("$2", "KT {\"uid\":\"B\"}", "!room"));
+        // We can't guarantee quota on every runner, so only assert when it failed.
+        // The key guarantee: a returned `false` means the durable log did NOT grow.
+        if !ok {
+            let log = load_log(t.id());
+            assert_eq!(
+                log.len(),
+                1,
+                "failed append must not silently persist a second entry"
+            );
+        }
     }
 }

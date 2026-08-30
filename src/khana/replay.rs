@@ -17,25 +17,51 @@ use crate::log::LogMsg;
 use crate::timing_event::TimingEvent;
 
 /// Reconstruct `(event, scores, runs)` from the event's message log.
+///
+/// `scores` is always re-derived from `runs` at the end (see
+/// [`scores_from_runs`]) so it can never drift from the runs — in particular a
+/// `void` (which clears `r.voided` but leaves the run in place) drops the
+/// scored time, and a corrected/amended finish always reflects the latest
+/// intent.  The incremental scoring in `apply` was removed on purpose: the log
+/// is the truth, `runs` is a deduplicated projection of it, and `scores` is a
+/// pure function of `runs`.
 pub fn replay(log: &[LogMsg], pending: &[LogMsg]) -> (EventInfo, Vec<ScoreData>, Vec<RunRecord>) {
     let mut ev = EventInfo::default();
-    let mut scores: Vec<ScoreData> = vec![];
     let mut runs: Vec<RunRecord> = vec![];
     // Amend/void that arrived before their target (QR parcel ordering); applied
     // when the targeted observation lands.
     let mut corrections: HashMap<String, Vec<TimingEvent>> = HashMap::new();
     for msg in log.iter().chain(pending.iter()) {
-        apply(&mut ev, &mut scores, &mut runs, &mut corrections, &msg.body);
+        apply(&mut ev, &mut runs, &mut corrections, &msg.body);
     }
+    let scores = scores_from_runs(&runs);
     (ev, scores, runs)
 }
 
+/// Re-derive the per-(stage, car) score table from the run records.  Voided
+/// runs are skipped, so a voided finish removes the time from the results (the
+/// run itself stays in the log for audit).  Last-writer-wins: a later run with
+/// the same uid overwrote the earlier one in `add_run`, so this is
+/// order-independent.
+fn scores_from_runs(runs: &[RunRecord]) -> Vec<ScoreData> {
+    let mut scores: Vec<ScoreData> = vec![];
+    for r in runs.iter().filter(|r| !r.voided) {
+        if r.r#type == crate::event::RUN_START && r.status.as_deref() == Some("dns") {
+            crate::event::upsert_ktime(&mut scores, r.test, &r.car, crate::event::KTime::NOSHO);
+        }
+        if r.r#type == crate::event::RUN_FINISH {
+            let kt = crate::event::finish_to_ktime(r);
+            crate::event::upsert_ktime(&mut scores, r.test, &r.car, kt);
+        }
+    }
+    scores
+}
+
 /// Apply one message body to derived state (idempotent: setup is
-/// last-writer-wins, runs dedupe by observation uid, scores overwrite per
-/// stage+car).
+/// last-writer-wins, runs dedupe by observation uid).  `scores` are NOT updated
+/// here — they are rebuilt from `runs` by [`replay`].
 fn apply(
     ev: &mut EventInfo,
-    scores: &mut Vec<ScoreData>,
     runs: &mut Vec<RunRecord>,
     corrections: &mut HashMap<String, Vec<TimingEvent>>,
     body: &str,
@@ -57,27 +83,17 @@ fn apply(
     if te.event_id != ev.uid {
         return;
     }
-    if te.r#type == crate::event::RUN_START || te.r#type == crate::event::RUN_FINISH {
+    if te.r#type == crate::event::RUN_START
+        || te.r#type == crate::event::RUN_FINISH
+        || te.r#type == crate::event::RUN_STOP
+    {
         let run = crate::event::record_from_timing(&te);
         crate::event::add_run(runs, run);
-    }
-    if te.r#type == crate::event::RUN_STOP {
-        let run = crate::event::record_from_timing(&te);
-        crate::event::add_run(runs, run);
-    }
-    if te.r#type == crate::event::RUN_START && te.status.as_deref() == Some("dns") {
-        // A no-show start scores NOSHO so the results cell reads "DNS".
-        crate::event::upsert_ktime(scores, te.test, &te.car, crate::event::KTime::NOSHO);
-    }
-    if te.r#type == crate::event::RUN_FINISH {
-        let run = crate::event::record_from_timing(&te);
-        let kt = crate::event::finish_to_ktime(&run);
-        crate::event::upsert_ktime(scores, te.test, &te.car, kt);
     }
     // A newly landed observation may satisfy a stashed amend/void (QR ordering).
-    retry_corrections(runs, scores, corrections);
+    retry_corrections(runs, corrections);
     if te.r#type == "amend" || te.r#type == "void" {
-        apply_correction(runs, scores, corrections, &te);
+        apply_correction(runs, corrections, &te);
     }
 }
 
@@ -86,7 +102,6 @@ fn apply(
 /// observation lands (see [retry_corrections]).
 fn apply_correction(
     runs: &mut [RunRecord],
-    scores: &mut Vec<ScoreData>,
     corrections: &mut HashMap<String, Vec<TimingEvent>>,
     te: &TimingEvent,
 ) {
@@ -100,18 +115,13 @@ fn apply_correction(
             .push(te.clone());
         return;
     }
-    patch_target(runs, scores, target, te);
-    retry_corrections(runs, scores, corrections);
+    patch_target(runs, target, te);
+    retry_corrections(runs, corrections);
 }
 
-/// Patch (or void) the targeted observation, then refresh that stage's score
-/// from the runs so results reflect the latest intent.
-fn patch_target(
-    runs: &mut [RunRecord],
-    scores: &mut Vec<ScoreData>,
-    target: &str,
-    te: &TimingEvent,
-) {
+/// Patch (or void) the targeted observation in place.  `scores` are rebuilt
+/// from `runs` by [`replay`], so this only mutates the run record.
+fn patch_target(runs: &mut [RunRecord], target: &str, te: &TimingEvent) {
     let Some(r) = runs.iter_mut().find(|r| r.uid == target) else {
         return;
     };
@@ -126,23 +136,15 @@ fn patch_target(
     r.flags = te.flags;
     r.official_id = te.official_id.clone();
     r.comment = te.comment.clone();
-    if r.r#type == crate::event::RUN_FINISH {
-        let kt = crate::event::finish_to_ktime(r);
-        crate::event::upsert_ktime(scores, te.test, &te.car, kt);
-    }
 }
 
 /// Apply any stashed corrections whose target has since arrived.
-fn retry_corrections(
-    runs: &mut [RunRecord],
-    scores: &mut Vec<ScoreData>,
-    corrections: &mut HashMap<String, Vec<TimingEvent>>,
-) {
+fn retry_corrections(runs: &mut [RunRecord], corrections: &mut HashMap<String, Vec<TimingEvent>>) {
     let pending: Vec<TimingEvent> = corrections.drain().flat_map(|(_, v)| v).collect();
     for te in pending {
         if let Some(target) = te.target.as_deref() {
             if crate::event::find_run(runs, target).is_some() {
-                patch_target(runs, scores, target, &te);
+                patch_target(runs, target, &te);
             } else {
                 corrections.entry(target.to_string()).or_default().push(te);
             }
@@ -432,6 +434,48 @@ mod tests {
         let pending = pending_starts(&runs, 1);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].car, "7");
+    }
+
+    #[test]
+    fn void_drops_the_scored_time() {
+        // Regression: a voided finish must not leave a phantom time in `scores`
+        // (it was previously updated only on amend, not void — see #6 review).
+        let ev = base_event();
+        let log = vec![
+            room(100, setup_body(&ev)),
+            room(
+                200,
+                obs_te("finish", "ev-uid-demo", "f1", None, 1, "7", 400, Some(800)).body(),
+            ),
+            room(
+                300,
+                obs_te("void", "ev-uid-demo", "v1", Some("f1"), 1, "7", 450, None).body(),
+            ),
+        ];
+        let (_, scores, runs) = replay(&log, &[]);
+        assert!(runs.iter().find(|r| r.uid == "f1").unwrap().voided);
+        assert!(scores.is_empty(), "voided finish must not keep a score");
+    }
+
+    #[test]
+    fn dns_start_scores_nosho() {
+        let ev = base_event();
+        let log = vec![
+            room(100, setup_body(&ev)),
+            room(
+                200,
+                obs_te("start", "ev-uid-demo", "s1", None, 1, "7", 200, None).body(),
+            ),
+            room(
+                300,
+                obs_te("start", "ev-uid-demo", "s2", None, 1, "7", 205, None)
+                    .body()
+                    .replace("\"status\":\"clean\"", "\"status\":\"dns\""),
+            ),
+        ];
+        let (_, scores, _) = replay(&log, &[]);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].time, KTime::NOSHO);
     }
 
     #[test]
