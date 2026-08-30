@@ -19,8 +19,18 @@ trunk build --release
 # always check code changes with this. Must pass before commit
 ./scripts/check.sh
 
+# Run just the headless-wasm test suite (localStorage/DOM/Matrix paths)
+./scripts/wasm-test.sh
+
 # Format
 cargo fmt
+
+# Test layers
+# - `cargo test` (native): pure logic in event.rs/batch.rs/replay.rs/qr.rs/log.rs
+# - `./scripts/wasm-test.sh` (cargo test --target wasm32-unknown-unknown): the
+#   wasm-only paths that reach localStorage/DOM/Matrix — log.rs, signing.rs,
+#   join.rs, timing_event.rs constructors. Needs wasm-bindgen-test-runner
+#   (installed on first run by the script) + a headless browser + driver.
 
 ```
 

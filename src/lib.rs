@@ -1,5 +1,10 @@
 pub mod signing;
 
+// One `run_in_browser` declaration per test binary; the main.rs copy covers the
+// bin target's tests (see the note there).
+#[cfg(all(test, target_arch = "wasm32"))]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Vec of str to strings.

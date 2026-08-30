@@ -700,3 +700,77 @@ mod tests {
         assert!(result.is_none());
     }
 }
+
+// Browser-only coverage: the device keypair + trust registry persist to real
+// localStorage, which the native suite can't reach.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn device_keys_save_and_load_round_trip() {
+        let keys = DeviceKeys::generate("alice".into(), "DEVICE1".into());
+        keys.save_to_storage().expect("save");
+        let loaded = DeviceKeys::load_from_storage().expect("load");
+        assert_eq!(loaded, keys);
+        // Private key survives the round-trip.
+        assert_eq!(loaded.ed25519_private_key, keys.ed25519_private_key);
+    }
+
+    #[wasm_bindgen_test]
+    fn load_or_generate_is_idempotent() {
+        // Fresh state (no key stored yet in this isolated browser context per run).
+        let first = DeviceKeys::load_or_generate("@a:hs", "D1");
+        first.save_to_storage().expect("save");
+        let second = DeviceKeys::load_or_generate("@a:hs", "D1");
+        assert_eq!(first.ed25519_public_key, second.ed25519_public_key);
+        assert_eq!(first.ed25519_private_key, second.ed25519_private_key);
+    }
+
+    #[wasm_bindgen_test]
+    fn generated_key_signs_and_verifies() {
+        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let (sig, key) = keys
+            .sign(b"timing observation 42")
+            .map(|s| (s, keys.ed25519_public_key.clone()))
+            .map_err(|e| format!("{e}"))
+            .expect("sign");
+        DeviceKeys::verify(b"timing observation 42", &sig, &key).expect("verify");
+    }
+
+    #[wasm_bindgen_test]
+    fn generated_key_fails_wrong_key_verification() {
+        let k1 = DeviceKeys::generate("alice".into(), "D1".into());
+        let k2 = DeviceKeys::generate("bob".into(), "D2".into());
+        let sig = k1.sign(b"data").unwrap();
+        assert!(DeviceKeys::verify(b"data", &sig, &k2.ed25519_public_key).is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn registry_save_and_load_round_trip() {
+        let mut reg = SigningKeyRegistry::default();
+        reg.record_key("key1", Some("@alice:hs"));
+        reg.record_key("key2", None);
+        reg.save().expect("save");
+
+        let loaded = SigningKeyRegistry::load();
+        assert_eq!(loaded.all().len(), 2);
+        let rec = loaded.find_key("key1").expect("key1 present");
+        assert_eq!(rec.user_id.as_deref(), Some("@alice:hs"));
+        assert_eq!(rec.status, KeyTrustStatus::Unverified);
+    }
+
+    #[wasm_bindgen_test]
+    fn registry_persists_verify_status() {
+        let mut reg = SigningKeyRegistry::default();
+        reg.record_key("key1", None);
+        reg.set_status("key1", KeyTrustStatus::Verified);
+        reg.save().expect("save");
+        let loaded = SigningKeyRegistry::load();
+        assert_eq!(
+            loaded.find_key("key1").expect("present").status,
+            KeyTrustStatus::Verified
+        );
+    }
+}

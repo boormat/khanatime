@@ -32,6 +32,15 @@ pub mod replay {
     pub use crate::khana::replay::*;
 }
 
+// WASM test harness: `cargo test --target wasm32-unknown-unknown` runs every
+// `#[wasm_bindgen_test]` in a headless browser, so wasm-only paths
+// (localStorage, DOM, matrix-sdk) are covered too.  The native suite
+// (`cargo test`) covers pure logic; the two are complementary.  Declared once
+// per test binary — `signing` is compiled into both lib and bin, hence the
+// matching block in lib.rs.
+#[cfg(all(test, target_arch = "wasm32"))]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
 use sycamore::prelude::*;
 use sycamore::render;
 

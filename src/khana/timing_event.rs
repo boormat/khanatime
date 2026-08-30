@@ -291,3 +291,196 @@ mod tests {
         assert_eq!(refs[0].as_str(), Some("abc"));
     }
 }
+
+// Browser-only coverage: the constructors call `js_sys::Date::now()` and
+// `ids::gen_short_id()` (Math.random), so they can only run under the wasm
+// harness.  Wire-format bodies are still pure (`body`/`from_body`) — exercised
+// natively above would require duplicating `base()`; covered here in-browser.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    use crate::event::{KTime, KTimeTime};
+    use crate::signing::{DeviceKeys, SigningError};
+
+    #[wasm_bindgen_test]
+    fn finish_constructor_sets_time_and_status() {
+        let te = TimingEvent::finish(
+            "ev",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 123,
+                flags: 2,
+                garage: false,
+            }),
+            vec!["r1".into()],
+        );
+        assert_eq!(te.r#type, "finish");
+        assert_eq!(te.event_id, "ev");
+        assert_eq!(te.test, 1);
+        assert_eq!(te.car, "7");
+        assert_eq!(te.time_ds, Some(123));
+        assert_eq!(te.status.as_deref(), Some("clean"));
+        assert_eq!(te.flags, Some(2));
+        assert_eq!(te.refs, vec!["r1".to_string()]);
+        // uid + ts populated at runtime on wasm.
+        assert!(!te.uid.is_empty());
+        assert!(te.ts > 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn garage_time_maps_to_garage_status() {
+        let te = TimingEvent::finish(
+            "ev",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 50,
+                flags: 0,
+                garage: true,
+            }),
+            vec![],
+        );
+        assert_eq!(te.status.as_deref(), Some("garage"));
+        assert_eq!(te.flags, Some(0));
+    }
+
+    #[wasm_bindgen_test]
+    fn dnf_and_special_statuses_map_without_time() {
+        assert_eq!(
+            TimingEvent::finish("ev", 1, "7", &KTime::DNF, vec![])
+                .status
+                .as_deref(),
+            Some("dnf")
+        );
+        assert_eq!(
+            TimingEvent::finish("ev", 1, "7", &KTime::FTS, vec![])
+                .status
+                .as_deref(),
+            Some("fts")
+        );
+        assert_eq!(
+            TimingEvent::finish("ev", 1, "7", &KTime::WD, vec![])
+                .status
+                .as_deref(),
+            Some("wd")
+        );
+        assert_eq!(
+            TimingEvent::finish("ev", 1, "7", &KTime::NOSHO, vec![])
+                .status
+                .as_deref(),
+            Some("nosho")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn amend_and_void_carry_target() {
+        let amend = TimingEvent::amend(
+            "ev",
+            "TARGET",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 99,
+                flags: 1,
+                garage: false,
+            }),
+        );
+        assert_eq!(amend.r#type, "amend");
+        assert_eq!(amend.target.as_deref(), Some("TARGET"));
+
+        let void = TimingEvent::void("ev", "TARGET", 1, "7");
+        assert_eq!(void.r#type, "void");
+        assert_eq!(void.target.as_deref(), Some("TARGET"));
+        assert_eq!(void.time_ds, None);
+        assert_eq!(void.status, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn constructor_uid_is_unique_crocker_id() {
+        let a = TimingEvent::start("ev", 1, "7").uid;
+        let b = TimingEvent::start("ev", 1, "7").uid;
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 10);
+    }
+
+    #[wasm_bindgen_test]
+    fn sign_and_verify_round_trip() {
+        let mut te = TimingEvent::finish(
+            "ev",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 123,
+                flags: 0,
+                garage: false,
+            }),
+            vec![],
+        );
+        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        te.sign_with(&keys).expect("sign");
+        te.verify_signature().expect("verify");
+    }
+
+    #[wasm_bindgen_test]
+    fn unsigned_event_fails_verification() {
+        let te = TimingEvent::finish(
+            "ev",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 123,
+                flags: 0,
+                garage: false,
+            }),
+            vec![],
+        );
+        assert!(matches!(
+            te.verify_signature(),
+            Err(SigningError::NoPrivateKey)
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn tampered_body_fails_verification() {
+        let mut te = TimingEvent::finish(
+            "ev",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 123,
+                flags: 0,
+                garage: false,
+            }),
+            vec![],
+        );
+        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        te.sign_with(&keys).expect("sign");
+        // Mutate after signing.
+        te.time_ds = Some(999);
+        assert!(te.verify_signature().is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn body_and_from_body_round_trip() {
+        let te = TimingEvent::finish(
+            "ev",
+            1,
+            "7",
+            &KTime::Time(KTimeTime {
+                time_ds: 123,
+                flags: 1,
+                garage: false,
+            }),
+            vec!["r1".into()],
+        );
+        let body = te.body();
+        assert!(body.starts_with("KT "));
+        let parsed = TimingEvent::from_body(&body).expect("parse");
+        assert_eq!(parsed.r#type, "finish");
+        assert_eq!(parsed.time_ds, Some(123));
+        assert_eq!(parsed.uid, te.uid);
+    }
+}

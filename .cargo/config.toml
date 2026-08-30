@@ -1,2 +1,6 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg=web_sys_unstable_apis"]
+# `cargo test --target wasm32-unknown-unknown` runs in a headless browser
+# (wasm-bindgen-test-runner spawns geckodriver/chromedriver from PATH).
+# Affects cargo test/run only — trunk/release builds ignore `runner`.
+runner = "wasm-bindgen-test-runner"

@@ -61,3 +61,9 @@ futures = "0.3"
 matrix-sdk = { version = "0.18", default-features = false, features = ["js", "indexeddb"] }
 ruma = "0.16"
 url = "2"
+
+# Browser test harness: `cargo test --target wasm32-unknown-unknown` runs the
+# full suite (native logic + wasm-only localStorage/DOM paths) headless via
+# wasm-bindgen-test-runner + geckodriver (see .cargo/config.toml).
+[dev-dependencies]
+wasm-bindgen-test = "0.3.57"
