@@ -1099,7 +1099,8 @@ pub fn enqueue_setup(model: Model) {
     // Sign at save — the event's signing fields are populated here, not at
     // publish time, so setup manifests are always signed.
     if ev.signature.is_none() {
-        let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+        // Generate an in-memory key if storage is blocked so signing never fails.
+        let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
         let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
         ev.signature = Some(sig);
         ev.signing_key = Some(key);

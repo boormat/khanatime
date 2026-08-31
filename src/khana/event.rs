@@ -1554,7 +1554,9 @@ pub fn ensure_demo() {
 pub fn setup_body(ev: &EventInfo) -> String {
     let mut ev = ev.clone();
     if ev.signature.is_none() {
-        let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+        // Generate an in-memory key if storage is blocked so signing never fails
+        // (and unsigned data — which is now rejected — can never be produced).
+        let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
         let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
         ev.signature = Some(sig);
         ev.signing_key = Some(key);

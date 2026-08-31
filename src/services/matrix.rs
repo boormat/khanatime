@@ -1388,7 +1388,8 @@ pub async fn send_result(
         signing_key: None,
         signature: None,
     };
-    let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+    // Generate an in-memory key if storage is blocked so signing never fails.
+    let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
     let (sig, key) = crate::signing::sign_payload(&snapshot, &keys).expect("signing failed");
     snapshot.signature = Some(sig);
     snapshot.signing_key = Some(key);

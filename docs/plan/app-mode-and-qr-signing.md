@@ -54,6 +54,15 @@ The navbar shows all 13 screens to everyone. Different users need different view
 
 ## Part 2: QR Parcel Signing
 
+> **Status: DONE (implemented differently from the plan below).** Signing landed as
+> a **per-observation** Ed25519 signature on `TimingEvent` / `EventInfo` (the
+> `signature` / `signing_key` fields), verified in `replay` and
+> `sync::handle_incoming` via `signing::verdict_with` with default-deny. The
+> parcel-envelope `sig`/`key` fields described below were NOT added to the
+> `Parcel` struct; per-message signing is preferred because it survives relay and
+> QR import intact. See `docs/research/Cryptography.md` (Signing Model / Trust
+> Model) for the current policy.
+
 ### Problem
 QR parcels (`khanatime_parcel:{json}`) have zero authentication. Any device that scans the QR can import the parcel. While this is acceptable for the trust model (you trust the person whose QR you scan at an event), there's no way to detect accidental corruption or confirm the sender's identity.
 

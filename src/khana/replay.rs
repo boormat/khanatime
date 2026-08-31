@@ -25,14 +25,21 @@ use crate::timing_event::TimingEvent;
 /// intent.  The incremental scoring in `apply` was removed on purpose: the log
 /// is the truth, `runs` is a deduplicated projection of it, and `scores` is a
 /// pure function of `runs`.
+///
+/// Observations and setup manifests are accepted only when their signature
+/// verifies (see [`crate::signing::verdict_with`]): rejected messages stay in
+/// the durable log but never enter derived state, so a bogus setup simply leaves
+/// the last valid one in place.
 pub fn replay(log: &[LogMsg], pending: &[LogMsg]) -> (EventInfo, Vec<ScoreData>, Vec<RunRecord>) {
     let mut ev = EventInfo::default();
     let mut runs: Vec<RunRecord> = vec![];
     // Amend/void that arrived before their target (QR parcel ordering); applied
     // when the targeted observation lands.
     let mut corrections: HashMap<String, Vec<TimingEvent>> = HashMap::new();
+    // Load the trust registry once for the whole replay.
+    let reg = crate::signing::SigningKeyRegistry::load();
     for msg in log.iter().chain(pending.iter()) {
-        apply(&mut ev, &mut runs, &mut corrections, &msg.body);
+        apply(&mut ev, &mut runs, &mut corrections, &reg, &msg.body);
     }
     let scores = scores_from_runs(&runs);
     (ev, scores, runs)
@@ -58,17 +65,29 @@ fn scores_from_runs(runs: &[RunRecord]) -> Vec<ScoreData> {
 }
 
 /// Apply one message body to derived state (idempotent: setup is
-/// last-writer-wins, runs dedupe by observation uid).  `scores` are NOT updated
-/// here — they are rebuilt from `runs` by [`replay`].
+/// last-writer-wins, runs dedupe by observation uid).  Only messages that pass
+/// [`crate::signing::verdict_with`] enter derived state; rejected ones are left
+/// for the durable log.  `scores` are NOT updated here — they are rebuilt from
+/// `runs` by [`replay`].
 fn apply(
     ev: &mut EventInfo,
     runs: &mut Vec<RunRecord>,
     corrections: &mut HashMap<String, Vec<TimingEvent>>,
+    reg: &crate::signing::SigningKeyRegistry,
     body: &str,
 ) {
     if body.starts_with(TimingEvent::SETUP_PREFIX) {
         if let Some(incoming) = crate::event::from_setup_body(body) {
-            crate::event::merge_setup(ev, &incoming);
+            let verdict = crate::signing::verdict_with(
+                &incoming,
+                incoming.signature.as_ref(),
+                incoming.signing_key.as_ref(),
+                reg,
+            );
+            // Ignore a bogus/unsigned setup so the last valid one stays in place.
+            if crate::signing::accepted(&verdict) {
+                crate::event::merge_setup(ev, &incoming);
+            }
         }
         return;
     }
@@ -82,6 +101,14 @@ fn apply(
     }
     if te.event_id != ev.uid {
         return;
+    }
+    if !crate::signing::accepted(&crate::signing::verdict_with(
+        &te,
+        te.signature.as_ref(),
+        te.signing_key.as_ref(),
+        reg,
+    )) {
+        return; // unsigned / invalid / rejected: keep in log, don't build state
     }
     if te.r#type == crate::event::RUN_START
         || te.r#type == crate::event::RUN_FINISH
@@ -158,17 +185,17 @@ mod tests {
     use crate::event::{EventStatus, KTime, KTimeTime};
     use crate::log::LogMsg;
 
+    /// Use the real signing setup_body so setup manifests arrive signed (TOFU =
+    /// accepted) — the trust gate rejects unsigned setups now.
     fn setup_body(ev: &EventInfo) -> String {
-        format!(
-            "{}{}",
-            TimingEvent::SETUP_PREFIX,
-            serde_json::to_string(ev).unwrap()
-        )
+        crate::event::setup_body(ev)
     }
 
+    /// Build an observation, signed with a throwaway device key (TOFU = Unknown).
+    /// Real observations are signed, so the trust gate accepts them.
     fn te(r#type: &str, event_id: &str, test: u8, car: &str, ts: i64, time_ds: u16) -> TimingEvent {
         let t = r#type;
-        TimingEvent {
+        let mut te = TimingEvent {
             r#type: t.into(),
             event_id: event_id.into(),
             uid: format!("uid-{t}-{ts}"),
@@ -184,9 +211,13 @@ mod tests {
             refs: vec![],
             signing_key: None,
             signature: None,
-        }
+        };
+        let keys = crate::signing::DeviceKeys::generate("tester".into(), "D1".into());
+        te.sign_with(&keys).expect("sign");
+        te
     }
 
+    /// Build an **unsigned** observation (used only in gate-rejection tests).
     fn room(msg_ts: i64, body: String) -> LogMsg {
         LogMsg::from_room(
             format!("!{msg_ts}"),
@@ -337,6 +368,24 @@ mod tests {
         ts: i64,
         time_ds: Option<u16>,
     ) -> TimingEvent {
+        let mut te = raw_obs_te(r#type, event_id, uid, target, test, car, ts, time_ds);
+        let keys = crate::signing::DeviceKeys::generate("tester".into(), "D1".into());
+        te.sign_with(&keys).expect("sign");
+        te
+    }
+
+    /// Build an **unsigned** observation (used only in gate-rejection tests).
+    #[allow(clippy::too_many_arguments)]
+    fn raw_obs_te(
+        r#type: &str,
+        event_id: &str,
+        uid: &str,
+        target: Option<&str>,
+        test: u8,
+        car: &str,
+        ts: i64,
+        time_ds: Option<u16>,
+    ) -> TimingEvent {
         TimingEvent {
             r#type: r#type.into(),
             event_id: event_id.into(),
@@ -354,6 +403,26 @@ mod tests {
             signing_key: None,
             signature: None,
         }
+    }
+
+    /// Signed observation with an explicit status (e.g. "dns").
+    #[allow(clippy::too_many_arguments)]
+    fn signed_obs_te_status(
+        r#type: &str,
+        event_id: &str,
+        uid: &str,
+        target: Option<&str>,
+        test: u8,
+        car: &str,
+        ts: i64,
+        time_ds: Option<u16>,
+        status: &str,
+    ) -> String {
+        let mut te = raw_obs_te(r#type, event_id, uid, target, test, car, ts, time_ds);
+        te.status = Some(status.into());
+        let keys = crate::signing::DeviceKeys::generate("tester".into(), "D1".into());
+        te.sign_with(&keys).expect("sign");
+        te.body()
     }
 
     #[test]
@@ -468,9 +537,7 @@ mod tests {
             ),
             room(
                 300,
-                obs_te("start", "ev-uid-demo", "s2", None, 1, "7", 205, None)
-                    .body()
-                    .replace("\"status\":\"clean\"", "\"status\":\"dns\""),
+                signed_obs_te_status("start", "ev-uid-demo", "s2", None, 1, "7", 205, None, "dns"),
             ),
         ];
         let (_, scores, _) = replay(&log, &[]);
@@ -544,5 +611,92 @@ mod tests {
         let log = vec![room(300, body.clone()), room(400, body)];
         let (_, _, runs) = replay(&log, &[]);
         assert_eq!(runs.len(), 1);
+    }
+
+    #[test]
+    fn unsigned_observations_are_rejected() {
+        // With default-deny, an unsigned finish must not produce a run or score.
+        let ev = base_event();
+        let log = vec![
+            room(100, setup_body(&ev)),
+            room(
+                200,
+                raw_obs_te("finish", "ev-uid-demo", "f1", None, 1, "7", 400, Some(800)).body(),
+            ),
+        ];
+        let (_, scores, runs) = replay(&log, &[]);
+        assert!(runs.is_empty(), "unsigned finish must not build a run");
+        assert!(scores.is_empty(), "unsigned finish must not score");
+    }
+
+    #[test]
+    fn tampered_observation_is_rejected() {
+        let ev = base_event();
+        // Sign a finish, then change the body so the signature no longer matches.
+        let mut te = raw_obs_te("finish", "ev-uid-demo", "f1", None, 1, "7", 400, Some(800));
+        let keys = crate::signing::DeviceKeys::generate("alice".into(), "D1".into());
+        te.sign_with(&keys).expect("sign");
+        let bad = te
+            .body()
+            .replace("\"time_ds\":800", "\"time_ds\":999")
+            .replace("\"uid\":\"f1\"", "\"uid\":\"f9\"");
+        let log = vec![room(100, setup_body(&ev)), room(200, bad)];
+        let (_, scores, runs) = replay(&log, &[]);
+        assert!(runs.is_empty(), "tampered finish must not build a run");
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn signed_observation_is_accepted() {
+        let ev = base_event();
+        let log = vec![
+            room(100, setup_body(&ev)),
+            room(
+                200,
+                obs_te("finish", "ev-uid-demo", "f1", None, 1, "7", 400, Some(800)).body(),
+            ),
+        ];
+        let (_, scores, runs) = replay(&log, &[]);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(
+            scores[0].time,
+            crate::event::KTime::Time(crate::event::KTimeTime {
+                time_ds: 800,
+                flags: 0,
+                garage: false
+            })
+        );
+    }
+
+    #[test]
+    fn bogus_setup_ignored_last_valid_wins() {
+        // A bogus (unsigned) setup must not replace a previously accepted one, and
+        // must not blank the event.
+        let good = base_event(); // setup_body signs it
+        let bogus = EventInfo {
+            id: good.id.clone(),
+            name: "Hijacked".into(),
+            status: crate::event::EventStatus::Running,
+            ..Default::default()
+        };
+        let bogus_body = format!(
+            "{}{}",
+            crate::timing_event::TimingEvent::SETUP_PREFIX,
+            serde_json::to_string(&bogus).unwrap()
+        );
+
+        // Bogus arrives after the good setup — good one should remain.
+        let log = vec![room(100, setup_body(&good)), room(200, bogus_body.clone())];
+        let (ev, _, _) = replay(&log, &[]);
+        assert_eq!(
+            ev.name, "Demo",
+            "bogus setup must not override the valid one"
+        );
+
+        // Bogus arrives before the good setup — good one should still win.
+        let log = vec![room(100, bogus_body), room(200, setup_body(&good))];
+        let (ev, _, _) = replay(&log, &[]);
+        assert_eq!(ev.name, "Demo");
     }
 }

@@ -71,6 +71,74 @@ pub fn verify_payload<T: Serialize>(
     DeviceKeys::verify(canonical.as_bytes(), signature_b64, signing_key_b64)
 }
 
+/// Outcome of checking a signed message against the local trust registry.
+///
+/// Used to decide whether an incoming observation (a timing message or a setup
+/// manifest) is allowed into derived state.  `Trusted`/`Unknown` are accepted;
+/// the rest are rejected (kept in the durable log, never replayed into
+/// runs/scores).  See `accepted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigVerdict {
+    /// Signed, signature valid, key is in the registry as Verified.
+    Trusted,
+    /// Signed, signature valid, key not yet marked Verified (TOFU). Accepted.
+    Unknown,
+    /// Signed, signature valid, but the key was explicitly Rejected.
+    Rejected,
+    /// Signed but the signature does not verify (tampered or impersonated).
+    Invalid,
+    /// No signature present at all.
+    Unsigned,
+}
+
+/// Verdict for `payload` given its `sig`/`key` and the current trust registry.
+///
+/// Generic over the payload so the same check serves both `TimingEvent` and
+/// `EventInfo` (setup manifests): `canonical_payload` strips the signature and
+/// signing_key fields from both.  Takes the registry as a parameter so the
+/// function stays pure and unit-testable without touching localStorage.
+pub fn verdict_with<T: Serialize>(
+    payload: &T,
+    sig: Option<&String>,
+    key: Option<&String>,
+    reg: &SigningKeyRegistry,
+) -> SigVerdict {
+    match (sig, key) {
+        (None, None) => SigVerdict::Unsigned,
+        (Some(sig), Some(key)) => {
+            if sig.is_empty() || key.is_empty() {
+                // Empty signing fields are malformed — can't be verified.
+                return SigVerdict::Invalid;
+            }
+            match verify_payload(payload, sig, key) {
+                Ok(()) => match reg.find_key(key) {
+                    Some(rec) if rec.status == KeyTrustStatus::Verified => SigVerdict::Trusted,
+                    Some(rec) if rec.status == KeyTrustStatus::Rejected => SigVerdict::Rejected,
+                    _ => SigVerdict::Unknown,
+                },
+                Err(_) => SigVerdict::Invalid,
+            }
+        }
+        // Exactly one of sig/key present: malformed, can't verify.
+        _ => SigVerdict::Invalid,
+    }
+}
+
+/// Convenience wrapper that loads the registry from storage.  Use `verdict_with`
+/// in hot paths (e.g. `replay`) where the registry should be read once.
+pub fn verdict<T: Serialize>(
+    payload: &T,
+    sig: Option<&String>,
+    key: Option<&String>,
+) -> SigVerdict {
+    verdict_with(payload, sig, key, &SigningKeyRegistry::load())
+}
+
+/// True when the message is allowed into derived state (runs/scores).
+pub fn accepted(v: &SigVerdict) -> bool {
+    matches!(v, SigVerdict::Trusted | SigVerdict::Unknown)
+}
+
 // ---------------------------------------------------------------------------
 // Device keys — the local device's signing keypair
 // ---------------------------------------------------------------------------
@@ -698,6 +766,94 @@ mod tests {
     fn hello_rejects_bad_prefix() {
         let result = HelloPayload::from_body("not_a_hello:...");
         assert!(result.is_none());
+    }
+
+    // -- SigVerdict / verdict_with --
+
+    /// Build a signed TestPayload, returning the payload + signature + signing key.
+    fn signed_payload() -> (TestPayload, String, String) {
+        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let payload = TestPayload {
+            name: "car 7".into(),
+            value: 500,
+            signing_key: None,
+            signature: None,
+        };
+        let (sig, key) = sign_payload(&payload, &keys).unwrap();
+        (payload, sig, key)
+    }
+
+    #[test]
+    fn verdict_unsigned_is_rejected() {
+        let payload = TestPayload {
+            name: "car 7".into(),
+            value: 500,
+            signing_key: None,
+            signature: None,
+        };
+        assert_eq!(
+            verdict_with(&payload, None, None, &SigningKeyRegistry::default()),
+            SigVerdict::Unsigned
+        );
+        assert!(!accepted(&SigVerdict::Unsigned));
+    }
+
+    #[test]
+    fn verdict_partial_signing_metadata_is_invalid() {
+        let (p, sig, key) = signed_payload();
+        assert_eq!(
+            verdict_with(&p, Some(&sig), None, &SigningKeyRegistry::default()),
+            SigVerdict::Invalid
+        );
+        assert_eq!(
+            verdict_with(&p, None, Some(&key), &SigningKeyRegistry::default()),
+            SigVerdict::Invalid
+        );
+    }
+
+    #[test]
+    fn verdict_valid_key_is_unknown_then_trusted() {
+        let (p, sig, key) = signed_payload();
+        let reg = SigningKeyRegistry::default();
+        assert_eq!(
+            verdict_with(&p, Some(&sig), Some(&key), &reg),
+            SigVerdict::Unknown
+        );
+        assert!(accepted(&SigVerdict::Unknown));
+
+        let mut reg = reg;
+        reg.record_key(&key, None);
+        reg.set_status(&key, KeyTrustStatus::Verified);
+        assert_eq!(
+            verdict_with(&p, Some(&sig), Some(&key), &reg),
+            SigVerdict::Trusted
+        );
+        assert!(accepted(&SigVerdict::Trusted));
+    }
+
+    #[test]
+    fn verdict_rejected_key_is_not_accepted() {
+        let (p, sig, key) = signed_payload();
+        let mut reg = SigningKeyRegistry::default();
+        reg.record_key(&key, None);
+        reg.set_status(&key, KeyTrustStatus::Rejected);
+        assert_eq!(
+            verdict_with(&p, Some(&sig), Some(&key), &reg),
+            SigVerdict::Rejected
+        );
+        assert!(!accepted(&SigVerdict::Rejected));
+    }
+
+    #[test]
+    fn verdict_tampered_payload_is_invalid() {
+        let (mut p, sig, key) = signed_payload();
+        // Change content after signing: signature no longer matches.
+        p.value = 999;
+        assert_eq!(
+            verdict_with(&p, Some(&sig), Some(&key), &SigningKeyRegistry::default()),
+            SigVerdict::Invalid
+        );
+        assert!(!accepted(&SigVerdict::Invalid));
     }
 }
 

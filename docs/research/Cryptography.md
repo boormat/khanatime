@@ -22,7 +22,12 @@
 - Every data submission signed by submitter's private key
 - Signature + public key reference attached to each submission
 - Timekeeper signs the **derived results** (not individual raw data)
-- All data always accepted and logged (unsigned or signed)
+- **Default-deny: only signed submissions are accepted**. Unsigned and
+  signature-invalid observations are rejected from runs/scores (they stay in the
+  durable log for audit). A key known to the registry as `Rejected` is also
+  rejected. Implementation: `signing::verdict_with` + `signing::accepted`,
+  applied identically in `replay` and `sync::handle_incoming` so they can't
+  disagree.
 
 ### Identity Verification
 - Out-of-band: QR code scan, voice call, in-person
@@ -30,9 +35,14 @@
 - Fingerprint comparison (first 8 hex chars) for quick verification
 
 ### Trust Model
-- Any authorized official can authorize new keys
-- Timekeeper can revoke keys
-- Emergency: all data accepted regardless of signature status
+- Unknown keys are accepted on TOFU (Trust-On-First-Use) but flagged `Unknown`
+- Officials mark keys `Verified` / `Rejected` (see `SigningKeyRegistry`)
+- There is **no emergency override**: a device that cannot sign records nothing.
+  Signing never fails — `load_or_generate` mints an in-memory key if storage is
+  blocked — so unsigned data is never produced. (Supersedes the earlier
+  "all data accepted regardless of signature status" policy.)
+- Setup manifests use the same gate; a bogus/unsigned setup is ignored so the
+  last valid one remains in effect.
 - Timekeeper role is transferable during event
 
 ---

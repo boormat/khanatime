@@ -318,7 +318,8 @@ fn view_homeservers(_model: crate::Model) -> View {
 fn view_signing_key(model: crate::Model) -> View {
     let sm = model.screens.accounts;
     let _ = sm.refresh.get();
-    let keys = crate::signing::DeviceKeys::load_from_storage().expect("signing key missing");
+    // Generate an in-memory key if storage is blocked rather than panicking.
+    let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
     let fp = keys.fingerprint().expect("fingerprint failed");
     let pub_key_b64 = keys.ed25519_public_key.clone();
     let registry = crate::signing::SigningKeyRegistry::load();

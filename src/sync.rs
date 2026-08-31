@@ -1111,16 +1111,24 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
     {
         if let Some(incoming) = crate::event::from_setup_body(&msg.body) {
-            // Verify setup manifest signature (non-blocking, TOFU)
-            if let (Some(sig), Some(key)) = (&incoming.signature, &incoming.signing_key) {
-                let mut reg = crate::signing::SigningKeyRegistry::load();
+            let mut reg = crate::signing::SigningKeyRegistry::load();
+            let verdict = crate::signing::verdict_with(
+                &incoming,
+                incoming.signature.as_ref(),
+                incoming.signing_key.as_ref(),
+                &reg,
+            );
+            // TOFU: record the key so an official can later mark it trusted/rejected.
+            if let Some(key) = &incoming.signing_key {
                 reg.record_key(key, None);
                 let _ = reg.save();
-                let _ = crate::signing::verify_payload(&incoming, sig, key);
             }
-            model.khana.event.update(|e| {
-                crate::event::merge_setup(e, &incoming);
-            });
+            // Ignore a bogus/unsigned setup so the last valid one stays in place.
+            if crate::signing::accepted(&verdict) {
+                model.khana.event.update(|e| {
+                    crate::event::merge_setup(e, &incoming);
+                });
+            }
         }
         crate::update(model, crate::Msg::Reload);
         return;
@@ -1153,26 +1161,19 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         return; // plain chat / results-snapshot messages: log-only
     };
 
-    // --- signing verification (non-blocking, TOFU) ---
-    if let (Some(sig), Some(key)) = (&te.signature, &te.signing_key) {
-        match crate::signing::verify_payload(&te, sig, key) {
-            Ok(()) => {
-                // Valid signature — record key in trust registry
-                let mut reg = crate::signing::SigningKeyRegistry::load();
-                reg.record_key(key, te.official_id.as_deref());
-                let _ = reg.save();
-            }
-            Err(_) => {
-                // Invalid signature — record key as suspicious
-                if let Some(key) = &te.signing_key {
-                    let mut reg = crate::signing::SigningKeyRegistry::load();
-                    reg.record_key(key, te.official_id.as_deref());
-                    let _ = reg.save();
-                }
-            }
-        }
-    } else if te.signature.is_some() || te.signing_key.is_some() {
-        // Partial signature — logged but not blocking
+    // --- signing verification: the verdict decides whether this observation
+    // enters derived state.  Rejected messages stay in the durable log (already
+    // appended above) but are never built into runs/scores. ---
+    let mut reg = crate::signing::SigningKeyRegistry::load();
+    let verdict =
+        crate::signing::verdict_with(&te, te.signature.as_ref(), te.signing_key.as_ref(), &reg);
+    // TOFU: record the key so an official can later mark it trusted/rejected.
+    if let Some(key) = &te.signing_key {
+        reg.record_key(key, te.official_id.as_deref());
+        let _ = reg.save();
+    }
+    if !crate::signing::accepted(&verdict) {
+        return; // unsigned / invalid / rejected: leave in log, don't apply
     }
 
     if te.r#type == crate::event::RUN_START || te.r#type == crate::event::RUN_FINISH {

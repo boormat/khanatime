@@ -178,6 +178,30 @@ the entire node arena immutably; writing ANY signal borrows it mutably.
   `edit_state` in `view_edit_row`, preventing the timing log closure from
   tracking it as a dependency.
 
+### ~~B6. Trust gate: unsigned / signature-invalid timing was accepted~~ ✅ DONE
+**Files:** `src/signing.rs` (`SigVerdict`, `verdict_with`, `accepted`),
+`src/khana/replay.rs` (`apply` gates setup + observations),
+`src/sync.rs` (`handle_incoming`), `src/signing.rs` / `event.rs` / `app.rs` /
+`services/matrix.rs` / `page/accounts.rs` (`load_or_generate` replaces
+`.expect("signing key missing")`)
+**Severity:** High
+**Detail:** Verification results were computed and discarded (advise-only), so a
+public room + WorldReadable history let anyone post forged `KT` bodies (or a
+whole event-hijacking `khanatime_setup:`) that were applied to runs/scores. The
+trust registry (`KeyTrustStatus` + `set_status`/`find_key`) existed but was never
+wired to anything.
+**Decision (verified with user):** default-deny. Reject **unsigned** and
+**signature-invalid** observations; accept **unknown-key** on TOFU. No emergency
+override — a device that cannot sign records nothing, and signing can't fail
+(`load_or_generate` mints an in-memory key if storage is blocked). Setup
+manifests use the same gate; a bogus/unsigned setup is ignored so the last valid
+one stays in place. Rejected messages remain in the durable log (never deleted).
+**Fixes:**
+- One shared verdict fn (`verdict_with`) used by BOTH `replay` and
+  `handle_incoming` so they can't diverge; registry loaded once per replay.
+- `RunRecord`/state builds only for `accepted` verdicts.
+- Removed the panic-on-missing-key paths; signing is now infallible.
+
 ---
 
 ## Priority Suggestion
