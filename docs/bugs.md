@@ -202,6 +202,50 @@ one stays in place. Rejected messages remain in the durable log (never deleted).
 - `RunRecord`/state builds only for `accepted` verdicts.
 - Removed the panic-on-missing-key paths; signing is now infallible.
 
+### B7. Run edit: 1s tick refresh steals focus from the time field
+**File:** `src/khana/helpers.rs` — `view_timing_log` (line 182), `view_edit_row` (line 532)
+**Severity:** High
+**Detail:** The Log box renders inside a closure that subscribes to `model.tick.get()`
+(helpers.rs:182) for the live "Xs ago" stamps. That same closure renders the whole
+log subtree, including the open inline edit form. On every 1s tick the closure
+re-runs and Sycamore rebuilds the edit inputs, so the time field loses focus almost
+immediately after clicking into it — making it effectively un-editable.
+**Target:** The edit form must not be re-created on tick. Only subscribe to `tick`
+when no edit is open (the edit row itself doesn't use `now` — `view_edit_row` reads
+`js_sys::Date::now()` directly at line 474). Non-edit rows keep live age stamps.
+
+### B8. DNS option missing from run edit
+**File:** `src/khana/page/penalty.rs` — `view_penalty_row` (line 211, DNS chip gated
+on `is_manual`); `src/khana/helpers.rs` (line 575, always passes `is_manual=false`)
+**Severity:** Medium
+**Detail:** The DNS chip only renders when `view_penalty_row(..., is_manual=true, ...)`.
+The only call site is the run-edit form, which always passes `is_manual=false`
+(helpers.rs:575), so DNS is unreachable anywhere in the UI. It used to be offered on
+records created via the manual timing button.
+**Target (design decision):** DNS is available on the **manual edit path** (manual-timed /
+provisional records). Per the preferred model it should NOT appear on start/stop-derived
+runs — "DNS is created only via the manual edit path." (Simplest acceptable per user:
+show DNS always, but the manual-path-only model is preferred.)
+
+### B9. Run edit regression: start/stop runs must not be hand-editable
+**Files:** `src/khana/helpers.rs` — `view_edit_row` (lines 532-579); prior version at
+commit `9fd8a957`; associated list added in `3ceca8d`
+**Severity:** High
+**Detail:** The run edit lets an official hand-edit the time of ANY finish record,
+including runs derived from start/stop observations. Also reported: the old version
+showed an associated list of the finish's timing events. Note: the current code DOES
+still render it (`attached_records`, helpers.rs:496-515, rendered at 576 — added in
+`3ceca8d`, which is AFTER `9fd8a957`), so verify at test time whether it is actually
+visible; do not assume it was dropped.
+**Target model (user decision):**
+- Start/stop-derived runs: time is **read-only** (shown, not editable). To correct a
+  start/stop run the official **voids the record, then creates a manual timed run** to
+  replace it — keeps the model simple to explain and preserves records.
+- Manual timed runs are created **intentionally** via a mechanism (a keyboard button),
+  not by editing a derived run's time in place.
+- DNS is only available on the manual edit path (see B8).
+- Retain the associated list of timing events in the run edit.
+
 ---
 
 ## Priority Suggestion
