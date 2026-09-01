@@ -194,6 +194,29 @@ fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
 
+const APP_IDENTITY_STORAGE: &str = "kt_identity";
+
+/// The app's stored audit identity — the matrix.org user id when available
+/// (captured via SSO), else the local homeserver user id.  Unlike a session,
+/// this is *not* a live connection: it's the canonical `official_id` stamped
+/// on every timing record so officials/audit can see who recorded what.
+pub fn store_app_identity(id: &str) {
+    if let Some(st) = storage() {
+        if id.is_empty() {
+            let _ = st.remove_item(APP_IDENTITY_STORAGE);
+        } else {
+            let _ = st.set_item(APP_IDENTITY_STORAGE, id);
+        }
+    }
+}
+
+/// Load the stored audit identity (empty when never set).
+pub fn load_app_identity() -> String {
+    storage()
+        .and_then(|st| st.get_item(APP_IDENTITY_STORAGE).ok().flatten())
+        .unwrap_or_default()
+}
+
 /// Store (or update) a session for `homeserver`, marking it active.  An
 /// existing entry's reg mode and password are preserved; a new one defaults to
 /// `sso` with an empty password.
@@ -713,6 +736,15 @@ pub async fn check_homeserver(homeserver: &str) -> crate::page::accounts::ConnSt
             "Homeserver at {label} is unreachable."
         )),
     }
+}
+
+/// True when matrix.org is reachable — decides whether to attempt the matrix
+/// SSO identity tie-in for a local-homeserver event invite.
+pub async fn matrix_org_online() -> bool {
+    matches!(
+        check_homeserver("https://matrix.org").await,
+        crate::page::accounts::ConnStatus::Reachable
+    )
 }
 
 /// Map a client-build failure to a short, user-facing message. Network-level
@@ -1523,4 +1555,20 @@ fn parse_message_json(room_id: &ruma::RoomId, v: &serde_json::Value) -> Option<I
         timing: TimingEvent::from_matrix_content(content),
         raw: v.to_string(),
     })
+}
+
+// Browser-only coverage: the app identity persists to real localStorage.
+#[cfg(all(test, target_arch = "wasm32"))]
+mod wasm_tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    #[wasm_bindgen_test]
+    fn app_identity_store_and_load_round_trip() {
+        store_app_identity("@alice:matrix.org");
+        assert_eq!(load_app_identity(), "@alice:matrix.org");
+        // Clearing removes it.
+        store_app_identity("");
+        assert_eq!(load_app_identity(), "");
+    }
 }

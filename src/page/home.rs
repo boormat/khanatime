@@ -72,9 +72,81 @@ fn view_no_event(model: crate::Model) -> View {
                 h1(class="title") { "Khana Time" }
             }
         }
+        (move || view_sso_prompt(model))
         (move || view_sessions(model))
         (move || view_join_by_url(model))
         (move || view_phone_sync(model))
+    }
+}
+
+/// First-run identity prompt: no app identity yet, not arriving via a join
+/// link, and not dismissed this session — nudge the user to do the matrix SSO
+/// so their recordings are attributed.  Dismissible ("Not now").
+#[cfg(target_arch = "wasm32")]
+fn view_sso_prompt(model: crate::Model) -> View {
+    view! {
+        (move || {
+            let has_identity = model.sync.app_identity.with(|a| !a.is_empty());
+            let has_pending = model.sync.pending_join.with(|p| p.is_some());
+            if has_identity || has_pending || sso_prompt_dismissed() {
+                return view! {};
+            }
+            view! {
+                div(class="notification is-info is-light") {
+                    div(class="level is-mobile") {
+                        div(class="level-left") {
+                            div {
+                                p(class="has-text-weight-medium") {
+                                    "Identify your recordings"
+                                }
+                                p(class="help") {
+                                    "Sign in to Matrix.org once so the times you record are attributed to you — works offline too."
+                                }
+                            }
+                        }
+                        div(class="level-right") {
+                            div(class="buttons are-small") {
+                                button(
+                                    class="button is-link",
+                                    on:click=move |_| {
+                                        crate::update(model, crate::Msg::Conn(crate::sync::Msg::SsoLoginFor("https://matrix.org".to_string())));
+                                    },
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-id-badge") }
+                                    span { "Sign in to Matrix.org" }
+                                }
+                                button(
+                                    class="button is-light",
+                                    on:click=move |_| {
+                                        set_sso_prompt_dismissed();
+                                    },
+                                ) { "Not now" }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_sso_prompt(_model: crate::Model) -> View {
+    view! {}
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sso_prompt_dismissed() -> bool {
+    web_sys::window()
+        .and_then(|w| w.session_storage().ok().flatten())
+        .and_then(|st| st.get_item("kt_sso_prompt_dismissed").ok().flatten())
+        .is_some()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn set_sso_prompt_dismissed() {
+    if let Some(st) = web_sys::window().and_then(|w| w.session_storage().ok().flatten()) {
+        let _ = st.set_item("kt_sso_prompt_dismissed", "1");
     }
 }
 

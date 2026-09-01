@@ -127,7 +127,7 @@ fn do_finish(model: crate::Model) {
         time_ds: Some(time_ds),
         status: Some(sm.penalty.status.get_clone()),
         flags: Some(sm.penalty.flags.get()),
-        official_id: Some(model.sync.identity.get_clone()),
+        official_id: Some(crate::khana::helpers::current_official(model)),
         voided: false,
         comment: comment_opt,
         refs: vec![],

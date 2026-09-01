@@ -15,6 +15,15 @@ fn sign_timing_event(
     te.sign_with(&keys)
 }
 
+/// The audit identity stamped on every record as `official_id`: the stored app
+/// identity (`kt_identity`).  Set by every login flow — matrix SSO upgrades to
+/// the matrix id, a local homeserver login sets the synapse id when empty.
+/// Only the demo/dev path leaves it blank.  The signature covers this field,
+/// so the device key + this id are the audit trail.
+pub fn current_official(model: crate::Model) -> String {
+    model.sync.app_identity.get_clone()
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -72,7 +81,7 @@ pub fn enqueue_ktime(
         return;
     }
     let mut te = crate::khana::timing_event::TimingEvent::finish(&uid, test, car, time, vec![]);
-    te.official_id = Some(model.sync.identity.get_clone());
+    te.official_id = Some(crate::khana::helpers::current_official(model));
     te.comment = comment;
     sign_timing_event(&mut te).expect("signing failed");
     let sender = model.sync.identity.get_clone();
@@ -101,7 +110,7 @@ pub fn enqueue_amend(
         return;
     }
     let mut te = crate::khana::timing_event::TimingEvent::amend(&uid, target_uid, test, car, time);
-    te.official_id = Some(model.sync.identity.get_clone());
+    te.official_id = Some(crate::khana::helpers::current_official(model));
     te.comment = comment;
     sign_timing_event(&mut te).expect("signing failed");
     let sender = model.sync.identity.get_clone();
@@ -124,7 +133,7 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) 
         return;
     }
     let mut te = crate::khana::timing_event::TimingEvent::void(&uid, target_uid, test, car);
-    te.official_id = Some(model.sync.identity.get_clone());
+    te.official_id = Some(crate::khana::helpers::current_official(model));
     sign_timing_event(&mut te).expect("signing failed");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));

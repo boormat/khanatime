@@ -207,6 +207,9 @@ pub struct KhanaState {
 pub struct SyncState {
     /// User id of the logged-in Matrix account (empty when not connected).
     pub identity: Signal<String>,
+    /// Stored audit identity (`kt_identity`): the matrix.org id captured via
+    /// SSO (else the local user id).  Stamped on records as `official_id`.
+    pub app_identity: Signal<String>,
     pub conn: Signal<ConnState>,
     /// Joined room id (the current event's timing room).
     pub room: Signal<Option<String>>,
@@ -232,6 +235,12 @@ pub struct SyncState {
     pub parcel_mode: Signal<ParcelMode>,
     /// A join invite waiting on login (public HS / SSO-only path).
     pub pending_join: Signal<Option<crate::event::Invite>>,
+    /// Localpart-tieback prompt: the event homeserver already has an account
+    /// with the identity's localpart, and the user must choose how to proceed.
+    pub tieback: Signal<Option<crate::sync::Tieback>>,
+    /// Username/password entered in the tieback modal.
+    pub tieback_user: Signal<String>,
+    pub tieback_pass: Signal<String>,
     /// The animated QR sequence is paused on its current frame.
     pub parcel_qr_paused: Signal<bool>,
 }
@@ -391,6 +400,16 @@ impl Model {
             },
             sync: SyncState {
                 identity: create_signal(String::new()),
+                app_identity: create_signal({
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        crate::services::matrix::load_app_identity()
+                    }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        String::new()
+                    }
+                }),
                 conn: create_signal(ConnState::Idle),
                 room: create_signal(None),
                 parcel_export: create_signal(String::new()),
@@ -402,6 +421,9 @@ impl Model {
                 parcel_qr_total: create_signal(0),
                 parcel_mode: create_signal(ParcelMode::default()),
                 pending_join: create_signal(None),
+                tieback: create_signal(None),
+                tieback_user: create_signal(String::new()),
+                tieback_pass: create_signal(String::new()),
                 scan_active: create_signal(false),
                 scan_preview: create_signal(None),
                 scan_status: create_signal(String::new()),
@@ -654,7 +676,7 @@ pub fn update(model: Model, msg: Msg) {
             #[cfg(target_arch = "wasm32")]
             if !homeserver.is_empty() && !user_id.is_empty() {
                 let account = crate::services::matrix::Account {
-                    homeserver,
+                    homeserver: homeserver.clone(),
                     user_id,
                     description: String::new(),
                     account_type: crate::services::matrix::AccountType::Shared,
@@ -668,6 +690,13 @@ pub fn update(model: Model, msg: Msg) {
                     event_uid: None,
                 };
                 crate::services::matrix::save_account(&account);
+                // If a join invite is parked for this homeserver (localpart
+                // tieback → "scan your account QR"), resume it now.
+                let resume_join = model.sync.pending_join.with(|p| {
+                    p.as_ref()
+                        .map(|inv| inv.homeserver == homeserver)
+                        .unwrap_or(false)
+                });
                 model
                     .screens
                     .accounts
@@ -679,6 +708,12 @@ pub fn update(model: Model, msg: Msg) {
                     .feedback
                     .set("Account imported.".into());
                 show(model, Screen::Accounts);
+                if resume_join {
+                    let inv = model.sync.pending_join.get_clone();
+                    if let Some(inv) = inv {
+                        crate::update(model, crate::Msg::Join(inv));
+                    }
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             let _ = (homeserver, user_id, password);
@@ -723,7 +758,7 @@ pub fn update(model: Model, msg: Msg) {
                 let Some(keys) = crate::signing::DeviceKeys::load_from_storage() else {
                     return;
                 };
-                let official_id = model.sync.identity.get_clone();
+                let official_id = crate::khana::helpers::current_official(model);
                 if official_id.is_empty() {
                     return;
                 }
@@ -1144,6 +1179,7 @@ pub fn view(model: Model) -> View {
             (move || view_navbar(model))
             (move || view_content(model))
             (crate::khana::helpers::view_handoff_modals(model))
+            (view_tieback_modal(model))
         }
     }
 }
@@ -1192,6 +1228,93 @@ fn view_content(model: Model) -> View {
                 }
             })
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_tieback_modal(_model: Model) -> View {
+    view! {}
+}
+
+/// Localpart-tieback modal: the event homeserver already has an account with
+/// the identity's localpart (or there's no identity and a local login is
+/// needed).  Shown app-wide so it appears wherever the join was triggered.
+#[cfg(target_arch = "wasm32")]
+fn view_tieback_modal(model: Model) -> View {
+    let tb = model.sync.tieback;
+    view! {
+        (move || {
+            let Some(ctx) = tb.get_clone() else {
+                return view! {};
+            };
+            let hs_display = crate::page::home::hs_host_port(&ctx.homeserver);
+            let localpart = ctx.localpart.clone();
+            let no_identity = localpart.is_empty();
+            let msg = if no_identity {
+                "Sign in with an account on this event's homeserver.".to_string()
+            } else {
+                format!("'{localpart}' is already taken on {hs_display} — pick how to sign in.")
+            };
+            let user_sig = model.sync.tieback_user;
+            let pass_sig = model.sync.tieback_pass;
+            view! {
+                div(class="modal is-active") {
+                    div(class="modal-background", on:click=move |_| crate::update(model, crate::Msg::Conn(crate::sync::Msg::TiebackCancel)))
+                    div(class="modal-card") {
+                        header(class="modal-card-head") {
+                            p(class="modal-card-title") { "Sign in to join" }
+                            button(class="delete", on:click=move |_| crate::update(model, crate::Msg::Conn(crate::sync::Msg::TiebackCancel)))
+                        }
+                        section(class="modal-card-body") {
+                            p(class="has-text-weight-medium") { (msg) }
+                            div(class="field mt-3") {
+                                label(class="label") { "Username" }
+                                div(class="control") {
+                                    input(class="input", bind:value=user_sig, placeholder="e.g. alice")
+                                }
+                            }
+                            div(class="field") {
+                                label(class="label") { "Password" }
+                                div(class="control") {
+                                    input(class="input", r#type="password", bind:value=pass_sig, placeholder="password")
+                                }
+                            }
+                            p(class="help") {
+                                "Use an account for this event's homeserver, or create a fresh one."
+                            }
+                        }
+                        footer(class="modal-card-foot is-justify-content-center") {
+                            button(
+                                class="button is-link",
+                                on:click=move |_| {
+                                    let u = user_sig.get_clone();
+                                    let p = pass_sig.get_clone();
+                                    crate::update(model, crate::Msg::Conn(crate::sync::Msg::TiebackCreate { username: u, password: p }));
+                                },
+                            ) { "Create new account" }
+                            button(
+                                class="button is-light",
+                                on:click=move |_| crate::update(model, crate::Msg::Conn(crate::sync::Msg::TiebackScan)),
+                            ) { "Scan account QR" }
+                            (if no_identity {
+                                view! {}
+                            } else {
+                                view! {
+                                    button(
+                                        class="button is-light",
+                                        on:click=move |_| {
+                                            let u = user_sig.get_clone();
+                                            let p = pass_sig.get_clone();
+                                            crate::update(model, crate::Msg::Conn(crate::sync::Msg::TiebackManual { username: u, password: p }));
+                                        },
+                                    ) { "Sign in manually" }
+                                }
+                            })
+                        }
+                    }
+                }
+            }
+        })
     }
 }
 

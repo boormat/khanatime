@@ -16,6 +16,28 @@ pub const ROLE_KEY_OFFICIAL: &str = "key_official";
 pub const ROLE_OFFICIAL: &str = "official";
 pub const ROLE_COMPETITOR: &str = "competitor";
 
+/// Localpart of a Matrix user id (`@alice:server` → `alice`), or the input
+/// unchanged when it isn't a full user id.
+pub fn user_id_localpart(user_id: &str) -> String {
+    user_id
+        .strip_prefix('@')
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or(user_id)
+        .to_string()
+}
+
+/// The next available username when `localpart` is taken: append `2`, then
+/// `3`, … (e.g. `alice2`).  `taken` checks availability.
+pub fn extend_username(localpart: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut n = 2;
+    let mut candidate = format!("{localpart}{n}");
+    while taken(&candidate) {
+        n += 1;
+        candidate = format!("{localpart}{n}");
+    }
+    candidate
+}
+
 // Run record types (mirrors the Matrix TimingEvent wire types).
 pub const RUN_START: &str = "start";
 pub const RUN_STOP: &str = "stop";
@@ -2207,6 +2229,24 @@ mod tests {
         assert_eq!(parse_time_ds("abc", "clean"), None);
         assert_eq!(parse_time_ds("", "clean"), None);
         assert_eq!(parse_time_ds("", "garage"), None);
+    }
+
+    #[test]
+    fn user_id_localpart_extracts() {
+        assert_eq!(user_id_localpart("@alice:matrix.org"), "alice");
+        assert_eq!(user_id_localpart("@bob:synapse.local:8008"), "bob");
+        assert_eq!(user_id_localpart("carol"), "carol");
+        assert_eq!(user_id_localpart(""), "");
+    }
+
+    #[test]
+    fn extend_username_appends_until_free() {
+        // Nothing taken → first variant.
+        assert_eq!(extend_username("alice", |_| false), "alice2");
+        // alice2 taken → alice3.
+        assert_eq!(extend_username("alice", |c| c == "alice2"), "alice3");
+        // Empty localpart (manual-only mode) stays empty.
+        assert_eq!(extend_username("", |_| false), "2");
     }
 
     #[test]

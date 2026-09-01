@@ -49,6 +49,30 @@ pub enum Msg {
         hs: String,
         username: String,
     },
+    /// Localpart-tieback: create a new account on the event homeserver.
+    TiebackCreate {
+        username: String,
+        password: String,
+    },
+    /// Localpart-tieback: sign in with the entered username/password.
+    TiebackManual {
+        username: String,
+        password: String,
+    },
+    /// Localpart-tieback: scan an account QR to import credentials, then retry.
+    TiebackScan,
+    /// Dismiss the tieback prompt (the parked invite stays).
+    TiebackCancel,
+}
+
+/// The event's homeserver already has an account whose localpart matches the
+/// app identity; the user picks how to proceed.  `suggested` is the next free
+/// `localpart` variant (e.g. `alice2`).
+#[derive(Clone)]
+pub struct Tieback {
+    pub homeserver: String,
+    pub localpart: String,
+    pub suggested: String,
 }
 
 pub fn update(model: Model, msg: Msg) {
@@ -59,6 +83,23 @@ pub fn update(model: Model, msg: Msg) {
 }
 
 // ----- lifecycle (wasm) -----
+
+/// Set the app identity from a *local* (synapse) login.  Never downgrades an
+/// existing matrix id — a local user id only fills an empty slot.
+#[cfg(target_arch = "wasm32")]
+fn set_local_identity_if_empty(model: Model, user_id: &str) {
+    if model.sync.app_identity.with(|a| a.is_empty()) {
+        crate::services::matrix::store_app_identity(user_id);
+        model.sync.app_identity.set(user_id.to_string());
+    }
+}
+
+/// Promote the app identity to a matrix id (unconditional — matrix SSO wins).
+#[cfg(target_arch = "wasm32")]
+fn set_matrix_identity(model: Model, user_id: &str) {
+    crate::services::matrix::store_app_identity(user_id);
+    model.sync.app_identity.set(user_id.to_string());
+}
 
 /// Resume a persisted Matrix session on app load (wasm only).  Driven by the
 /// current event: resumes the session for the event's homeserver (the event is
@@ -113,6 +154,7 @@ fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
         match res {
             Ok(room_id) => {
                 model.sync.identity.set(stored.user_id.clone());
+                set_local_identity_if_empty(model, &stored.user_id);
                 model.sync.conn.set(ConnState::LoggedIn(stored.user_id));
                 model.sync.room.set(room_id);
                 flush_pending(model);
@@ -571,6 +613,15 @@ fn update_wasm(model: Model, msg: Msg) {
         Msg::Relogin(hs) => relogin(model, hs),
         Msg::Forget(hs) => forget(model, hs),
         Msg::AddHomeserver { hs, username } => add_homeserver(model, hs, username),
+        Msg::TiebackCreate { username, password } => tieback_create(model, username, password),
+        Msg::TiebackManual { username, password } => tieback_manual(model, username, password),
+        Msg::TiebackScan => {
+            model.sync.tieback.set(None);
+            crate::update(model, crate::Msg::ScanStart);
+        }
+        Msg::TiebackCancel => {
+            model.sync.tieback.set(None);
+        }
     }
 }
 
@@ -588,34 +639,47 @@ pub fn gen_join_username() -> String {
 #[cfg(target_arch = "wasm32")]
 pub fn join_via_link(model: Model, invite: crate::event::Invite) {
     model.sync.conn.set(ConnState::Connecting);
-    // Public (SSO-reg) homeserver with no stored account: drive the OAuth
-    // sign-in directly instead of parking silently.  The invite is kept as the
-    // resume target so [sso_complete] can finish the join once signed in.  The
-    // tab is opened synchronously (popup blockers reject `window.open` after
-    // an await); if it's blocked we fall back to the Home "sign in to join"
-    // prompt, which retries from a real click.
+    // Reservation tab opened synchronously (popup blockers reject
+    // `window.open` after an await): used for the SSO flows, closed when we
+    // register/join directly.
+    let tab = match web_sys::window().map(|w| w.open()) {
+        Some(Ok(Some(tab))) => Some(tab),
+        _ => None,
+    };
+    // SSO-only homeserver invite, no stored account: drive OAuth directly.
     let needs_sso = crate::services::matrix::load_session_for(&invite.homeserver).is_none()
         && invite.reg == crate::event::RegistrationMode::Sso;
     if needs_sso {
         model.sync.pending_join.set(Some(invite.clone()));
         model.screens.home.homeserver.set(invite.homeserver.clone());
-        let sm = model.screens.home;
-        sm.busy.set(true);
-        let tab = match web_sys::window().map(|w| w.open()) {
-            Some(Ok(Some(tab))) => Some(tab),
-            _ => {
-                // Popup blocked: leave the invite parked; the Accounts box
-                // "Sign in to join" button starts SSO from a real gesture.
-                model.sync.conn.set(ConnState::Idle);
-                sm.busy.set(false);
-                return;
-            }
-        };
-        sso_begin(model, &invite.homeserver, tab.as_ref());
+        if let Some(tab) = &tab {
+            sso_begin(model, &invite.homeserver, Some(tab));
+        } else {
+            // Popup blocked: leave the invite parked; the Accounts box
+            // "Sign in to join" button starts SSO from a real gesture.
+            model.sync.conn.set(ConnState::Idle);
+        }
         return;
     }
     wasm_bindgen_futures::spawn_local(async move {
+        enum JoinDone {
+            Sso,
+            Tieback,
+            Joined(String),
+        }
         let res = async {
+            // Fresh local-homeserver event with no stored session: ensure an
+            // app identity first — matrix SSO when reachable (the stored id
+            // then drives the tieback when the join resumes).
+            if crate::services::matrix::load_session_for(&invite.homeserver).is_none()
+                && invite.reg == crate::event::RegistrationMode::Open
+                && model.sync.app_identity.with(|a| a.is_empty())
+                && crate::services::matrix::matrix_org_online().await
+            {
+                model.sync.pending_join.set(Some(invite.clone()));
+                sso_begin(model, "https://matrix.org", tab.as_ref());
+                return Ok::<_, String>(JoinDone::Sso);
+            }
             let client = crate::services::matrix::new_client(&invite.homeserver).await?;
             // Sign in: reuse a stored session for this homeserver first — never
             // create a session/account just to check.
@@ -625,30 +689,37 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
                 }
                 None => match invite.reg {
                     crate::event::RegistrationMode::Open => {
-                        // Event HS with open registration: auto-register a fresh
-                        // random account and store it forever (reused later).
-                        let reg = crate::event::RegistrationMode::Open;
-                        let mut ok = crate::services::matrix::register_or_login(
-                            &client,
-                            &gen_join_username(),
-                            &crate::ids::gen_short_id(),
-                        )
-                        .await
-                        .is_ok();
-                        if !ok {
-                            // Offer a fresh account on the rare collision.
-                            ok = crate::services::matrix::register_or_login(
-                                &client,
-                                &gen_join_username(),
-                                &crate::ids::gen_short_id(),
+                        // Tie the app identity's localpart into the event
+                        // homeserver (a temporary, non-federated synapse).
+                        let localpart =
+                            crate::event::user_id_localpart(&model.sync.app_identity.get_clone());
+                        if !localpart.is_empty() {
+                            let password = crate::ids::gen_short_id();
+                            if crate::services::matrix::register_or_login(
+                                &client, &localpart, &password,
                             )
                             .await
-                            .is_ok();
-                        }
-                        if ok {
-                            crate::services::matrix::set_session_reg(&invite.homeserver, reg);
+                            .is_ok()
+                            {
+                                crate::services::matrix::set_session_reg(
+                                    &invite.homeserver,
+                                    crate::event::RegistrationMode::Open,
+                                );
+                                crate::services::matrix::save_session_with_password(
+                                    &client,
+                                    &invite.homeserver,
+                                    &password,
+                                );
+                            } else {
+                                // The localpart already exists: let the user
+                                // decide (create a variant / scan / manual).
+                                show_tieback(model, &invite, &localpart);
+                                return Ok::<_, String>(JoinDone::Tieback);
+                            }
                         } else {
-                            return Err("Couldn't create an account on this homeserver".to_string());
+                            // No identity (offline / skipped): manual login.
+                            show_tieback(model, &invite, "");
+                            return Ok::<_, String>(JoinDone::Tieback);
                         }
                     }
                     // Reaching here with Sso means a session appeared since the
@@ -666,17 +737,32 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
             let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
             crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
             crate::services::matrix::start_sync(client, sink_for(model));
-            Ok::<_, String>(ev)
+            Ok::<_, String>(JoinDone::Joined(ev.id))
         }
         .await;
         match res {
-            Ok(ev) => {
+            Ok(JoinDone::Sso) => {
+                // sso_begin drives the sign-in tab; it resumes the parked
+                // invite once the matrix identity is stored.
+            }
+            Ok(JoinDone::Tieback) => {
+                if let Some(tab) = &tab {
+                    let _ = tab.close();
+                }
+                model.sync.conn.set(ConnState::Idle);
+            }
+            Ok(JoinDone::Joined(ev_id)) => {
+                if let Some(tab) = &tab {
+                    let _ = tab.close();
+                }
+                model.sync.pending_join.set(None);
                 let user_id = crate::services::matrix::client()
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
                     .unwrap_or_default();
                 model.sync.identity.set(user_id.clone());
+                set_local_identity_if_empty(model, &user_id);
                 model.sync.conn.set(ConnState::LoggedIn(user_id));
-                crate::update(model, crate::Msg::SetEvent(ev.id));
+                crate::update(model, crate::Msg::SetEvent(ev_id));
                 crate::update(model, crate::Msg::Show(crate::Screen::Results));
             }
             Err(e) => {
@@ -689,6 +775,87 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
             }
         }
     });
+}
+
+/// Park the join invite and show the localpart-tieback modal: the event
+/// homeserver already has an account whose localpart matches the app identity
+/// (or there's no identity and a manual login is needed).
+#[cfg(target_arch = "wasm32")]
+fn show_tieback(model: Model, invite: &crate::event::Invite, localpart: &str) {
+    let suggested = if localpart.is_empty() {
+        String::new()
+    } else {
+        crate::event::extend_username(localpart, |_| false)
+    };
+    model.sync.tieback_user.set(suggested.clone());
+    model.sync.tieback_pass.set(String::new());
+    model.sync.pending_join.set(Some(invite.clone()));
+    model.sync.tieback.set(Some(crate::sync::Tieback {
+        homeserver: invite.homeserver.clone(),
+        localpart: localpart.to_string(),
+        suggested,
+    }));
+}
+
+/// Create (or sign in as) `username` on the tieback homeserver, then finish
+/// the parked join.  Used by both the "create new account" and "enter
+/// user/password manually" modal actions.
+#[cfg(target_arch = "wasm32")]
+fn tieback_connect(model: Model, username: String, password: String) {
+    let Some(tb) = model.sync.tieback.get_clone() else {
+        return;
+    };
+    let Some(invite) = model.sync.pending_join.get_clone() else {
+        return;
+    };
+    if username.trim().is_empty() || password.is_empty() {
+        model.sync.conn.set(ConnState::Error(
+            "Enter a username and password".to_string(),
+        ));
+        return;
+    }
+    model.sync.tieback.set(None);
+    wasm_bindgen_futures::spawn_local(async move {
+        let res = async {
+            let client = crate::services::matrix::new_client(&tb.homeserver).await?;
+            crate::services::matrix::register_or_login(&client, &username, &password).await?;
+            crate::services::matrix::set_session_reg(
+                &tb.homeserver,
+                crate::event::RegistrationMode::Open,
+            );
+            crate::services::matrix::save_session_with_password(&client, &tb.homeserver, &password);
+            crate::services::matrix::set_client(Some(client.clone()));
+            let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
+            crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
+            crate::services::matrix::start_sync(client, sink_for(model));
+            Ok::<_, String>(ev)
+        }
+        .await;
+        match res {
+            Ok(ev) => {
+                model.sync.pending_join.set(None);
+                let user_id = crate::services::matrix::client()
+                    .and_then(|c| c.user_id().map(|u| u.to_string()))
+                    .unwrap_or_default();
+                model.sync.identity.set(user_id.clone());
+                set_local_identity_if_empty(model, &user_id);
+                model.sync.conn.set(ConnState::LoggedIn(user_id));
+                crate::update(model, crate::Msg::SetEvent(ev.id));
+                crate::update(model, crate::Msg::Show(crate::Screen::Results));
+            }
+            Err(e) => model.sync.conn.set(ConnState::Error(e)),
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tieback_create(model: Model, username: String, password: String) {
+    tieback_connect(model, username, password);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn tieback_manual(model: Model, username: String, password: String) {
+    tieback_connect(model, username, password);
 }
 
 /// Soft logout: deactivate the active session locally, keeping the stored
@@ -833,6 +1000,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
                     .unwrap_or_default();
                 model.sync.identity.set(user_id.clone());
+                set_local_identity_if_empty(model, &user_id);
                 model.sync.conn.set(ConnState::LoggedIn(user_id));
                 model.sync.room.set(room_id);
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
@@ -1017,17 +1185,18 @@ fn sso_complete(model: Model, callback_url: String) {
                     .and_then(|c| c.user_id().map(|u| u.to_string()))
                     .unwrap_or_default();
                 model.sync.identity.set(user_id.clone());
+                // Matrix SSO always promotes the app identity.
+                set_matrix_identity(model, &user_id);
                 model.sync.conn.set(ConnState::LoggedIn(user_id));
                 model.sync.room.set(room_id);
-                // Resume a parked join (SSO invite) now that we're signed in on
-                // its homeserver, instead of the plain Home connect.
+                // Resume a parked join (SSO invite, or a local-homeserver join
+                // that first did a matrix SSO for its identity) now that the
+                // app identity is set.  Re-running the join drives the tieback.
                 let pending = model.sync.pending_join.get_clone();
-                if let Some(link) = &pending {
-                    if crate::services::matrix::load_session_for(&link.homeserver).is_some() {
-                        model.sync.pending_join.set(None);
-                        crate::update(model, crate::Msg::Join(link.clone()));
-                        return;
-                    }
+                if let Some(link) = pending {
+                    model.sync.pending_join.set(None);
+                    crate::update(model, crate::Msg::Join(link));
+                    return;
                 }
                 crate::update(model, crate::Msg::Show(crate::Screen::Home));
                 flush_pending(model);
