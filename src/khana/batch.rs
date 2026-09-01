@@ -593,6 +593,8 @@ mod tests {
             id: "@alice:matrix.org".into(),
             name: "Alice".into(),
             role: String::new(),
+            phone: None,
+            homeservers: vec![],
             public_key: None,
         });
         let lines = event_diff(&base(), &staged);

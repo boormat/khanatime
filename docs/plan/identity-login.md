@@ -1,6 +1,7 @@
 # Identity & login flow — SSO-first audit identity
 
-> Status: **Part 1 live** (identity + join precedence). Parts 2–3 planned.
+> Status: **Parts 1–2 live, Part 3 doco done.** See
+> `docs/practice-event-guide.md` for the practice-event + shared-device guide.
 > Related: `docs/plan/matrix-login.md` (OAuth/SSO), `docs/plan/multi-transport.md`
 > (dual homeservers), `docs/plan/event-admin-accounts.md` (accounts/contacts).
 
@@ -48,9 +49,13 @@ promoted to the app identity on completion.
   resumes a parked join
 - `page/home.rs` — first-run SSO prompt
 
-## Parts 2–3 (planned)
+## Parts 2–3
 
-- **Part 2**: officials as contact cards (role/name/phone/matrix id/hs ids) +
-  publish validation that key officials carry Real Name + mobile.
-- **Part 3**: practice-event doco (published event from the Demo template,
-  printable invite QR; shared timekeeper-laptop setup).
+- **Part 2 (live)**: `Official` gained `phone` + `homeservers` (contact-card
+  fields: role/name/phone/matrix id/hs ids). The organiser picker lets you set
+  role + real name + mobile per official (prefilled from a Contact card);
+  `publish_errors` enforces every **key official** has a Real Name + mobile.
+  Timing wire unchanged.
+- **Part 3 (doco)**: `docs/practice-event-guide.md` — Demo vs Practice, creating
+  a published practice event, printing its invite QR, and the shared
+  timekeeper-laptop setups (event shared login / per-device accounts).

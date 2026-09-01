@@ -146,6 +146,12 @@ pub struct Model {
     pub edit_entry_input: InputModel,
     /// car of the entry being edited (click-to-edit).
     pub editing_entry_car: Signal<Option<String>>,
+    /// Organiser being edited in the official modal (user_id); the modal's
+    /// role/name/phone fields live in the three signals below.
+    pub edit_official: Signal<Option<String>>,
+    pub official_role: Signal<String>,
+    pub official_name: Signal<String>,
+    pub official_phone: Signal<String>,
     /// Publish confirmation dialog.
     pub show_publish_confirm: Signal<bool>,
     /// The computed publish plan (None while checking).
@@ -173,6 +179,10 @@ pub fn init() -> Model {
         quick_add: crate::input::init(),
         edit_entry_input: crate::input::init(),
         editing_entry_car: create_signal(None),
+        edit_official: create_signal(None),
+        official_role: create_signal(String::new()),
+        official_name: create_signal(String::new()),
+        official_phone: create_signal(String::new()),
         show_publish_confirm: create_signal(false),
         publish_plan: create_signal(None),
         publish_steps: create_signal(vec![]),
@@ -1601,6 +1611,7 @@ fn view_details(model: crate::Model) -> View {
             (view_homeserver_fields(model))
             (view_owner_picker(model))
             (view_organisers_picker(model))
+            (view_official_modal(model))
             (move || view_tests_section(model))
             (move || view_classes_section(model))
             (move || view_entrants_section(model))
@@ -2467,10 +2478,11 @@ fn view_organisers_picker(model: crate::Model) -> View {
     let editing = em.editing.get();
     view! {
         (move || {
-            // Build options from contacts + accounts.
+            // Build options from contacts + accounts, carrying contact prefill
+            // (id, display, phone, homeservers).
             let contacts = crate::services::matrix::load_contacts();
             let accounts = crate::services::matrix::load_accounts();
-            let mut options: Vec<(String, String)> = Vec::new();
+            let mut options: Vec<(String, String, Option<String>, Vec<String>)> = Vec::new();
             for c in &contacts {
                 let display = if c.name.is_empty() {
                     c.description.clone()
@@ -2479,27 +2491,30 @@ fn view_organisers_picker(model: crate::Model) -> View {
                 } else {
                     format!("{} · {}", c.name, c.description)
                 };
-                options.push((c.user_id.clone(), display));
+                options.push((c.user_id.clone(), display, c.phone.clone(), vec![]));
             }
             for a in &accounts {
-                if !options.iter().any(|(id, _)| id == &a.user_id) {
+                if !options.iter().any(|(id, _, _, _)| id == &a.user_id) {
                     let display = if a.description.is_empty() {
                         crate::page::home::hs_host_port(&a.homeserver)
                     } else {
                         a.description.clone()
                     };
-                    options.push((a.user_id.clone(), display));
+                    options.push((a.user_id.clone(), display, None, vec![a.homeserver.clone()]));
                 }
             }
-            let current_orgs: Vec<String> = if editing {
-                untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.organisers.iter().map(|o| o.id.clone()).collect()).unwrap_or_default()))
+            let organisers: Vec<crate::event::Official> = if editing {
+                untrack(|| em.edit_event.with(|e| e.as_ref().map(|e| e.organisers.clone()).unwrap_or_default()))
             } else {
-                model.khana.event.with(|e| e.organisers.iter().map(|o| o.id.clone()).collect())
+                model.khana.event.with(|e| e.organisers.clone())
             };
+            let current_orgs: Vec<String> = organisers.iter().map(|o| o.id.clone()).collect();
             let mut items: Vec<View> = Vec::new();
-            for (uid, display) in &options {
+            for (uid, display, phone, hs) in &options {
                 let uid_owned = uid.clone();
                 let display_owned = display.clone();
+                let phone_owned = phone.clone();
+                let hs_owned = hs.clone();
                 let is_on = current_orgs.contains(uid);
                 let cls = format!(
                     "button is-small {}",
@@ -2522,6 +2537,8 @@ fn view_organisers_picker(model: crate::Model) -> View {
                                             id: uid_click.clone(),
                                             name: display_click.clone(),
                                             role: String::new(),
+                                            phone: phone_owned.clone(),
+                                            homeservers: hs_owned.clone(),
                                             public_key: None,
                                         });
                                     }
@@ -2544,14 +2561,171 @@ fn view_organisers_picker(model: crate::Model) -> View {
             } else {
                 view! { (items) }
             };
+
+            // Selected officials: role/name/phone summary + edit (pencil) that
+            // opens the official modal.
+            let mut rows: Vec<View> = Vec::new();
+            for off in &organisers {
+                let uid = off.id.clone();
+                let role_label = match off.role.as_str() {
+                    crate::event::ROLE_KEY_OFFICIAL => "Key official",
+                    crate::event::ROLE_OFFICIAL => "Official",
+                    crate::event::ROLE_COMPETITOR => "Competitor",
+                    _ => "No role",
+                };
+                let name = off.name.clone();
+                let phone = off.phone.clone().unwrap_or_default();
+                let role_txt = role_label.to_string();
+                let summary = if name.is_empty() {
+                    if phone.is_empty() {
+                        String::new()
+                    } else {
+                        format!("· {}", phone)
+                    }
+                } else if phone.is_empty() {
+                    name
+                } else {
+                    format!("{} · {}", name, phone)
+                };
+                let edit_uid = uid.clone();
+                rows.push(view! {
+                    div(class="level is-mobile mb-1") {
+                        div(class="level-left") {
+                            span(class="has-text-weight-medium") { (uid) }
+                            span(class="tag is-small is-light ml-2") { (role_txt) }
+                            span(class="is-size-7 has-text-grey ml-2") { (summary) }
+                        }
+                        div(class="level-right") {
+                            button(
+                                class="button is-small is-light",
+                                disabled=!editing,
+                                on:click=move |_| {
+                                    em.edit_official.set(Some(edit_uid.clone()));
+                                },
+                            ) {
+                                span(class="icon is-small") { i(class="fa fa-pen") }
+                            }
+                        }
+                    }
+                });
+            }
+            let officials_list = if organisers.is_empty() {
+                view! { p(class="help") { "No officials selected yet." } }
+            } else {
+                view! { (rows) }
+            };
+
             view! {
                 div(class="field") {
                     label(class="label") { "Organisers (invited + admin PL)" }
                     div(class="kt-hs-tags") { (body) }
+                    div(class="mt-2") {
+                        (officials_list)
+                        p(class="help") {
+                            "Key officials must have a Real Name and a mobile number to publish."
+                        }
+                    }
                 }
             }
         })
     }
+}
+
+/// Modal to set an official's role / real name / contact mobile (the
+/// "contact-card" fields).  Prefills from the staged organiser on open.
+#[cfg(target_arch = "wasm32")]
+fn view_official_modal(model: crate::Model) -> View {
+    let em = model.screens.setup;
+    view! {
+        (move || {
+            let Some(uid) = em.edit_official.get_clone() else {
+                return view! {};
+            };
+            // Prefill the fields from the staged organiser on open.
+            if em.official_role.with(|r| r.is_empty()) {
+                let (role, name, phone) = em.edit_event.with(|e| {
+                    e.as_ref()
+                        .and_then(|ev| ev.organisers.iter().find(|o| o.id == uid))
+                        .map(|o| (o.role.clone(), o.name.clone(), o.phone.clone().unwrap_or_default()))
+                        .unwrap_or_default()
+                });
+                em.official_role.set(role);
+                em.official_name.set(name);
+                em.official_phone.set(phone);
+            }
+            let role_sig = em.official_role;
+            let name_sig = em.official_name;
+            let phone_sig = em.official_phone;
+            view! {
+                div(class="modal is-active") {
+                    div(class="modal-background", on:click=move |_| em.edit_official.set(None))
+                    div(class="modal-card") {
+                        header(class="modal-card-head") {
+                            p(class="modal-card-title") { "Edit official" }
+                            button(class="delete", on:click=move |_| em.edit_official.set(None))
+                        }
+                        section(class="modal-card-body") {
+                            div(class="field") {
+                                label(class="label") { "Role" }
+                                div(class="control") {
+                                    select(class="input", bind:value=role_sig) {
+                                        option(value="") { "—" }
+                                        option(value=crate::event::ROLE_KEY_OFFICIAL) { "Key official" }
+                                        option(value=crate::event::ROLE_OFFICIAL) { "Official" }
+                                        option(value=crate::event::ROLE_COMPETITOR) { "Competitor" }
+                                    }
+                                }
+                            }
+                            div(class="field") {
+                                label(class="label") { "Real name" }
+                                div(class="control") {
+                                    input(class="input", bind:value=name_sig, placeholder="e.g. Alice Smith")
+                                }
+                                p(class="help") { "Shown to officials for audit." }
+                            }
+                            div(class="field") {
+                                label(class="label") { "Contact mobile" }
+                                div(class="control") {
+                                    input(class="input", bind:value=phone_sig, placeholder="e.g. 0400 000 000")
+                                }
+                                p(class="help") { "Required for key officials." }
+                            }
+                        }
+                        footer(class="modal-card-foot is-justify-content-center") {
+                            button(
+                                class="button is-link",
+                                on:click=move |_| {
+                                    let r = role_sig.get_clone();
+                                    let n = name_sig.get_clone();
+                                    let p = phone_sig.get_clone();
+                                    em.edit_event.update(|e| {
+                                        if let Some(ev) = e {
+                                            if let Some(o) = ev.organisers.iter_mut().find(|o| o.id == uid) {
+                                                o.role = r;
+                                                o.name = n;
+                                                o.phone = if p.trim().is_empty() { None } else { Some(p) };
+                                            }
+                                        }
+                                    });
+                                    em.edit_official.set(None);
+                                    em.official_role.set(String::new());
+                                },
+                            ) { "Save" }
+                            button(class="button", on:click=move |_| {
+                                em.edit_official.set(None);
+                                em.official_role.set(String::new());
+                            }) { "Cancel" }
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_official_modal(_model: crate::Model) -> View {
+    view! {}
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -246,6 +246,12 @@ pub struct Official {
     pub name: String,
     #[serde(default)]
     pub role: String, // ROLE_KEY_OFFICIAL | ROLE_OFFICIAL | ROLE_COMPETITOR
+    /// Contact mobile number — required for key officials (audit / reachability).
+    #[serde(default)]
+    pub phone: Option<String>,
+    /// Homeservers this person has accounts on (identity tie-back).
+    #[serde(default)]
+    pub homeservers: Vec<String>,
     /// Public signing key for cross-device verification (future).
     #[serde(default)]
     pub public_key: Option<String>,
@@ -1641,6 +1647,29 @@ pub fn publish_errors(event: &EventInfo, scores: &[ScoreData], runs: &[RunRecord
             errs.push("Owner must be in the organisers list.".to_string());
         }
     }
+    // Key officials must be reachable for audit: a real name + mobile number.
+    for o in event
+        .organisers
+        .iter()
+        .filter(|o| o.role == ROLE_KEY_OFFICIAL)
+    {
+        if o.name.trim().is_empty() {
+            errs.push(format!(
+                "Key official {} is missing a Real Name — add one so timing can be audited.",
+                o.id
+            ));
+        }
+        if o.phone
+            .as_deref()
+            .map(|p| p.trim().is_empty())
+            .unwrap_or(true)
+        {
+            errs.push(format!(
+                "Key official {} is missing a contact mobile number.",
+                o.id
+            ));
+        }
+    }
     // The human fields form the room alias at publish, so they must be usable
     // even though the event id itself is random.
     if event.name.trim().is_empty() || year_token(&event.year).is_empty() {
@@ -2482,6 +2511,8 @@ mod tests {
             id: "@test:localhost".into(),
             name: String::new(),
             role: String::new(),
+            phone: None,
+            homeservers: vec![],
             public_key: None,
         }];
         assert!(publish_errors(&ev, &[], &[]).is_empty());
@@ -2499,6 +2530,62 @@ mod tests {
         assert!(publish_errors(&demo, &[], &[])
             .iter()
             .any(|e| e.contains("can't be published")));
+    }
+
+    #[test]
+    fn publish_errors_require_key_official_name_and_phone() {
+        let mut ev = EventInfo {
+            name: "Rally".into(),
+            year: "2026".into(),
+            stages: vec![Stage::for_test(1)],
+            owner: Some("@key:localhost".into()),
+            event_homeservers: vec!["http://localhost:8008".into()],
+            ..Default::default()
+        };
+        let key = |role: &str, name: &str, phone: Option<&str>| Official {
+            id: "@key:localhost".into(),
+            name: name.into(),
+            role: role.into(),
+            phone: phone.map(str::to_string),
+            homeservers: vec![],
+            public_key: None,
+        };
+        // Key official without a name and phone → errors.
+        ev.organisers = vec![key(ROLE_KEY_OFFICIAL, "", None)];
+        let errs = publish_errors(&ev, &[], &[]);
+        assert!(errs.iter().any(|e| e.contains("Real Name")));
+        assert!(errs.iter().any(|e| e.contains("mobile")));
+        // Name but no phone → still missing mobile.
+        ev.organisers = vec![key(ROLE_KEY_OFFICIAL, "Alice", None)];
+        let errs = publish_errors(&ev, &[], &[]);
+        assert!(!errs.iter().any(|e| e.contains("Real Name")));
+        assert!(errs.iter().any(|e| e.contains("mobile")));
+        // Complete → clean.
+        ev.organisers = vec![key(ROLE_KEY_OFFICIAL, "Alice", Some("0400 000 000"))];
+        assert!(publish_errors(&ev, &[], &[]).is_empty());
+        // A plain (non-key) official isn't enforced.
+        ev.organisers = vec![key(ROLE_OFFICIAL, "", None)];
+        assert!(publish_errors(&ev, &[], &[]).is_empty());
+    }
+
+    #[test]
+    fn official_serde_round_trip_with_new_fields() {
+        let o = Official {
+            id: "@alice:matrix.org".into(),
+            name: "Alice".into(),
+            role: ROLE_KEY_OFFICIAL.into(),
+            phone: Some("0400".into()),
+            homeservers: vec!["https://matrix.org".into(), "http://localhost:8008".into()],
+            public_key: None,
+        };
+        let json = serde_json::to_string(&o).unwrap();
+        let back: Official = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, o);
+        // Old manifests without the new fields deserialize cleanly.
+        let legacy = r#"{"id":"@bob:hs","name":"Bob","role":""}"#;
+        let legacy_o: Official = serde_json::from_str(legacy).unwrap();
+        assert_eq!(legacy_o.phone, None);
+        assert!(legacy_o.homeservers.is_empty());
     }
 
     #[test]
