@@ -321,6 +321,38 @@ chat expanded) and the event-config edit context.
 can survive an event switch — riskier to reset because of the create/copy/discard
 flow (`pre_create`, `edit_base`); follow up if it shows up in practice.
 
+### ~~B14. Stopwatch flow review — TBA comment, staged car, time validation, car correction~~ ✅ DONE
+**Files:** `src/khana/page/stopwatch.rs` (view, buttons, comment, picker modal,
+`clear_after_confirm`), `src/khana/helpers.rs` (confirm/edit handlers),
+`src/khana/event.rs` (`parse_time_ds`)
+**Severity:** Medium (UX/data-model; several regressions from the confirm-screen
+rework `34a2a2a`/`a0e38a3`)
+**Detail:** Review of the stopwatch flow surfaced five related issues:
+- **TBA "?" can't be manual-timed.** The stopwatch page lost its comment input
+  (only restored from session), so `sm.comment` is always empty and `manual_time`'s
+  `check_unknown_comment` gate silently refuses — the Manual button appears dead.
+- **Manual confirm leaves the car staged.** The inline Confirm/Cancel
+  (`view_provisional_buttons`) never cleared the selected car/comment/time/penalty
+  (the old `commit()` did; that Msg is never dispatched). B11 already voids the
+  on-course START; this was the leftover cleanup.
+- **Start/Stop on TBA don't force a comment.** `start_car`/`stop_car` never called
+  `check_unknown_comment`; the old `tba_blocked` button-disable + highlighted
+  comment field (1a10eb3) were dropped.
+- **Manual time unvalidated + wrong keyboard.** Field was `type="text"`;
+  Confirm/Save did `parse::<f32>().unwrap_or(0)` so garbage → 0.0s. And
+  `sm.feedback` is set everywhere but was never rendered — messages invisible.
+- **Car-number correction lost.** The Change-car modal still exists but
+  `show_car_picker.set(true)` was never called (old car-tag click, 4a72047); and
+  the confirm closure used a stale captured `car`.
+**Fix:** restore the comment input on the stopwatch page (highlighted + "required
+for TBA" for "?"); restore `tba_blocked` (disable Start/Stop/Manual until a
+comment is entered for "?"); add `check_unknown_comment` backstops to
+`start_car`/`stop_car`; render `sm.feedback`; add `parse_time_ds` (positive time
+required unless dns/dnf/fts/wd) used by Confirm/Save/amend-car; `inputmode="decimal"`
+on the time field; restore the car-tag → picker-modal trigger and make
+`apply_car` amend a confirmed finish (new car) while using the live record car.
+`clear_after_confirm` clears the selection after a confirmed provisional.
+
 ---
 
 ## Priority Suggestion

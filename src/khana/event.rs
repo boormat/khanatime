@@ -1728,6 +1728,20 @@ pub fn finish_to_ktime(r: &RunRecord) -> KTime {
     }
 }
 
+/// Parse a manual time entry into deciseconds.  A positive numeric value is
+/// required unless `status` is terminal (dns/dnf/fts/wd), which score without
+/// a time.  Returns `None` on invalid input (B14).
+pub fn parse_time_ds(time: &str, status: &str) -> Option<u16> {
+    if matches!(status, "dns" | "dnf" | "fts" | "wd") {
+        return Some(0);
+    }
+    time.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| *v > 0.0)
+        .map(|v| (10.0 * v).round() as u16)
+}
+
 /// The [RunRecord] a wire [TimingEvent] represents (used by the sync merge).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
 pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
@@ -2176,6 +2190,23 @@ mod tests {
         let mut nosho = run("finish", 1, "7", 0);
         nosho.status = Some("nosho".into());
         assert_eq!(finish_to_ktime(&nosho), KTime::NOSHO);
+    }
+
+    #[test]
+    fn parse_time_ds_requires_positive_unless_terminal() {
+        assert_eq!(parse_time_ds("12.5", "clean"), Some(125));
+        assert_eq!(parse_time_ds("9.0", "garage"), Some(90));
+        // Terminal statuses score without a time (B14).
+        assert_eq!(parse_time_ds("", "dns"), Some(0));
+        assert_eq!(parse_time_ds("", "dnf"), Some(0));
+        assert_eq!(parse_time_ds("", "fts"), Some(0));
+        assert_eq!(parse_time_ds("", "wd"), Some(0));
+        // A real time must be a positive number.
+        assert_eq!(parse_time_ds("0", "clean"), None);
+        assert_eq!(parse_time_ds("-1", "clean"), None);
+        assert_eq!(parse_time_ds("abc", "clean"), None);
+        assert_eq!(parse_time_ds("", "clean"), None);
+        assert_eq!(parse_time_ds("", "garage"), None);
     }
 
     #[test]

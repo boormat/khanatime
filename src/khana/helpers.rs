@@ -355,7 +355,17 @@ fn view_provisional_buttons(
                     let f = flags_sig.get();
                     let g = garage_sig.get();
                     let st: String = status_sig.get_clone();
-                    let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
+                    // A real time is required unless the status is terminal.
+                    let time_ds = match crate::event::parse_time_ds(&t, &st) {
+                        Some(ds) => ds,
+                        None => {
+                            crate::khana::page::stopwatch::show_feedback(
+                                model,
+                                "Enter a valid time in seconds",
+                            );
+                            return;
+                        }
+                    };
                     let kt = if st == "dnf" { KTime::DNF }
                         else if st == "fts" { KTime::FTS }
                         else if st == "wd" { KTime::WD }
@@ -375,23 +385,29 @@ fn view_provisional_buttons(
                     let record = model.khana.runs.with(|runs| {
                         runs.iter().find(|r| r.uid == prov_uid).cloned()
                     });
+                    // Use the record's current car — it may have been changed
+                    // via the picker modal since this row rendered.
+                    let record_car = record
+                        .as_ref()
+                        .map(|r| r.car.clone())
+                        .unwrap_or_else(|| car.clone());
                     if let Some(record) = record {
                         // A manual timed run (no attached start/stop) supersedes
                         // any start still on course: void it so the car isn't
                         // left staged waiting on a Stop.
                         if record.refs.is_empty() {
                             crate::khana::helpers::void_pending_starts_for_car(
-                                model, &car, record.test,
+                                model, &record_car, record.test,
                             );
                         }
                         crate::khana::helpers::enqueue_run(model, &record);
+                        model.khana.scores.update(|s| {
+                            crate::event::upsert_ktime(s, record.test, &record_car, kt);
+                        });
                     }
-                    let test = model.screens.stopwatch.test.get();
-                    model.khana.scores.update(|s| {
-                        crate::event::upsert_ktime(s, test, &car, kt);
-                    });
                     editing_signal.set(None);
                     provisional_signal.set(None);
+                    crate::khana::page::stopwatch::clear_after_confirm(model);
                 },
             ) { "Confirm" }
             button(
@@ -402,6 +418,10 @@ fn view_provisional_buttons(
                     });
                     editing_signal.set(None);
                     provisional_signal.set(None);
+                    let sm = model.screens.stopwatch;
+                    sm.time.set(String::new());
+                    sm.feedback.set(None);
+                    crate::khana::page::penalty::clear(sm.penalty);
                 },
             ) { "Cancel" }
         }
@@ -432,7 +452,16 @@ fn view_edit_buttons(
                     let f = flags_sig.get();
                     let g = garage_sig.get();
                     let st: String = status_sig.get_clone();
-                    let time_ds = t.parse::<f32>().map(|s| (10.0 * s) as u16).unwrap_or(0);
+                    let time_ds = match crate::event::parse_time_ds(&t, &st) {
+                        Some(ds) => ds,
+                        None => {
+                            crate::khana::page::stopwatch::show_feedback(
+                                model,
+                                "Enter a valid time in seconds",
+                            );
+                            return;
+                        }
+                    };
                     let kt = if st == "dnf" { KTime::DNF }
                         else if st == "fts" { KTime::FTS }
                         else if st == "wd" { KTime::WD }
@@ -564,7 +593,16 @@ fn view_edit_row(
         div(class="box has-background-light") {
             div(class="level is-mobile mb-1") {
                 div(class="level-left") {
-                    (crate::view::car_tag(&car_display))
+                    span(
+                        class="kt-car-edit",
+                        on:click=move |_| {
+                            // Restore the car-picker trigger: click the car tag
+                            // to correct a wrong car number (B14).
+                            model.screens.stopwatch.show_car_picker.set(true);
+                        },
+                    ) {
+                        (crate::view::car_tag(&car_display))
+                    }
                     span(class="has-text-weight-semibold ml-2") { (entry_name) }
                     span(class="has-text-grey ml-2 is-size-7") { (time_display_header) }
                 }
@@ -577,6 +615,7 @@ fn view_edit_row(
                             input(
                                 class="input is-small",
                                 r#type="text",
+                                inputmode="decimal",
                                 placeholder="e.g. 12.5",
                                 prop:value=move || time_sig.get_clone(),
                                 on:input=move |e: web_sys::Event| {

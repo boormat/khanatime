@@ -150,6 +150,9 @@ fn start_car(model: crate::Model) {
         sm.feedback.set(Some("Select a car first".to_string()));
         return;
     }
+    if crate::khana::helpers::check_unknown_comment(&car, &sm.comment.get_clone(), &sm.feedback) {
+        return;
+    }
     let test = sm.test.get();
     if pending_for_car(&model.khana.runs.get_clone(), test, &car) {
         sm.feedback
@@ -182,6 +185,9 @@ fn stop_car(model: crate::Model) {
     let car = sm.car.get_clone().trim().to_string();
     if car.is_empty() {
         sm.feedback.set(Some("Select a car first".to_string()));
+        return;
+    }
+    if crate::khana::helpers::check_unknown_comment(&car, &sm.comment.get_clone(), &sm.feedback) {
         return;
     }
     let test = sm.test.get();
@@ -430,6 +436,26 @@ pub fn clear_session(model: crate::Model) {
     save_comment("");
 }
 
+/// Show a transient error/notice line on the stopwatch page.
+pub fn show_feedback(model: crate::Model, msg: impl Into<String>) {
+    model.screens.stopwatch.feedback.set(Some(msg.into()));
+}
+
+/// Clear the selected car + comment + time + penalty after a provisional
+/// record is confirmed or cancelled (the inline Confirm/Cancel path).  The
+/// `Msg::Commit`/`cancel` functions did this; the inline edit-form handlers
+/// (helpers) must too, or the car stays "staged" after a manual run.
+pub fn clear_after_confirm(model: crate::Model) {
+    let sm = model.screens.stopwatch;
+    sm.car.set(String::new());
+    save_car("");
+    sm.comment.set(String::new());
+    save_comment("");
+    sm.time.set(String::new());
+    sm.feedback.set(None);
+    penalty::clear(sm.penalty);
+}
+
 /// Compute runs remaining per car and for the unknown "?" car.
 fn compute_runs_remaining(
     model: crate::Model,
@@ -477,6 +503,22 @@ pub fn view(model: crate::Model) -> View {
                     view! {}
                 } else {
                     view_action_buttons(model)
+                }
+            })
+            (move || {
+                let fb = sm.feedback.get_clone();
+                match fb {
+                    Some(msg) => view! { p(class="help has-text-danger mb-1") { (msg) } },
+                    None => view! {},
+                }
+            })
+            (move || {
+                if sm.provisional_uid.with(|p| p.is_some()) {
+                    view! {}
+                } else {
+                    view! {
+                        (view_comment(model))
+                    }
                 }
             })
             (move || {
@@ -602,12 +644,15 @@ fn view_action_buttons(model: crate::Model) -> View {
                         trimmed,
                     );
                     let no_car = trimmed.is_empty();
+                    // TBA "?" needs a comment before it can be timed.
+                    let tba_blocked = trimmed == "?" && sm.comment.get_clone().trim().is_empty();
+                    let blocked = has_provisional || no_car || tba_blocked;
                     // Show Stop when car is on course, Start otherwise.
                     if is_on_course && !has_provisional {
                         view! {
                             button(
                                 class="button is-danger",
-                                disabled=has_provisional || no_car,
+                                disabled=blocked,
                                 on:click=move |_| update(model, Msg::Stop),
                             ) {
                                 span(class="icon") { i(class="fa fa-flag-checkered") }
@@ -615,7 +660,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                             }
                         }
                     } else {
-                        let cls = if no_car || has_provisional {
+                        let cls = if blocked {
                             "button"
                         } else {
                             "button is-success"
@@ -623,7 +668,7 @@ fn view_action_buttons(model: crate::Model) -> View {
                         view! {
                             button(
                                 class=cls,
-                                disabled=has_provisional || no_car,
+                                disabled=blocked,
                                 on:click=move |_| update(model, Msg::Start),
                             ) {
                                 span(class="icon") { i(class="fa fa-flag-checkered") }
@@ -639,7 +684,8 @@ fn view_action_buttons(model: crate::Model) -> View {
                     let has_provisional = sm.provisional_uid.with(|p| p.is_some());
                     let trimmed = car.trim();
                     let no_car = trimmed.is_empty();
-                    if no_car || has_provisional {
+                    let tba_blocked = trimmed == "?" && sm.comment.get_clone().trim().is_empty();
+                    if no_car || has_provisional || tba_blocked {
                         view! {
                             button(class="button", disabled=true) {
                                 span(class="icon") { i(class="fa fa-keyboard") }
@@ -658,6 +704,43 @@ fn view_action_buttons(model: crate::Model) -> View {
                 })
             }
         }
+    }
+}
+
+/// Comment input — shown when a car is selected (and no confirm panel open).
+/// For the TBA "?" car a comment is required and the field is highlighted;
+/// Start/Stop/Manual stay disabled until it's filled (see `view_action_buttons`).
+fn view_comment(model: crate::Model) -> View {
+    let sm = model.screens.stopwatch;
+    view! {
+        (move || {
+            let car = sm.car.get_clone();
+            let trimmed = car.trim().to_string();
+            if trimmed.is_empty() {
+                return view! {};
+            }
+            let is_tba = trimmed == "?";
+            let input_cls = if is_tba { "input is-warning" } else { "input" };
+            let label = if is_tba { "Comment (required for TBA)" } else { "Comment" };
+            view! {
+                div(class="box is-hidden-print") {
+                    div(class="field mb-0") {
+                        label(class="label is-small") { (label) }
+                        div(class="control") {
+                            input(
+                                class=input_cls,
+                                r#type="text",
+                                placeholder="Optional note",
+                                bind:value=sm.comment,
+                                on:input=move |_| {
+                                    save_comment(&sm.comment.get_clone());
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -752,14 +835,27 @@ fn view_car_picker_modal(model: crate::Model) -> View {
                 return view! {};
             }
             let entries = model.khana.event.with(|e| e.entries.clone());
-            // Current car = the provisional record's car.
-            let current_car = sm.provisional_uid.with(|uid| {
-                uid.as_ref().and_then(|u| {
-                    model.khana.runs.with(|runs| {
-                        runs.iter().find(|r| r.uid == *u).map(|r| r.car.clone())
+            // Current car = the provisional record's car, or the record being
+            // edited if it's a confirmed finish.
+            let current_car = sm
+                .provisional_uid
+                .with(|uid| {
+                    uid.as_ref().and_then(|u| {
+                        model.khana.runs.with(|runs| {
+                            runs.iter().find(|r| r.uid == *u).map(|r| r.car.clone())
+                        })
                     })
                 })
-            }).unwrap_or_default();
+                .or_else(|| {
+                    sm.editing_observation.with(|uid| {
+                        uid.as_ref().and_then(|u| {
+                            model.khana.runs.with(|runs| {
+                                runs.iter().find(|r| r.uid == *u).map(|r| r.car.clone())
+                            })
+                        })
+                    })
+                })
+                .unwrap_or_default();
             // Initialize selected_picker_car to the current car on open.
             if sm.selected_picker_car.with(|c| c.is_none()) {
                 sm.selected_picker_car.set(Some(current_car.clone()));
@@ -857,14 +953,53 @@ fn view_car_picker_modal(model: crate::Model) -> View {
             let apply_car = {
                 let close = close_picker;
                 move || {
-                    if let Some(new_car) = sm.selected_picker_car.get_clone() {
-                        if let Some(uid) = sm.provisional_uid.get_clone() {
-                            model.khana.runs.update(|runs| {
-                                if let Some(r) = runs.iter_mut().find(|r| r.uid == uid) {
-                                    r.car = new_car;
-                                }
-                            });
-                        }
+                    let Some(new_car) = sm.selected_picker_car.get_clone() else {
+                        close();
+                        return;
+                    };
+                    if let Some(uid) = sm.provisional_uid.get_clone() {
+                        // Provisional (not yet sent): patch the run; Confirm
+                        // sends it with the new car.
+                        model.khana.runs.update(|runs| {
+                            if let Some(r) = runs.iter_mut().find(|r| r.uid == uid) {
+                                r.car = new_car;
+                            }
+                        });
+                    } else if let Some(uid) = sm.editing_observation.get_clone() {
+                        // Confirmed finish being edited: amend with the new car
+                        // and close the edit form.
+                        use crate::event::{KTime, KTimeTime};
+                        let t = sm.edit_time.get_clone();
+                        let f = sm.edit_flags.get();
+                        let g = sm.edit_garage.get();
+                        let st = sm.edit_status.get_clone();
+                        let Some(time_ds) = crate::event::parse_time_ds(&t, &st) else {
+                            show_feedback(model, "Enter a valid time in seconds");
+                            close();
+                            return;
+                        };
+                        let kt = if st == "dnf" {
+                            KTime::DNF
+                        } else if st == "fts" {
+                            KTime::FTS
+                        } else if st == "wd" {
+                            KTime::WD
+                        } else if st == "dns" {
+                            KTime::NOSHO
+                        } else {
+                            KTime::Time(KTimeTime {
+                                time_ds,
+                                flags: f,
+                                garage: g,
+                            })
+                        };
+                        let c = sm.edit_comment.get_clone();
+                        let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
+                        crate::khana::helpers::enqueue_amend(
+                            model, &uid, sm.test.get(), &new_car, &kt, comment_opt,
+                        );
+                        sm.editing_observation.set(None);
+                        sm.edit_uid.set(None);
                     }
                     close();
                 }
