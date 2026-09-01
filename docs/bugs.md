@@ -264,6 +264,19 @@ Live view matches replay. Local `enqueue_amend`/`enqueue_void` use the same pure
 helpers, so local and remote can't diverge. Rejected messages still stay in the
 log and never reach state.
 
+### ~~B11. Manual time leaves the car staged / waiting on a Stop~~ ✅ DONE
+**File:** `src/khana/page/stopwatch.rs` — `commit()`; `src/khana/helpers.rs` —
+`view_provisional_buttons` Confirm, new `void_pending_starts_for_car`
+**Severity:** Low
+**Detail:** If a car is on course (START sent, pending) and the official records a
+manual time instead, confirming the manual finish leaves the pending START in
+place — the car stays staged and the Stop button keeps showing. `manual_time`
+creates a finish with `refs: vec![]`, so `pending_starts`/`pending_for_car`
+(which only pair a start to a finish via refs) still consider the car on course.
+**Fix:** On confirm of a refs-less (manual) finish, void any pending start(s) for
+that car (via `enqueue_void`), so the car leaves the course and other devices see
+the start voided. The start stays in the log as a voided record.
+
 ---
 
 ## Priority Suggestion

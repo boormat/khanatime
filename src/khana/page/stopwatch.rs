@@ -239,6 +239,11 @@ fn commit(model: crate::Model) {
     };
     let car = record.car.clone();
     let test = record.test;
+    // A manual timed run (no attached start/stop) supersedes any start still
+    // on course: void it so the car isn't left staged waiting on a Stop.
+    if record.refs.is_empty() {
+        crate::khana::helpers::void_pending_starts_for_car(model, &car, test);
+    }
     // Build KTime from the record's current penalty fields.
     let ktime = crate::khana::event::finish_to_ktime(&record);
     model.khana.scores.update(|s| {

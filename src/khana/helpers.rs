@@ -137,6 +137,19 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) 
     crate::update(model, crate::Msg::Reload);
 }
 
+/// A manual timed run supersedes any start still on course for the same car:
+/// void the pending start(s) so the car isn't left staged waiting on a Stop.
+pub fn void_pending_starts_for_car(model: crate::Model, car: &str, test: u8) {
+    let pending: Vec<String> = crate::event::pending_starts(&model.khana.runs.get_clone(), test)
+        .iter()
+        .filter(|s| s.car == car)
+        .map(|s| s.uid.clone())
+        .collect();
+    for uid in pending {
+        enqueue_void(model, &uid, test, car);
+    }
+}
+
 /// Return true if the selected car is "?" and the comment is empty, setting
 /// feedback when so.  Shared by stopwatch, finish, and start screens.
 pub fn check_unknown_comment(
@@ -361,6 +374,14 @@ fn view_provisional_buttons(
                         runs.iter().find(|r| r.uid == prov_uid).cloned()
                     });
                     if let Some(record) = record {
+                        // A manual timed run (no attached start/stop) supersedes
+                        // any start still on course: void it so the car isn't
+                        // left staged waiting on a Stop.
+                        if record.refs.is_empty() {
+                            crate::khana::helpers::void_pending_starts_for_car(
+                                model, &car, record.test,
+                            );
+                        }
                         crate::khana::helpers::enqueue_run(model, &record);
                     }
                     let test = model.screens.stopwatch.test.get();
