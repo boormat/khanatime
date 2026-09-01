@@ -106,17 +106,10 @@ pub fn enqueue_amend(
     sign_timing_event(&mut te).expect("signing failed");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
-    model.khana.runs.update(|runs| {
-        if let Some(r) = runs.iter_mut().find(|r| r.uid == target_uid) {
-            r.test = te.test;
-            r.car = te.car.clone();
-            r.time_ds = te.time_ds;
-            r.status = te.status.clone();
-            r.flags = te.flags;
-            r.official_id = te.official_id.clone();
-            r.comment = te.comment.clone();
-        }
-    });
+    model
+        .khana
+        .runs
+        .update(|runs| crate::event::apply_amend_to_runs(runs, &te));
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
     crate::update(model, crate::Msg::Reload);
@@ -135,11 +128,10 @@ pub fn enqueue_void(model: crate::Model, target_uid: &str, test: u8, car: &str) 
     sign_timing_event(&mut te).expect("signing failed");
     let sender = model.sync.identity.get_clone();
     crate::log::enqueue_pending(&id, crate::log::LogMsg::new_pending(te.body(), sender));
-    model.khana.runs.update(|runs| {
-        if let Some(r) = runs.iter_mut().find(|r| r.uid == target_uid) {
-            r.voided = true;
-        }
-    });
+    model
+        .khana
+        .runs
+        .update(|runs| crate::event::apply_void_to_runs(runs, &te));
     crate::sync::flush_pending(model);
     crate::app::refresh_feed(model);
     crate::update(model, crate::Msg::Reload);

@@ -1747,6 +1747,34 @@ pub fn record_from_timing(te: &crate::timing_event::TimingEvent) -> RunRecord {
     }
 }
 
+/// Apply an `amend` wire message to the run it targets (mirrors the in-place
+/// patch done when an official corrects an observation).  Used by both the
+/// local edit path and the sync merge sink so they can't diverge.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
+pub fn apply_amend_to_runs(runs: &mut [RunRecord], te: &crate::timing_event::TimingEvent) {
+    let Some(target) = &te.target else { return };
+    if let Some(r) = runs.iter_mut().find(|r| &r.uid == target) {
+        r.test = te.test;
+        r.car = te.car.clone();
+        r.time_ds = te.time_ds;
+        r.status = te.status.clone();
+        r.flags = te.flags;
+        r.official_id = te.official_id.clone();
+        r.comment = te.comment.clone();
+    }
+}
+
+/// Apply a `void` wire message to the run it targets (marks it voided, so it
+/// drops out of pairing/scores).  Used by both the local void path and the
+/// sync merge sink so they can't diverge.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
+pub fn apply_void_to_runs(runs: &mut [RunRecord], te: &crate::timing_event::TimingEvent) {
+    let Some(target) = &te.target else { return };
+    if let Some(r) = runs.iter_mut().find(|r| &r.uid == target) {
+        r.voided = true;
+    }
+}
+
 /// Decode an event-setup message body (`khanatime_setup:<json>`).
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))] // wasm sync sink + tests
 pub fn from_setup_body(body: &str) -> Option<EventInfo> {
@@ -2172,6 +2200,139 @@ mod tests {
         assert_eq!(r.status.as_deref(), Some("clean"));
         assert_eq!(r.flags, Some(1));
         assert_eq!(r.official_id.as_deref(), Some("u"));
+    }
+
+    #[test]
+    fn apply_amend_patches_target_run() {
+        use crate::timing_event::TimingEvent;
+        let mut runs = vec![record_from_timing(&TimingEvent {
+            r#type: "finish".into(),
+            event_id: "ev".into(),
+            uid: "F1".into(),
+            target: None,
+            test: 1,
+            car: "17".into(),
+            ts: 100,
+            time_ds: Some(400),
+            status: Some("clean".into()),
+            flags: Some(0),
+            official_id: Some("a".into()),
+            comment: None,
+            refs: vec![],
+            signing_key: None,
+            signature: None,
+        })];
+        let amend = TimingEvent {
+            r#type: "amend".into(),
+            event_id: "ev".into(),
+            uid: "A1".into(),
+            target: Some("F1".into()),
+            test: 1,
+            car: "17".into(),
+            ts: 200,
+            time_ds: Some(550),
+            status: Some("clean".into()),
+            flags: Some(2),
+            official_id: None,
+            comment: Some("re-run".into()),
+            refs: vec![],
+            signing_key: None,
+            signature: None,
+        };
+        apply_amend_to_runs(&mut runs, &amend);
+        let r = &runs[0];
+        assert_eq!(r.time_ds, Some(550));
+        assert_eq!(r.flags, Some(2));
+        assert_eq!(r.status.as_deref(), Some("clean"));
+        assert_eq!(r.comment.as_deref(), Some("re-run"));
+        assert!(!r.voided);
+    }
+
+    #[test]
+    fn apply_amend_without_target_is_noop() {
+        use crate::timing_event::TimingEvent;
+        let noop = TimingEvent {
+            r#type: "amend".into(),
+            event_id: "ev".into(),
+            uid: "X".into(),
+            target: None,
+            test: 1,
+            car: "17".into(),
+            ts: 1,
+            time_ds: Some(9),
+            status: None,
+            flags: None,
+            official_id: None,
+            comment: None,
+            refs: vec![],
+            signing_key: None,
+            signature: None,
+        };
+        let mut runs = vec![record_from_timing(&TimingEvent {
+            r#type: "finish".into(),
+            event_id: "ev".into(),
+            uid: "F1".into(),
+            target: None,
+            test: 1,
+            car: "17".into(),
+            ts: 1,
+            time_ds: Some(4),
+            status: Some("clean".into()),
+            flags: Some(0),
+            official_id: None,
+            comment: None,
+            refs: vec![],
+            signing_key: None,
+            signature: None,
+        })];
+        apply_amend_to_runs(&mut runs, &noop);
+        assert_eq!(runs[0].time_ds, Some(4));
+    }
+
+    #[test]
+    fn apply_void_marks_only_target_voided() {
+        use crate::timing_event::TimingEvent;
+        let base = |uid: &str, ts: i64| TimingEvent {
+            r#type: "finish".into(),
+            event_id: "ev".into(),
+            uid: uid.into(),
+            target: None,
+            test: 1,
+            car: "17".into(),
+            ts,
+            time_ds: Some(400),
+            status: Some("clean".into()),
+            flags: Some(0),
+            official_id: None,
+            comment: None,
+            refs: vec![],
+            signing_key: None,
+            signature: None,
+        };
+        let mut runs = vec![
+            record_from_timing(&base("F1", 100)),
+            record_from_timing(&base("F2", 200)),
+        ];
+        let void = TimingEvent {
+            r#type: "void".into(),
+            event_id: "ev".into(),
+            uid: "V1".into(),
+            target: Some("F1".into()),
+            test: 1,
+            car: "17".into(),
+            ts: 300,
+            time_ds: None,
+            status: None,
+            flags: None,
+            official_id: None,
+            comment: None,
+            refs: vec![],
+            signing_key: None,
+            signature: None,
+        };
+        apply_void_to_runs(&mut runs, &void);
+        assert!(runs[0].voided);
+        assert!(!runs[1].voided);
     }
 
     #[test]

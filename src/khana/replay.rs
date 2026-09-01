@@ -50,7 +50,7 @@ pub fn replay(log: &[LogMsg], pending: &[LogMsg]) -> (EventInfo, Vec<ScoreData>,
 /// run itself stays in the log for audit).  Last-writer-wins: a later run with
 /// the same uid overwrote the earlier one in `add_run`, so this is
 /// order-independent.
-fn scores_from_runs(runs: &[RunRecord]) -> Vec<ScoreData> {
+pub(crate) fn scores_from_runs(runs: &[RunRecord]) -> Vec<ScoreData> {
     let mut scores: Vec<ScoreData> = vec![];
     for r in runs.iter().filter(|r| !r.voided) {
         if r.r#type == crate::event::RUN_START && r.status.as_deref() == Some("dns") {

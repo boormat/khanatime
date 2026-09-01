@@ -1198,5 +1198,23 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
             crate::event::upsert_ktime(s, te.test, &te.car, kt);
         });
     }
+    if te.r#type == "amend" || te.r#type == "void" {
+        // A remote official corrected/voided an observation: mirror it into
+        // live state so this device's results catch up without a reload.
+        model.khana.runs.update(|runs| {
+            if te.r#type == "amend" {
+                crate::event::apply_amend_to_runs(runs, &te);
+            } else {
+                crate::event::apply_void_to_runs(runs, &te);
+            }
+        });
+        // Recompute scores from runs so the Live view matches replay: amend
+        // changes the score cell, void drops it (and may re-pair starts).
+        let runs = model.khana.runs.get_clone();
+        model
+            .khana
+            .scores
+            .set(crate::khana::replay::scores_from_runs(&runs));
+    }
     crate::update(model, crate::Msg::Reload);
 }

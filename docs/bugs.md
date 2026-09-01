@@ -249,6 +249,21 @@ visible; do not assume it was dropped.
 - DNS is only available on the manual edit path (see B8).
 - Retain the associated list of timing events in the run edit.
 
+### ~~B10. Remote amend/void never applied to live state~~ ✅ DONE
+**Files:** `src/sync.rs` (`handle_incoming`), `src/khana/event.rs`
+(`apply_amend_to_runs` / `apply_void_to_runs`), `src/khana/replay.rs`
+(`scores_from_runs` now `pub(crate)`), `src/khana/helpers.rs`
+(`enqueue_amend`/`enqueue_void` now share the helpers)
+**Severity:** High
+**Detail:** `handle_incoming` only mirrored `RUN_START`/`RUN_FINISH` into live
+runs/scores. A remote official's signed `amend`/`void` landed in the durable log
+but never touched live state — this device showed stale results until reload.
+**Fix:** After the signature gate, `amend` patches the target run and `void`
+marks it voided, then scores are recomputed from runs (`scores_from_runs`) so the
+Live view matches replay. Local `enqueue_amend`/`enqueue_void` use the same pure
+helpers, so local and remote can't diverge. Rejected messages still stay in the
+log and never reach state.
+
 ---
 
 ## Priority Suggestion
