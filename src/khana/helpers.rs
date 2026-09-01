@@ -237,6 +237,7 @@ pub fn view_timing_log(
                                 Some("fts") => KTime::FTS,
                                 Some("wd") => KTime::WD,
                                 Some("nosho") => KTime::NOSHO,
+                                Some("dns") => KTime::NOSHO,
                                 _ => match r.time_ds {
                                     Some(ds) => KTime::Time(KTimeTime {
                                         time_ds: ds,
@@ -358,6 +359,7 @@ fn view_provisional_buttons(
                     let kt = if st == "dnf" { KTime::DNF }
                         else if st == "fts" { KTime::FTS }
                         else if st == "wd" { KTime::WD }
+                        else if st == "dns" { KTime::NOSHO }
                         else { KTime::Time(KTimeTime { time_ds, flags: f, garage: g }) };
                     let c: String = comment_sig.get_clone();
                     let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
@@ -434,6 +436,7 @@ fn view_edit_buttons(
                     let kt = if st == "dnf" { KTime::DNF }
                         else if st == "fts" { KTime::FTS }
                         else if st == "wd" { KTime::WD }
+                        else if st == "dns" { KTime::NOSHO }
                         else { KTime::Time(KTimeTime { time_ds, flags: f, garage: g }) };
                     let c: String = comment_sig.get_clone();
                     let comment_opt = if c.trim().is_empty() { None } else { Some(c) };
@@ -470,6 +473,11 @@ fn view_edit_row(
     let r_for_edit = r.clone();
     let car = r.car.clone();
 
+    // A manual timed run has no attached start/stop observations; start/stop
+    // derived finishes carry them in `refs`.  Only manual runs get an editable
+    // time field and the DNS chip (B8/B9).
+    let is_manual = r.refs.is_empty();
+
     let time_ds_val = r.time_ds.unwrap_or(0);
     let entry_name = model.khana.event.with(|e| {
         e.entries
@@ -496,6 +504,10 @@ fn view_edit_row(
         })
         .collect();
     let time_display_str = format!("{:.1}s", time_ds_val as f32 / 10.0);
+    // Separate clones so each view! closure moves its own copy (the macro
+    // captures referenced values into per-closure moves).
+    let time_display_header = time_display_str.clone();
+    let time_display_body = time_display_str.clone();
 
     // Populate the edit-form signals for this record if not already set.
     // populate_edit only calls .set() on pre-existing signals (created once
@@ -554,25 +566,36 @@ fn view_edit_row(
                 div(class="level-left") {
                     (crate::view::car_tag(&car_display))
                     span(class="has-text-weight-semibold ml-2") { (entry_name) }
-                    span(class="has-text-grey ml-2 is-size-7") { (time_display_str) }
+                    span(class="has-text-grey ml-2 is-size-7") { (time_display_header) }
                 }
             }
             div(class="columns is-mobile is-vcentered is-gapless mb-2") {
                 div(class="column") {
                     p(class="label is-small mb-1") { "Time (s)" }
-                    input(
-                        class="input is-small",
-                        r#type="text",
-                        placeholder="e.g. 12.5",
-                        prop:value=move || time_sig.get_clone(),
-                        on:input=move |e: web_sys::Event| {
-                            if let Some(target) = e.target() {
-                                if let Some(el) = target.dyn_ref::<web_sys::HtmlInputElement>() {
-                                    time_sig.set(el.value());
-                                }
+                    (if is_manual {
+                        view! {
+                            input(
+                                class="input is-small",
+                                r#type="text",
+                                placeholder="e.g. 12.5",
+                                prop:value=move || time_sig.get_clone(),
+                                on:input=move |e: web_sys::Event| {
+                                    if let Some(target) = e.target() {
+                                        if let Some(el) = target.dyn_ref::<web_sys::HtmlInputElement>() {
+                                            time_sig.set(el.value());
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                    } else {
+                        view! {
+                            div {
+                                span(class="has-text-weight-semibold") { (time_display_body) }
+                                span(class="has-text-grey is-size-7 ml-2") { "start/stop" }
                             }
-                        },
-                    )
+                        }
+                    })
                 }
                 div(class="column") {
                     p(class="label is-small mb-1") { "Comment" }
@@ -591,7 +614,7 @@ fn view_edit_row(
                     )
                 }
             }
-            (penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds_val, false, || {}))
+            (penalty::view_penalty_row(status_sig, flags_sig, garage_sig, time_ds_val, is_manual, || {}))
             (attached_obs)
             (buttons)
         }

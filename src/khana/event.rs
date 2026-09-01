@@ -1719,6 +1719,7 @@ pub fn finish_to_ktime(r: &RunRecord) -> KTime {
         Some("fts") => KTime::FTS,
         Some("wd") => KTime::WD,
         Some("nosho") => KTime::NOSHO,
+        Some("dns") => KTime::NOSHO,
         _ => KTime::Time(KTimeTime {
             time_ds: r.time_ds.unwrap_or(0),
             flags: r.flags.unwrap_or(0),
@@ -2167,6 +2168,14 @@ mod tests {
                 garage: true
             })
         );
+        // Manual-path DNS (status "dns") must score NOSHO, like "nosho".
+        let mut dns = run("finish", 1, "7", 0);
+        dns.status = Some("dns".into());
+        dns.time_ds = Some(400);
+        assert_eq!(finish_to_ktime(&dns), KTime::NOSHO);
+        let mut nosho = run("finish", 1, "7", 0);
+        nosho.status = Some("nosho".into());
+        assert_eq!(finish_to_ktime(&nosho), KTime::NOSHO);
     }
 
     #[test]

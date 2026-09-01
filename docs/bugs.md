@@ -217,7 +217,7 @@ when no edit is open (the edit row itself doesn't use `now` — `view_edit_row` 
 the closure and subscribe to `tick` only when no edit is open; closing the edit
 re-subscribes. Age stamps briefly freeze while an edit is open (accepted trade-off).
 
-### B8. DNS option missing from run edit
+### ~~B8. DNS option missing from run edit~~ ✅ DONE
 **File:** `src/khana/page/penalty.rs` — `view_penalty_row` (line 211, DNS chip gated
 on `is_manual`); `src/khana/helpers.rs` (line 575, always passes `is_manual=false`)
 **Severity:** Medium
@@ -227,10 +227,13 @@ The only call site is the run-edit form, which always passes `is_manual=false`
 records created via the manual timing button.
 **Target (design decision):** DNS is available on the **manual edit path** (manual-timed /
 provisional records). Per the preferred model it should NOT appear on start/stop-derived
-runs — "DNS is created only via the manual edit path." (Simplest acceptable per user:
-show DNS always, but the manual-path-only model is preferred.)
+runs — "DNS is created only via the manual edit path."
+**Fix:** `view_edit_row` now computes `is_manual = r.refs.is_empty()` and passes it to
+`view_penalty_row`, so the DNS chip shows only for manual runs. Restored the dropped
+`"dns" → KTime::NOSHO` mapping in `finish_to_ktime`, the Confirm/Save KTime builders,
+and the log display, so a manual DNS finish scores and renders as DNS.
 
-### B9. Run edit regression: start/stop runs must not be hand-editable
+### ~~B9. Run edit regression: start/stop runs must not be hand-editable~~ ✅ DONE
 **Files:** `src/khana/helpers.rs` — `view_edit_row` (lines 532-579); prior version at
 commit `9fd8a957`; associated list added in `3ceca8d`
 **Severity:** High
@@ -248,6 +251,12 @@ visible; do not assume it was dropped.
   not by editing a derived run's time in place.
 - DNS is only available on the manual edit path (see B8).
 - Retain the associated list of timing events in the run edit.
+**Fix:** `view_edit_row` renders the editable time field only when `is_manual`
+(`refs.is_empty()`); start/stop-derived runs show the computed time read-only (with a
+"start/stop" hint), everywhere including the provisional confirm (decision A). Manual
+timed runs still get the editable field + DNS. Penalties/comment stay editable on both;
+correction path is the log-row void button + the stopwatch Manual button (B11 clears
+the staged start).
 
 ### ~~B10. Remote amend/void never applied to live state~~ ✅ DONE
 **Files:** `src/sync.rs` (`handle_incoming`), `src/khana/event.rs`

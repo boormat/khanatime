@@ -546,6 +546,33 @@ mod tests {
     }
 
     #[test]
+    fn manual_dns_finish_scores_nosho() {
+        // B8: a DNS recorded through the manual edit path is a finish with
+        // status "dns" and must score NOSHO (mirrors the DNS-start case).
+        let ev = base_event();
+        let log = vec![
+            room(100, setup_body(&ev)),
+            room(
+                200,
+                signed_obs_te_status(
+                    "finish",
+                    "ev-uid-demo",
+                    "f1",
+                    None,
+                    1,
+                    "7",
+                    300,
+                    Some(400),
+                    "dns",
+                ),
+            ),
+        ];
+        let (_, scores, _) = replay(&log, &[]);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].time, KTime::NOSHO);
+    }
+
+    #[test]
     fn amend_before_target_applies_when_target_lands() {
         let ev = base_event();
         let log = vec![
