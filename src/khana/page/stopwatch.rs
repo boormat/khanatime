@@ -397,6 +397,27 @@ pub fn restore_session(model: crate::Model) {
     }
 }
 
+/// Clear transient confirm/edit state (provisional finish, open edit forms,
+/// manual-time input).  Called when the event is loaded/cleared and when a
+/// stage is entered/left, so a stale provisional can't hide the timing UI on
+/// the next visit (B12).  Car/comment are session-persisted and kept.
+pub fn reset_transient(model: crate::Model) {
+    let sm = model.screens.stopwatch;
+    sm.provisional_uid.set(None);
+    sm.editing_observation.set(None);
+    sm.edit_uid.set(None);
+    sm.edit_time.set(String::new());
+    sm.edit_flags.set(0);
+    sm.edit_garage.set(false);
+    sm.edit_status.set(String::new());
+    sm.edit_comment.set(String::new());
+    sm.time.set(String::new());
+    sm.feedback.set(None);
+    sm.show_car_picker.set(false);
+    sm.selected_picker_car.set(None);
+    penalty::clear(sm.penalty);
+}
+
 /// Compute runs remaining per car and for the unknown "?" car.
 fn compute_runs_remaining(
     model: crate::Model,

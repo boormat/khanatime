@@ -277,6 +277,22 @@ creates a finish with `refs: vec![]`, so `pending_starts`/`pending_for_car`
 that car (via `enqueue_void`), so the car leaves the course and other devices see
 the start voided. The start stays in the log as a voided record.
 
+### ~~B12. Stale provisional hides timing UI after event reload~~ ✅ DONE
+**File:** `src/khana/page/stopwatch.rs` (`reset_transient`),
+`src/khana/page/timing.rs` (`EnterStage`/`LeaveStage`),
+`src/app.rs` (`SetEvent`/`ClearEvent`/`DeleteEvent`)
+**Severity:** Medium
+**Detail:** The stopwatch top section (car chips + Start/Stop/Manual buttons) is
+hidden while a provisional finish confirm is open (`provisional_uid` set). If the
+official leaves without confirming and then reloads/reopens the event, the
+replayed runs no longer contain the provisional (it was never enqueued), but
+`provisional_uid`/`editing_observation` survive — so the timing page shows only
+the Log ("No timing observations yet") with no buttons or car chips.
+**Fix:** Clear the transient confirm/edit state whenever the event is loaded or
+cleared (`SetEvent`/`ClearEvent`/`DeleteEvent`) and when entering/leaving a stage,
+so a stale provisional can't hide the UI. Car/comment are session-persisted and
+kept.
+
 ---
 
 ## Priority Suggestion

@@ -33,12 +33,15 @@ pub fn update(model: crate::Model, msg: Msg) {
         Msg::EnterStage(n) => {
             tm.active_stage.set(Some(n));
             save_active_stage(n);
-            // Also set the stopwatch test signal so sub-views pick it up
+            // Also set the stopwatch test signal so sub-views pick it up.
             model.screens.stopwatch.test.set(n);
+            // Drop any stale provisional/edit state from a previous visit.
+            crate::khana::page::stopwatch::reset_transient(model);
         }
         Msg::LeaveStage => {
             tm.active_stage.set(None);
             clear_active_stage();
+            crate::khana::page::stopwatch::reset_transient(model);
         }
     }
 }
