@@ -293,6 +293,25 @@ cleared (`SetEvent`/`ClearEvent`/`DeleteEvent`) and when entering/leaving a stag
 so a stale provisional can't hide the UI. Car/comment are session-persisted and
 kept.
 
+### ~~B13. Event-scoped UI state hangover (car/comment, start/finish inputs, stage)~~ ✅ DONE
+**Files:** `src/app.rs` (`reset_event_ui`), `src/khana/page/stopwatch.rs`
+(`clear_session`), `src/khana/page/finish.rs` / `start.rs` (`reset`),
+`src/khana/page/timing.rs` (`reset_stage`), `src/khana/page/event.rs`
+(`switch_to_draft`)
+**Severity:** Medium
+**Detail:** Audit follow-up to B12. sessionStorage car/comment is a deliberate
+"survive page refresh" feature, but it was also carried across **event** changes:
+a car/comment/penalty selected in event A, the timing stage selection, and
+start/finish input state all hung over when a different event was loaded (or a
+fresh draft created/cloned).
+**Fix:** Central `app::reset_event_ui` clears on event load/clear/delete AND on
+create/clone draft: stopwatch transient + session car/comment, timing stage,
+start/finish inputs. Kept intentionally: view preferences (results sort/mode,
+chat expanded) and the event-config edit context.
+**Remaining (not fixed):** the event-config edit context (`edit_event`/`editing`)
+can survive an event switch — riskier to reset because of the create/copy/discard
+flow (`pre_create`, `edit_base`); follow up if it shows up in practice.
+
 ---
 
 ## Priority Suggestion

@@ -398,9 +398,10 @@ pub fn restore_session(model: crate::Model) {
 }
 
 /// Clear transient confirm/edit state (provisional finish, open edit forms,
-/// manual-time input).  Called when the event is loaded/cleared and when a
-/// stage is entered/left, so a stale provisional can't hide the timing UI on
-/// the next visit (B12).  Car/comment are session-persisted and kept.
+/// manual-time input).  Called when a stage is entered/left and as part of the
+/// event-change reset, so a stale provisional can't hide the timing UI (B12).
+/// Car/comment are kept here — they belong to the timing session and are only
+/// dropped when the event itself changes (see [`clear_session`]).
 pub fn reset_transient(model: crate::Model) {
     let sm = model.screens.stopwatch;
     sm.provisional_uid.set(None);
@@ -416,6 +417,17 @@ pub fn reset_transient(model: crate::Model) {
     sm.show_car_picker.set(false);
     sm.selected_picker_car.set(None);
     penalty::clear(sm.penalty);
+}
+
+/// Drop the session-persisted car/comment — called when the event changes so a
+/// selection from a previous event can't carry over.  Same-event page refresh
+/// still restores them via sessionStorage (the "session" design intent).
+pub fn clear_session(model: crate::Model) {
+    let sm = model.screens.stopwatch;
+    sm.car.set(String::new());
+    save_car("");
+    sm.comment.set(String::new());
+    save_comment("");
 }
 
 /// Compute runs remaining per car and for the unknown "?" car.

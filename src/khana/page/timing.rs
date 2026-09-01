@@ -64,6 +64,16 @@ fn clear_active_stage() {
     }
 }
 
+/// Drop any persisted stage selection and reset the stopwatch test.  Called
+/// when the event is loaded/cleared/deleted so a stale stage from a previous
+/// event can't stick (B12 follow-up).
+pub fn reset_stage(model: crate::Model) {
+    let tm = model.screens.timing;
+    tm.active_stage.set(None);
+    clear_active_stage();
+    model.screens.stopwatch.test.set(1);
+}
+
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }

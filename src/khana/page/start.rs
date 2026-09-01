@@ -30,6 +30,15 @@ pub fn init() -> Model {
     }
 }
 
+/// Clear per-entry input state — called when the event changes so a car from a
+/// previous event can't carry over (B12 family).
+pub fn reset(model: crate::Model) {
+    let sm = model.screens.start;
+    sm.car.set(String::new());
+    sm.comment.set(String::new());
+    sm.feedback.set(None);
+}
+
 pub fn update(model: crate::Model, msg: Msg) {
     match msg {
         Msg::Test(t) => model.screens.start.test.set(t),

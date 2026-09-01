@@ -509,7 +509,7 @@ pub fn update(model: Model, msg: Msg) {
             model.sync.room.set(None);
             #[cfg(target_arch = "wasm32")]
             crate::services::matrix::set_room(None);
-            crate::khana::page::stopwatch::reset_transient(model);
+            crate::app::reset_event_ui(model);
             crate::update(model, Msg::Show(Screen::Home));
         }
         Msg::DeleteEvent(id) => {
@@ -531,7 +531,7 @@ pub fn update(model: Model, msg: Msg) {
                 model.sync.conn.set(crate::app::ConnState::Idle);
                 #[cfg(target_arch = "wasm32")]
                 crate::services::matrix::set_room(None);
-                crate::khana::page::stopwatch::reset_transient(model);
+                crate::app::reset_event_ui(model);
             }
             model
                 .screens
@@ -559,7 +559,7 @@ pub fn update(model: Model, msg: Msg) {
             model.screens.entry_app.show_form.set(false);
             // And any pending "open the parcel's event" offer.
             model.sync.parcel_open_event.set(None);
-            crate::khana::page::stopwatch::reset_transient(model);
+            crate::app::reset_event_ui(model);
             refresh_feed(model);
             crate::khana::page::results::update(model, crate::khana::page::results::Msg::Reload);
             crate::sync::join_current_event(model);
@@ -1041,6 +1041,19 @@ fn listen_for_tab_sync(model: Model) {
 // ------ ------
 //     Log / feed helpers
 // ------ ------
+
+/// Reset event-scoped UI state when the loaded event changes (load, clear,
+/// delete, create/clone draft): stopwatch transient+session (car/comment),
+/// timing stage selection, start/finish input state.  View preferences
+/// (results sort/mode, chat expanded) and the event-config edit context are
+/// intentionally left alone.
+pub fn reset_event_ui(model: Model) {
+    crate::khana::page::stopwatch::reset_transient(model);
+    crate::khana::page::stopwatch::clear_session(model);
+    crate::khana::page::timing::reset_stage(model);
+    crate::khana::page::finish::reset(model);
+    crate::khana::page::start::reset(model);
+}
 
 /// Rebuild the chat feed from the current event's stored log + pending, and
 /// refresh the setup screen's "needs sync" flag (unsent setup manifest).

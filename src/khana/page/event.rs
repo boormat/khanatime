@@ -631,6 +631,7 @@ fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
     model.screens.entry_app.admin.set(false);
     model.screens.entry_app.show_form.set(false);
     model.sync.parcel_open_event.set(None);
+    crate::app::reset_event_ui(model);
     crate::app::refresh_feed(model);
     let em = model.screens.setup;
     em.edit_event.set(Some(ev));

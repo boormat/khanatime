@@ -73,6 +73,18 @@ fn select_pending(model: crate::Model, r: RunRecord) {
     sm.feedback.set(None);
 }
 
+/// Clear per-entry input state — called when the event changes so a car from a
+/// previous event can't carry over (B12 family).
+pub fn reset(model: crate::Model) {
+    let sm = model.screens.finish;
+    sm.car.set(String::new());
+    sm.comment.set(String::new());
+    sm.time.set(String::new());
+    sm.mode.set(Mode::Car);
+    sm.feedback.set(None);
+    crate::khana::page::penalty::clear(sm.penalty);
+}
+
 /// Parse a decimal-seconds string to deciseconds: "45.25" -> 452.
 fn time_to_ds(s: &str) -> u16 {
     s.trim()
