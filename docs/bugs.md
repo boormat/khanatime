@@ -202,7 +202,7 @@ one stays in place. Rejected messages remain in the durable log (never deleted).
 - `RunRecord`/state builds only for `accepted` verdicts.
 - Removed the panic-on-missing-key paths; signing is now infallible.
 
-### B7. Run edit: 1s tick refresh steals focus from the time field
+### ~~B7. Run edit: 1s tick refresh steals focus from the time field~~ ✅ DONE
 **File:** `src/khana/helpers.rs` — `view_timing_log` (line 182), `view_edit_row` (line 532)
 **Severity:** High
 **Detail:** The Log box renders inside a closure that subscribes to `model.tick.get()`
@@ -213,6 +213,9 @@ immediately after clicking into it — making it effectively un-editable.
 **Target:** The edit form must not be re-created on tick. Only subscribe to `tick`
 when no edit is open (the edit row itself doesn't use `now` — `view_edit_row` reads
 `js_sys::Date::now()` directly at line 474). Non-edit rows keep live age stamps.
+**Fix:** Hoisted the `editing`/`provisional`/`effective_editing` reads to the top of
+the closure and subscribe to `tick` only when no edit is open; closing the edit
+re-subscribes. Age stamps briefly freeze while an edit is open (accepted trade-off).
 
 ### B8. DNS option missing from run edit
 **File:** `src/khana/page/penalty.rs` — `view_penalty_row` (line 211, DNS chip gated

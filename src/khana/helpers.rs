@@ -179,8 +179,18 @@ pub fn view_timing_log(
         div(class="box") {
             h3(class="title is-6") { "Log" }
             (move || {
-                let _now = model.tick.get(); // subscribe to tick for live "Xs ago"
-                let now = js_sys::Date::now() as i64;
+                let editing: Option<String> = editing_uid.as_ref().and_then(|s| s.get_clone());
+                // Auto-open provisional records in edit mode.
+                let provisional: Option<String> = provisional_uid.as_ref().and_then(|s| s.get_clone());
+                let effective_editing = editing.clone().or_else(|| provisional.clone());
+                // While an edit is open, don't subscribe to the 1s tick: re-running
+                // this closure rebuilds the edit form's inputs and drops focus (B7).
+                let now: i64 = if effective_editing.is_some() {
+                    js_sys::Date::now() as i64
+                } else {
+                    let _now = model.tick.get(); // subscribe to tick for live "Xs ago"
+                    js_sys::Date::now() as i64
+                };
                 let mut runs: Vec<RunRecord> = model.khana.runs.with(|runs| {
                     runs.iter()
                         .filter(|r| r.test == test && !r.voided)
@@ -198,10 +208,6 @@ pub fn view_timing_log(
                 if runs.is_empty() {
                     return view! { p(class="help") { "No timing observations yet." } };
                 }
-                let editing: Option<String> = editing_uid.as_ref().and_then(|s| s.get_clone());
-                // Auto-open provisional records in edit mode.
-                let provisional: Option<String> = provisional_uid.as_ref().and_then(|s| s.get_clone());
-                let effective_editing = editing.clone().or_else(|| provisional.clone());
                 let views: Vec<View> = runs
                     .iter()
                     .map(|r| {
