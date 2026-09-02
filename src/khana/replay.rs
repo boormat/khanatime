@@ -212,7 +212,7 @@ mod tests {
             signing_key: None,
             signature: None,
         };
-        let keys = crate::signing::DeviceKeys::generate("tester".into(), "D1".into());
+        let keys = crate::signing::DeviceKeys::generate();
         te.sign_with(&keys).expect("sign");
         te
     }
@@ -369,7 +369,7 @@ mod tests {
         time_ds: Option<u16>,
     ) -> TimingEvent {
         let mut te = raw_obs_te(r#type, event_id, uid, target, test, car, ts, time_ds);
-        let keys = crate::signing::DeviceKeys::generate("tester".into(), "D1".into());
+        let keys = crate::signing::DeviceKeys::generate();
         te.sign_with(&keys).expect("sign");
         te
     }
@@ -420,7 +420,7 @@ mod tests {
     ) -> String {
         let mut te = raw_obs_te(r#type, event_id, uid, target, test, car, ts, time_ds);
         te.status = Some(status.into());
-        let keys = crate::signing::DeviceKeys::generate("tester".into(), "D1".into());
+        let keys = crate::signing::DeviceKeys::generate();
         te.sign_with(&keys).expect("sign");
         te.body()
     }
@@ -661,7 +661,7 @@ mod tests {
         let ev = base_event();
         // Sign a finish, then change the body so the signature no longer matches.
         let mut te = raw_obs_te("finish", "ev-uid-demo", "f1", None, 1, "7", 400, Some(800));
-        let keys = crate::signing::DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = crate::signing::DeviceKeys::generate();
         te.sign_with(&keys).expect("sign");
         let bad = te
             .body()

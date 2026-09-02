@@ -149,11 +149,10 @@ const DEVICE_KEY_STORAGE: &str = "kt_device_keys";
 /// Local device signing keypair.
 ///
 /// Generated on first use, persisted in localStorage.  The private key never
-/// leaves the device.
+/// leaves the device.  The key is anonymous: identity is carried separately on
+/// each record (`official_id`) and in the trust registry (`SigningKeyRecord`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeviceKeys {
-    pub user_id: String,
-    pub device_id: String,
     /// Base64-encoded Ed25519 public key (32 bytes).
     pub ed25519_public_key: String,
     /// Base64-encoded Ed25519 private key (32 bytes).
@@ -163,28 +162,20 @@ pub struct DeviceKeys {
 
 impl DeviceKeys {
     /// Generate a new keypair for this device.
-    pub fn generate(user_id: String, device_id: String) -> Self {
+    pub fn generate() -> Self {
         let mut csprng = rand_core::OsRng;
         let signing_key = SigningKey::generate(&mut csprng);
         let verifying_key = signing_key.verifying_key();
 
         Self {
-            user_id,
-            device_id,
             ed25519_public_key: BASE64.encode(verifying_key.as_bytes()),
             ed25519_private_key: Some(BASE64.encode(signing_key.to_bytes())),
         }
     }
 
     /// Wrap a public key only (cannot sign — used for verification).
-    pub fn from_public_key(
-        user_id: String,
-        device_id: String,
-        ed25519_public_key_b64: String,
-    ) -> Self {
+    pub fn from_public_key(ed25519_public_key_b64: String) -> Self {
         Self {
-            user_id,
-            device_id,
             ed25519_public_key: ed25519_public_key_b64,
             ed25519_private_key: None,
         }
@@ -275,9 +266,9 @@ impl DeviceKeys {
 
     /// Load or generate on first use.
     #[cfg(target_arch = "wasm32")]
-    pub fn load_or_generate(user_id: &str, device_id: &str) -> Self {
+    pub fn load_or_generate() -> Self {
         Self::load_from_storage().unwrap_or_else(|| {
-            let keys = Self::generate(user_id.to_owned(), device_id.to_owned());
+            let keys = Self::generate();
             let _ = keys.save_to_storage();
             keys
         })
@@ -296,8 +287,8 @@ impl DeviceKeys {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_or_generate(user_id: &str, device_id: &str) -> Self {
-        Self::generate(user_id.to_owned(), device_id.to_owned())
+    pub fn load_or_generate() -> Self {
+        Self::generate()
     }
 }
 
@@ -331,11 +322,6 @@ pub struct SigningKeyRecord {
     /// Linked Contact.user_id (manual association).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contact_id: Option<String>,
-    /// Human-readable label ("Alice's phone", "Event laptop").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    pub first_seen: i64,
-    pub last_seen: i64,
     pub status: KeyTrustStatus,
 }
 
@@ -392,9 +378,7 @@ impl SigningKeyRegistry {
 
     /// Record a key sighting.  Returns the record (new or updated).
     pub fn record_key(&mut self, public_key: &str, user_id: Option<&str>) -> &SigningKeyRecord {
-        let now = now_ms();
         if let Some(rec) = self.keys.iter_mut().find(|k| k.public_key == public_key) {
-            rec.last_seen = now;
             if let Some(uid) = user_id {
                 if rec.user_id.is_none() {
                     rec.user_id = Some(uid.to_owned());
@@ -405,9 +389,6 @@ impl SigningKeyRegistry {
                 public_key: public_key.to_owned(),
                 user_id: user_id.map(|s| s.to_owned()),
                 contact_id: None,
-                label: None,
-                first_seen: now,
-                last_seen: now,
                 status: KeyTrustStatus::Unverified,
             });
         }
@@ -551,7 +532,7 @@ mod tests {
 
     #[test]
     fn sign_and_verify_roundtrip() {
-        let keys = DeviceKeys::generate("alice".into(), "DEVICE1".into());
+        let keys = DeviceKeys::generate();
         let payload = b"hello khanatime";
         let sig = keys.sign(payload).unwrap();
         DeviceKeys::verify(payload, &sig, &keys.ed25519_public_key).unwrap();
@@ -559,8 +540,8 @@ mod tests {
 
     #[test]
     fn verify_fails_with_wrong_key() {
-        let keys1 = DeviceKeys::generate("alice".into(), "D1".into());
-        let keys2 = DeviceKeys::generate("bob".into(), "D2".into());
+        let keys1 = DeviceKeys::generate();
+        let keys2 = DeviceKeys::generate();
         let payload = b"important data";
         let sig = keys1.sign(payload).unwrap();
         assert!(DeviceKeys::verify(payload, &sig, &keys2.ed25519_public_key).is_err());
@@ -568,7 +549,7 @@ mod tests {
 
     #[test]
     fn verify_fails_with_tampered_payload() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let payload = b"original data";
         let sig = keys.sign(payload).unwrap();
         assert!(DeviceKeys::verify(b"tampered data", &sig, &keys.ed25519_public_key).is_err());
@@ -576,13 +557,13 @@ mod tests {
 
     #[test]
     fn fingerprint_is_deterministic() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         assert_eq!(keys.fingerprint().unwrap(), keys.fingerprint().unwrap());
     }
 
     #[test]
     fn fingerprint_is_8_hex_chars() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let fp = keys.fingerprint().unwrap();
         assert_eq!(fp.len(), 8);
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
@@ -590,14 +571,13 @@ mod tests {
 
     #[test]
     fn from_public_key_cannot_sign() {
-        let keys =
-            DeviceKeys::from_public_key("alice".into(), "D1".into(), BASE64.encode([42u8; 32]));
+        let keys = DeviceKeys::from_public_key(BASE64.encode([42u8; 32]));
         assert!(keys.sign(b"test").is_err());
     }
 
     #[test]
     fn serialization_roundtrip() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let json = serde_json::to_string(&keys).unwrap();
         let restored: DeviceKeys = serde_json::from_str(&json).unwrap();
         assert_eq!(keys, restored);
@@ -605,8 +585,7 @@ mod tests {
 
     #[test]
     fn serialization_skips_private_key_when_none() {
-        let keys =
-            DeviceKeys::from_public_key("alice".into(), "D1".into(), BASE64.encode([1u8; 32]));
+        let keys = DeviceKeys::from_public_key(BASE64.encode([1u8; 32]));
         let json = serde_json::to_string(&keys).unwrap();
         assert!(!json.contains("ed25519_private_key"));
     }
@@ -660,7 +639,7 @@ mod tests {
 
     #[test]
     fn sign_and_verify_payload_roundtrip() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let payload = TestPayload {
             name: "car 7".into(),
             value: 500,
@@ -673,7 +652,7 @@ mod tests {
 
     #[test]
     fn verify_payload_fails_with_tampered_data() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let payload = TestPayload {
             name: "car 7".into(),
             value: 500,
@@ -726,7 +705,7 @@ mod tests {
 
     #[test]
     fn hello_roundtrip_sign_and_verify() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let body = HelloPayload::new("@alice:matrix.org".into(), &keys)
             .sign(&keys)
             .unwrap();
@@ -739,8 +718,8 @@ mod tests {
 
     #[test]
     fn hello_rejects_wrong_key() {
-        let keys1 = DeviceKeys::generate("alice".into(), "D1".into());
-        let keys2 = DeviceKeys::generate("bob".into(), "D2".into());
+        let keys1 = DeviceKeys::generate();
+        let keys2 = DeviceKeys::generate();
         // Sign with keys1, but the payload claims to be Bob with Bob's key.
         let mut hello = HelloPayload::new("@bob:matrix.org".into(), &keys2);
         let (sig, _) = sign_payload(&hello, &keys1).unwrap();
@@ -752,7 +731,7 @@ mod tests {
 
     #[test]
     fn hello_rejects_tampered_id() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let body = HelloPayload::new("@alice:matrix.org".into(), &keys)
             .sign(&keys)
             .unwrap();
@@ -772,7 +751,7 @@ mod tests {
 
     /// Build a signed TestPayload, returning the payload + signature + signing key.
     fn signed_payload() -> (TestPayload, String, String) {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let payload = TestPayload {
             name: "car 7".into(),
             value: 500,
@@ -866,7 +845,7 @@ mod wasm_tests {
 
     #[wasm_bindgen_test]
     fn device_keys_save_and_load_round_trip() {
-        let keys = DeviceKeys::generate("alice".into(), "DEVICE1".into());
+        let keys = DeviceKeys::generate();
         keys.save_to_storage().expect("save");
         let loaded = DeviceKeys::load_from_storage().expect("load");
         assert_eq!(loaded, keys);
@@ -877,16 +856,16 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     fn load_or_generate_is_idempotent() {
         // Fresh state (no key stored yet in this isolated browser context per run).
-        let first = DeviceKeys::load_or_generate("@a:hs", "D1");
+        let first = DeviceKeys::load_or_generate();
         first.save_to_storage().expect("save");
-        let second = DeviceKeys::load_or_generate("@a:hs", "D1");
+        let second = DeviceKeys::load_or_generate();
         assert_eq!(first.ed25519_public_key, second.ed25519_public_key);
         assert_eq!(first.ed25519_private_key, second.ed25519_private_key);
     }
 
     #[wasm_bindgen_test]
     fn generated_key_signs_and_verifies() {
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         let (sig, key) = keys
             .sign(b"timing observation 42")
             .map(|s| (s, keys.ed25519_public_key.clone()))
@@ -897,8 +876,8 @@ mod wasm_tests {
 
     #[wasm_bindgen_test]
     fn generated_key_fails_wrong_key_verification() {
-        let k1 = DeviceKeys::generate("alice".into(), "D1".into());
-        let k2 = DeviceKeys::generate("bob".into(), "D2".into());
+        let k1 = DeviceKeys::generate();
+        let k2 = DeviceKeys::generate();
         let sig = k1.sign(b"data").unwrap();
         assert!(DeviceKeys::verify(b"data", &sig, &k2.ed25519_public_key).is_err());
     }

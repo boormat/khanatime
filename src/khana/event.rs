@@ -252,9 +252,6 @@ pub struct Official {
     /// Homeservers this person has accounts on (identity tie-back).
     #[serde(default)]
     pub homeservers: Vec<String>,
-    /// Public signing key for cross-device verification (future).
-    #[serde(default)]
-    pub public_key: Option<String>,
 }
 
 /// Lifecycle of the event.
@@ -1483,10 +1480,6 @@ pub fn merge_setup(local: &mut EventInfo, incoming: &EventInfo) -> bool {
 const EVENT_SESSION: &str = "event";
 const EVENT_RECENT: &str = "event_recent";
 
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
-}
-
 fn session_storage() -> Option<web_sys::Storage> {
     web_sys::window()?.session_storage().ok().flatten()
 }
@@ -1584,7 +1577,7 @@ pub fn setup_body(ev: &EventInfo) -> String {
     if ev.signature.is_none() {
         // Generate an in-memory key if storage is blocked so signing never fails
         // (and unsigned data — which is now rejected — can never be produced).
-        let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
+        let keys = crate::signing::DeviceKeys::load_or_generate();
         let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
         ev.signature = Some(sig);
         ev.signing_key = Some(key);
@@ -1884,34 +1877,21 @@ pub fn session_set_recent(key: &str) {
     }
 }
 
-pub fn local_role() -> String {
-    storage()
-        .and_then(|st| st.get_item("kt_role").ok().flatten())
-        .unwrap_or_else(|| ROLE_OFFICIAL.to_string())
-}
-
-/// Load a boolean collapse state from localStorage.
+/// Load a boolean collapse state (sessionStorage: a per-visit UI preference).
 pub fn load_collapse(key: &str, default: bool) -> bool {
-    storage()
+    session_storage()
         .and_then(|st| st.get_item(&format!("kt_collapse_{key}")).ok().flatten())
         .map(|v| v == "true")
         .unwrap_or(default)
 }
 
-/// Save a boolean collapse state to localStorage.
+/// Save a boolean collapse state to sessionStorage.
 pub fn save_collapse(key: &str, value: bool) {
-    if let Some(st) = storage() {
+    if let Some(st) = session_storage() {
         let _ = st.set_item(
             &format!("kt_collapse_{key}"),
             if value { "true" } else { "false" },
         );
-    }
-}
-
-#[allow(dead_code)] // paired with local_role(); a role-picker UI is planned
-pub fn set_local_role(role: &str) {
-    if let Some(st) = storage() {
-        let _ = st.set_item("kt_role", role);
     }
 }
 
@@ -2513,7 +2493,6 @@ mod tests {
             role: String::new(),
             phone: None,
             homeservers: vec![],
-            public_key: None,
         }];
         assert!(publish_errors(&ev, &[], &[]).is_empty());
         // Timing data -> error.
@@ -2548,7 +2527,6 @@ mod tests {
             role: role.into(),
             phone: phone.map(str::to_string),
             homeservers: vec![],
-            public_key: None,
         };
         // Key official without a name and phone → errors.
         ev.organisers = vec![key(ROLE_KEY_OFFICIAL, "", None)];
@@ -2576,7 +2554,6 @@ mod tests {
             role: ROLE_KEY_OFFICIAL.into(),
             phone: Some("0400".into()),
             homeservers: vec!["https://matrix.org".into(), "http://localhost:8008".into()],
-            public_key: None,
         };
         let json = serde_json::to_string(&o).unwrap();
         let back: Official = serde_json::from_str(&json).unwrap();

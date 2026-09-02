@@ -595,7 +595,6 @@ mod tests {
             role: String::new(),
             phone: None,
             homeservers: vec![],
-            public_key: None,
         });
         let lines = event_diff(&base(), &staged);
         let joined = lines.join("\n");

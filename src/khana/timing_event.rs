@@ -419,7 +419,7 @@ mod wasm_tests {
             }),
             vec![],
         );
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         te.sign_with(&keys).expect("sign");
         te.verify_signature().expect("verify");
     }
@@ -456,7 +456,7 @@ mod wasm_tests {
             }),
             vec![],
         );
-        let keys = DeviceKeys::generate("alice".into(), "D1".into());
+        let keys = DeviceKeys::generate();
         te.sign_with(&keys).expect("sign");
         // Mutate after signing.
         te.time_ds = Some(999);

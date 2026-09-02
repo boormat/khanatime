@@ -52,7 +52,7 @@ fn main() {
     // Ensure the device signing keypair exists before any code tries to sign.
     #[cfg(target_arch = "wasm32")]
     {
-        crate::signing::DeviceKeys::load_or_generate("default", "device");
+        crate::signing::DeviceKeys::load_or_generate();
     }
 
     std::panic::set_hook(Box::new(|info| {

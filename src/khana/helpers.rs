@@ -11,7 +11,7 @@ fn sign_timing_event(
 ) -> Result<(), crate::signing::SigningError> {
     // Generate an in-memory key if storage is blocked so signing never fails
     // (unsigned data is rejected by the trust gate, so we must never produce it).
-    let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
+    let keys = crate::signing::DeviceKeys::load_or_generate();
     te.sign_with(&keys)
 }
 

@@ -47,7 +47,7 @@ The navbar shows all 13 screens to everyone. Different users need different view
 ### Edge cases
 - Mode switch redirects to Home if current screen is invisible
 - Testing mode is always available (no security through obscurity)
-- Existing `kt_role` / `local_role()` / `set_local_role()` untouched (event-level role, orthogonal to app mode)
+- `kt_role` / `local_role()` / `set_local_role()` were removed (unused; a role-picker was never built — the event role now lives on `Official.role`)
 - `view_content()` unchanged — it still renders all screens; visibility is navbar-level only
 
 ---

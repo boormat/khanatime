@@ -319,7 +319,7 @@ fn view_signing_key(model: crate::Model) -> View {
     let sm = model.screens.accounts;
     let _ = sm.refresh.get();
     // Generate an in-memory key if storage is blocked rather than panicking.
-    let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
+    let keys = crate::signing::DeviceKeys::load_or_generate();
     let fp = keys.fingerprint().expect("fingerprint failed");
     let pub_key_b64 = keys.ed25519_public_key.clone();
     let registry = crate::signing::SigningKeyRegistry::load();
@@ -346,13 +346,9 @@ fn view_signing_key(model: crate::Model) -> View {
     } else {
         let mut reg_items: Vec<View> = Vec::new();
         for rec in registry.all() {
-            let key_fp = crate::signing::DeviceKeys::from_public_key(
-                String::new(),
-                String::new(),
-                rec.public_key.clone(),
-            )
-            .fingerprint()
-            .unwrap_or_else(|_| "?".into());
+            let key_fp = crate::signing::DeviceKeys::from_public_key(rec.public_key.clone())
+                .fingerprint()
+                .unwrap_or_else(|_| "?".into());
             let status_class = match rec.status {
                 crate::signing::KeyTrustStatus::Verified => "is-success",
                 crate::signing::KeyTrustStatus::Unverified => "is-warning",
@@ -418,7 +414,7 @@ fn view_contacts(model: crate::Model) -> View {
             None => String::new(),
         };
         let key_text = c.signing_key.as_ref().map(|k| {
-            crate::signing::DeviceKeys::from_public_key(String::new(), String::new(), k.clone())
+            crate::signing::DeviceKeys::from_public_key(k.clone())
                 .fingerprint()
                 .unwrap_or_else(|_| "?".into())
         });

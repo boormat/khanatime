@@ -2538,8 +2538,7 @@ fn view_organisers_picker(model: crate::Model) -> View {
                                             name: display_click.clone(),
                                             role: String::new(),
                                             phone: phone_owned.clone(),
-                                            homeservers: hs_owned.clone(),
-                                            public_key: None,
+                                            homeservers: hs_owned.clone()
                                         });
                                     }
                                 }

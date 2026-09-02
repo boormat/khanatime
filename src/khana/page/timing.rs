@@ -75,7 +75,9 @@ pub fn reset_stage(model: crate::Model) {
 }
 
 fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
+    // The active stage is a "this visit" state: keep it across a refresh but
+    // reset when the tab closes (sessionStorage), not a device-wide fact.
+    web_sys::window()?.session_storage().ok().flatten()
 }
 
 pub fn view(model: crate::Model) -> View {

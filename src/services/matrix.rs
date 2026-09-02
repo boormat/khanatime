@@ -170,9 +170,6 @@ pub struct Account {
     pub kind: StoredAuth,
     #[serde(default)]
     pub active: bool,
-    /// For Shared accounts: the event uid this account was created for.
-    #[serde(default)]
-    pub event_uid: Option<String>,
 }
 
 /// A known Matrix user without credentials (from a QR scan or manual entry).
@@ -288,7 +285,6 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
             account_type: AccountType::Personal,
             kind,
             active: true,
-            event_uid: None,
         });
     }
     write_accounts(&accounts);
@@ -443,14 +439,6 @@ pub fn load_accounts() -> Vec<Account> {
     read_accounts()
 }
 
-#[expect(dead_code)]
-pub fn load_accounts_for(homeserver: &str) -> Vec<Account> {
-    read_accounts()
-        .into_iter()
-        .filter(|a| a.homeserver == homeserver)
-        .collect()
-}
-
 pub fn save_account(account: &Account) {
     let mut list = read_accounts();
     if let Some(existing) = list
@@ -567,7 +555,6 @@ pub fn migrate_session_storage() {
                 account_type: AccountType::Personal,
                 kind: s.kind.clone(),
                 active: s.homeserver == active,
-                event_uid: None,
             })
             .collect();
         write_homeservers(&homeservers);
@@ -1421,7 +1408,7 @@ pub async fn send_result(
         signature: None,
     };
     // Generate an in-memory key if storage is blocked so signing never fails.
-    let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
+    let keys = crate::signing::DeviceKeys::load_or_generate();
     let (sig, key) = crate::signing::sign_payload(&snapshot, &keys).expect("signing failed");
     snapshot.signature = Some(sig);
     snapshot.signing_key = Some(key);

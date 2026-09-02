@@ -687,7 +687,6 @@ pub fn update(model: Model, msg: Msg) {
                         password,
                     },
                     active: false,
-                    event_uid: None,
                 };
                 crate::services::matrix::save_account(&account);
                 // If a join invite is parked for this homeserver (localpart
@@ -1151,7 +1150,7 @@ pub fn enqueue_setup(model: Model) {
     // publish time, so setup manifests are always signed.
     if ev.signature.is_none() {
         // Generate an in-memory key if storage is blocked so signing never fails.
-        let keys = crate::signing::DeviceKeys::load_or_generate("default", "device");
+        let keys = crate::signing::DeviceKeys::load_or_generate();
         let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
         ev.signature = Some(sig);
         ev.signing_key = Some(key);

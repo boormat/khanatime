@@ -26,7 +26,6 @@ pub struct Account {
     pub account_type: AccountType,
     pub kind: StoredAuth,
     pub active: bool,
-    pub event_uid: Option<String>,
 }
 
 pub struct Contact {
