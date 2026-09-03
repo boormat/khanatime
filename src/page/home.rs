@@ -58,14 +58,43 @@ fn view_hub(model: crate::Model) -> View {
     }
 }
 
-/// Identity + comms status.  Signed in → id + online status; not signed in →
-/// a sign-in prompt (no "Not now" — this is the login area, not a banner).
+/// Identity + comms status: homeserver status tags up top, then the user id
+/// (as a tag) + connection line, with a pending-outbox tag that links to Chat.
+/// Not signed in → a sign-in prompt (this is the login area, not a banner).
 #[cfg(target_arch = "wasm32")]
 fn view_identity_status(model: crate::Model) -> View {
+    use crate::page::accounts::ConnStatus;
+    let hs_tags: Vec<View> = crate::services::matrix::load_homeservers()
+        .iter()
+        .map(|hs| {
+            let label = hs_host_port(&hs.url);
+            let status = model
+                .screens
+                .accounts
+                .hs_status
+                .get_clone()
+                .get(&hs.url)
+                .cloned()
+                .unwrap_or(ConnStatus::Unknown);
+            view! {
+                span(class="tags has-addons") {
+                    span(class="tag is-dark") { (label) }
+                    (crate::page::accounts::view_hs_status(status.clone()))
+                }
+            }
+        })
+        .collect();
+    let hs_row: View = if hs_tags.is_empty() {
+        view! { p(class="help") { "No homeservers saved yet." } }
+    } else {
+        view! { div(class="field is-grouped is-grouped-multiline mb-2") { (hs_tags) } }
+    };
+
     let identity = model.sync.app_identity.get_clone();
     if identity.is_empty() {
         view! {
             div(class="box") {
+                (hs_row)
                 h2(class="title is-5") { "Sign in" }
                 p(class="help") {
                     "Sign in once so the times you record are attributed to you. Works offline too — joining an event gives you a local account."
@@ -84,33 +113,56 @@ fn view_identity_status(model: crate::Model) -> View {
             }
         }
     } else {
-        let status_line = {
-            use crate::app::ConnState;
-            let conn = model.sync.conn.get_clone();
-            let room = model.sync.room.get_clone();
-            let (cls, text) = match conn {
-                ConnState::LoggedIn(_) if room.is_some() => (
-                    "has-text-success",
-                    format!("Online · connected to room {}", room.unwrap()),
-                ),
-                ConnState::LoggedIn(_) => {
-                    ("has-text-warning", "Online · no timing room".to_string())
-                }
-                ConnState::Connecting => ("has-text-warning", "Connecting…".to_string()),
-                ConnState::SsoPending => (
-                    "has-text-warning",
-                    "Waiting for the sign-in tab…".to_string(),
-                ),
-                ConnState::Error(e) => ("has-text-danger", e),
-                _ => ("has-text-grey", "Offline — local / parcel mode".to_string()),
-            };
-            view! { p(class=format!("help {cls}")) { (text) } }
+        use crate::app::ConnState;
+        let conn = model.sync.conn.get_clone();
+        let room = model.sync.room.get_clone();
+        let (cls, text) = match conn {
+            ConnState::LoggedIn(_) if room.is_some() => (
+                "has-text-success",
+                format!("Online · connected to room {}", room.unwrap()),
+            ),
+            ConnState::LoggedIn(_) => ("has-text-warning", "Online · no timing room".to_string()),
+            ConnState::Connecting => ("has-text-warning", "Connecting…".to_string()),
+            ConnState::SsoPending => (
+                "has-text-warning",
+                "Waiting for the sign-in tab…".to_string(),
+            ),
+            ConnState::Error(e) => ("has-text-danger", e),
+            _ => ("has-text-grey", "Not connected".to_string()),
         };
+        // Unsent outbox backlog for the open event — links to Chat to examine.
+        let pending_count = model.khana.event.with(|e| {
+            if e.is_null() {
+                0
+            } else {
+                crate::log::load_pending(&e.id).len()
+            }
+        });
         view! {
             div(class="box") {
-                h2(class="title is-5") { "Signed in" }
-                p(class="has-text-weight-medium") { (format!("Signed in as {identity}")) }
-                (status_line)
+                (hs_row)
+                div(class="level is-mobile") {
+                    div(class="level-left") {
+                        span(class="tag is-link") { (identity) }
+                        span(class=format!("help ml-2 {cls}")) { (text) }
+                        (if pending_count > 0 {
+                            view! {
+                                a(
+                                    class="tag is-warning ml-2",
+                                    title="Open the message log to see unsent messages",
+                                    on:click=move |_| {
+                                        crate::update(model, crate::Msg::Show(crate::Screen::Chat));
+                                    },
+                                ) {
+                                    span(class="icon is-small") { i(class="fa fa-clock") }
+                                    span { (format!(" {pending_count} pending")) }
+                                }
+                            }
+                        } else {
+                            view! {}
+                        })
+                    }
+                }
             }
         }
     }
