@@ -1552,13 +1552,6 @@ pub fn demo_event() -> EventInfo {
     ev
 }
 
-/// Restore the demo event to its pristine template, wiping all training state
-/// (entries, stages, times, runs) added while practising.
-pub fn reset_demo() {
-    crate::log::remove_event_log(DEMO_EVENT_ID);
-    ensure_demo();
-}
-
 /// Ensure the demo event exists in the transaction log (its setup manifest is
 /// the durable record, exactly like any other event's).
 pub fn ensure_demo() {

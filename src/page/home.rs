@@ -233,20 +233,10 @@ fn view_saved_events(model: crate::Model) -> View {
     let sm = model.screens.home;
     let _ = sm.refresh.get();
     let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
-    ids.retain(|id| id != crate::event::DEMO_EVENT_ID);
     ids.sort();
     let recent = crate::event::session_recent_event();
     let current_id = model.khana.event.with(|e| e.id.clone());
-    let mut rows: Vec<View> = vec![view_event_row(
-        model,
-        crate::event::DEMO_EVENT_ID.to_string(),
-        "Khanatime Demo".to_string(),
-        None,
-        None,
-        true,
-        crate::event::DEMO_EVENT_ID == recent,
-        crate::event::DEMO_EVENT_ID == current_id,
-    )];
+    let mut rows: Vec<View> = Vec::new();
     for id in ids {
         let e = crate::event::load_event(&id);
         let name = if e.name.is_empty() {
@@ -267,7 +257,6 @@ fn view_saved_events(model: crate::Model) -> View {
             name,
             hs_tag,
             Some(e.status.to_string()),
-            false,
             is_recent,
             is_current,
         ));
@@ -277,22 +266,47 @@ fn view_saved_events(model: crate::Model) -> View {
     } else {
         view! { div(class="mt-2") { (rows) } }
     };
+    // The Demo button appears only until the demo event has been created (once
+    // it exists it shows as a normal saved-event row).  "+ organise" is hidden
+    // while an event is open — kept out of sight of average users.
+    let demo_missing = crate::log::load_log(crate::event::DEMO_EVENT_ID).is_empty()
+        && crate::log::load_pending(crate::event::DEMO_EVENT_ID).is_empty();
+    let no_event = model.khana.event.with(|e| e.is_null());
     view! {
         div(class="box") {
             h2(class="title is-5") {
                 "Saved events"
-                button(
-                    class="button is-small is-light is-pulled-right",
-                    title="Organise an event",
-                    on:click=move |_| sm.show_organise.set(true),
-                ) {
-                    span(class="icon is-small") { i(class="fa fa-plus") }
-                    span { "organise" }
-                }
-                span(class="tag is-light is-pulled-right mr-2") { "Device" }
+                (if demo_missing {
+                    view! {
+                        button(
+                            class="button is-small is-warning is-pulled-right",
+                            title="Try the demo event",
+                            on:click=move |_| crate::update(model, crate::Msg::LoadDemo),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-flask") }
+                            span { "Demo" }
+                        }
+                    }
+                } else {
+                    view! {}
+                })
+                (if no_event {
+                    view! {
+                        button(
+                            class="button is-small is-light is-pulled-right",
+                            title="Organise an event",
+                            on:click=move |_| sm.show_organise.set(true),
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-plus") }
+                            span { "organise" }
+                        }
+                    }
+                } else {
+                    view! {}
+                })
             }
             p(class="help") {
-                "Open the demo for training, or an event saved on this device."
+                "Open an event saved on this device."
             }
             (body)
             (view_delete_modal(model))
@@ -357,14 +371,12 @@ fn view_organise_modal(_model: crate::Model) -> View {
     view! {}
 }
 
-#[allow(clippy::too_many_arguments)]
 fn view_event_row(
     model: crate::Model,
     id: String,
     name: String,
     hs_tag: Option<String>,
     status: Option<String>,
-    is_demo: bool,
     is_recent: bool,
     is_current: bool,
 ) -> View {
@@ -377,9 +389,6 @@ fn view_event_row(
     }
     if is_recent {
         tags.push(view! { span(class="tag is-success is-light") { "Recent" } });
-    }
-    if is_demo {
-        tags.push(view! { span(class="tag is-warning is-light") { "Demo" } });
     }
     if let Some(hs) = hs_tag {
         tags.push(view! { span(class="tag is-link is-light") { (hs) } });
@@ -397,39 +406,22 @@ fn view_event_row(
                 button(
                     class="button is-small is-link",
                     on:click=move |_| {
-                        if is_demo {
-                            crate::update(model, crate::Msg::LoadDemo);
-                        } else {
-                            let id = open_id.clone();
-                            crate::update(model, crate::Msg::OpenSaved(id));
-                        }
+                        let id = open_id.clone();
+                        crate::update(model, crate::Msg::OpenSaved(id));
                     },
                 ) { "Open" }
             }
-            (if is_demo {
-                view! {
-                    div(class="control") {
-                        button(
-                            class="button is-small is-warning",
-                            on:click=move |_| crate::update(model, crate::Msg::ResetDemo),
-                        ) { "Reset" }
-                    }
+            div(class="control") {
+                button(
+                    class="button is-small is-danger is-light",
+                    on:click=move |_| {
+                        let d = del_id.clone();
+                        sm.delete_target.set(Some(d));
+                    },
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-trash") }
                 }
-            } else {
-                view! {
-                    div(class="control") {
-                        button(
-                            class="button is-small is-danger is-light",
-                            on:click=move |_| {
-                                let d = del_id.clone();
-                                sm.delete_target.set(Some(d));
-                            },
-                        ) {
-                            span(class="icon is-small") { i(class="fa fa-trash") }
-                        }
-                    }
-                }
-            })
+            }
         }
     }
 }

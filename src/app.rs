@@ -218,8 +218,6 @@ pub enum Msg {
     JoinUrl,
     /// Create and open the local demo event.
     LoadDemo,
-    /// Reset the demo event to its pristine template and open it.
-    ResetDemo,
     /// Open an event saved on this device.
     OpenSaved(String),
     /// Delete a saved event from local storage (confirm is the caller's job).
@@ -364,19 +362,6 @@ pub fn update(model: Model, msg: Msg) {
 
         Msg::LoadDemo => {
             crate::event::ensure_demo();
-            crate::update(
-                model,
-                Msg::SetEvent(crate::event::DEMO_EVENT_ID.to_string()),
-            );
-            crate::update(model, Msg::Show(Screen::Home));
-        }
-        Msg::ResetDemo => {
-            crate::event::reset_demo();
-            model
-                .screens
-                .home
-                .refresh
-                .set(model.screens.home.refresh.get() + 1);
             crate::update(
                 model,
                 Msg::SetEvent(crate::event::DEMO_EVENT_ID.to_string()),
