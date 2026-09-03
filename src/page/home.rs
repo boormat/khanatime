@@ -21,6 +21,8 @@ pub struct Model {
     pub delete_target: Signal<Option<String>>,
     /// Bumped after the local event list changes so the picker re-renders.
     pub refresh: Signal<u8>,
+    /// "Organise an event" confirmation modal is open.
+    pub show_organise: Signal<bool>,
     /// Burger menu open state.
     pub burger_open: Signal<bool>,
 }
@@ -33,6 +35,7 @@ pub fn init() -> Model {
         join_msg: create_signal(String::new()),
         delete_target: create_signal(None),
         refresh: create_signal(0),
+        show_organise: create_signal(false),
         burger_open: create_signal(false),
     }
 }
@@ -52,7 +55,6 @@ fn view_hub(model: crate::Model) -> View {
         div {
             (view_identity_status(model))
             (view_current_event(model))
-            (view_welcome_create(model))
             (view_saved_events(model))
         }
     }
@@ -224,39 +226,6 @@ fn view_current_event(model: crate::Model) -> View {
     }
 }
 
-/// Create an event (requires an identity — an event always has a user/owner).
-fn view_welcome_create(model: crate::Model) -> View {
-    let has_identity = model.sync.app_identity.with(|a| !a.is_empty());
-    view! {
-        div(class="box") {
-            h2(class="title is-5") { "Create an event" }
-            p(class="help") {
-                "Plan a new event for the timing day — you'll be its owner."
-            }
-            div(class="buttons") {
-                button(
-                    class="button is-primary",
-                    disabled=!has_identity,
-                    on:click=move |_| {
-                        crate::update(model, crate::Msg::EventMsg(crate::khana::page::event::Msg::CreateDraft));
-                        crate::update(model, crate::Msg::Show(crate::Screen::Event));
-                    },
-                ) {
-                    span(class="icon is-small") { i(class="fa fa-plus") }
-                    span { "Create an event" }
-                }
-            }
-            (if has_identity {
-                view! {}
-            } else {
-                view! { p(class="help is-warning") {
-                    "Sign in first — every event needs a user as its owner."
-                } }
-            })
-        }
-    }
-}
-
 /// Saved events on this device — always visible, the event switcher.
 fn view_saved_events(model: crate::Model) -> View {
     let sm = model.screens.home;
@@ -310,15 +279,80 @@ fn view_saved_events(model: crate::Model) -> View {
         div(class="box") {
             h2(class="title is-5") {
                 "Saved events"
-                span(class="tag is-light is-pulled-right") { "Device" }
+                button(
+                    class="button is-small is-light is-pulled-right",
+                    title="Organise an event",
+                    on:click=move |_| sm.show_organise.set(true),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-plus") }
+                    span { "organise" }
+                }
+                span(class="tag is-light is-pulled-right mr-2") { "Device" }
             }
             p(class="help") {
                 "Open the demo for training, or an event saved on this device."
             }
             (body)
             (view_delete_modal(model))
+            (view_organise_modal(model))
         }
     }
+}
+
+/// "Organise an event" confirmation modal — a small + button opens this rather
+/// than a big call-to-action.  Requires an identity (an event always has a user).
+#[cfg(target_arch = "wasm32")]
+fn view_organise_modal(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    if !sm.show_organise.get() {
+        return view! {};
+    }
+    let has_identity = model.sync.app_identity.with(|a| !a.is_empty());
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background", on:click=move |_| sm.show_organise.set(false))
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { "Organise an event" }
+                    button(class="delete", on:click=move |_| sm.show_organise.set(false))
+                }
+                section(class="modal-card-body") {
+                    p {
+                        "Plan a new event for the timing day. You'll be its owner and a key official — publish it to a homeserver when timing starts."
+                    }
+                    p(class="help mt-2") {
+                        "Starts a local draft with defaults you can edit and save."
+                    }
+                    (if has_identity {
+                        view! {}
+                    } else {
+                        view! { p(class="help is-warning") {
+                            "Sign in first — every event needs a user as its owner."
+                        } }
+                    })
+                }
+                footer(class="modal-card-foot is-justify-content-center") {
+                    button(
+                        class="button is-primary",
+                        disabled=!has_identity,
+                        on:click=move |_| {
+                            sm.show_organise.set(false);
+                            crate::update(model, crate::Msg::EventMsg(crate::khana::page::event::Msg::CreateDraft));
+                            crate::update(model, crate::Msg::Show(crate::Screen::Event));
+                        },
+                    ) { "Create" }
+                    button(class="button", on:click=move |_| sm.show_organise.set(false)) {
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_organise_modal(_model: crate::Model) -> View {
+    view! {}
 }
 
 #[allow(clippy::too_many_arguments)]
