@@ -79,9 +79,11 @@ fn view_identity_status(model: crate::Model) -> View {
                 .cloned()
                 .unwrap_or(ConnStatus::Unknown);
             view! {
-                span(class="tags has-addons") {
-                    span(class="tag is-dark") { (label) }
-                    (crate::page::accounts::view_hs_status(status.clone()))
+                div(class="control") {
+                    span(class="tags has-addons") {
+                        span(class="tag is-dark is-small") { (label) }
+                        (crate::page::accounts::view_hs_status(status.clone()))
+                    }
                 }
             }
         })
