@@ -70,12 +70,92 @@ fn view_no_event(model: crate::Model) -> View {
         section(class="hero is-small") {
             div(class="hero-body") {
                 h1(class="title") { "Khana Time" }
+                p(class="subtitle is-6 has-text-grey") {
+                    "Timing for grassroots khanacross."
+                }
             }
         }
         (move || view_sso_prompt(model))
+        (move || view_welcome_options(model))
         (move || view_sessions(model))
         (move || view_join_by_url(model))
         (move || view_phone_sync(model))
+    }
+}
+
+/// Welcome hub: the first-run option cards for what you're here to do.
+fn view_welcome_options(model: crate::Model) -> View {
+    let has_identity = model.sync.app_identity.with(|a| !a.is_empty());
+    let identity = model.sync.app_identity.get_clone();
+    let identity_line = if identity.is_empty() {
+        view! { p(class="help") { "Not signed in — your recordings won't be attributed until you log in." } }
+    } else {
+        view! { p(class="help has-text-success") { (format!("Signed in as {identity}")) } }
+    };
+    let status_line = {
+        use crate::app::ConnState;
+        let conn = model.sync.conn.get_clone();
+        let room = model.sync.room.get_clone();
+        let (cls, text) = match conn {
+            ConnState::LoggedIn(_) if room.is_some() => (
+                "has-text-success",
+                format!("Online · connected to room {}", room.unwrap()),
+            ),
+            ConnState::LoggedIn(_) => ("has-text-warning", "Online · no timing room".to_string()),
+            ConnState::Connecting => ("has-text-warning", "Connecting…".to_string()),
+            ConnState::SsoPending => (
+                "has-text-warning",
+                "Waiting for the sign-in tab…".to_string(),
+            ),
+            ConnState::Error(e) => ("has-text-danger", e),
+            _ => ("has-text-grey", "Offline — local / parcel mode".to_string()),
+        };
+        view! { p(class=format!("help {cls}")) { (text) } }
+    };
+    view! {
+        div(class="box") {
+            h2(class="title is-5") { "Welcome" }
+            div(class="buttons") {
+                button(
+                    class="button is-link",
+                    on:click=move |_| crate::update(model, crate::Msg::LoadDemo),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-flask") }
+                    span { "Test with the demo event" }
+                }
+                button(
+                    class="button is-primary",
+                    disabled=!has_identity,
+                    on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-plus") }
+                    span { "Create an event" }
+                }
+                button(
+                    class="button is-light",
+                    on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-binoculars") }
+                    span { "Spectate — find a published event" }
+                }
+                button(
+                    class="button is-light",
+                    on:click=move |_| crate::update(model, crate::Msg::Show(crate::Screen::Events)),
+                ) {
+                    span(class="icon is-small") { i(class="fa fa-arrows-rotate") }
+                    span { "Switch between events on this device" }
+                }
+            }
+            (identity_line)
+            (status_line)
+            (if has_identity {
+                view! {}
+            } else {
+                view! { p(class="help is-warning") {
+                    "Sign in to create an event — every event needs a user as its owner."
+                } }
+            })
+        }
     }
 }
 

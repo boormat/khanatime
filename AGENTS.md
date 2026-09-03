@@ -111,7 +111,7 @@ src/
 ├── main.rs             # entry: panic hook, render, warm-start/join-link startup
 │                       #   (re-exports Model/Msg/Screen/update from app.rs)
 ├── lib.rs              # log! macro + web_log (console.log)
-├── app.rs              # Screen enum, Model, Msg, Mode, KhanaState, SyncState, update(), navbar, view
+├── app.rs              # Screen enum, Model, Msg, Role, KhanaState, SyncState, update(), navbar, view
 ├── sync.rs             # Matrix connect/logout/resume/join + merge sink, QR parcel
 │                       #   export/import + relay-to-room (wasm)
 ├── ids.rs              # generated short ids (Crocker base32) + content_id(body)
@@ -119,11 +119,6 @@ src/
 ├── join.rs             # QR join-link arrival: parse location query + consume (wasm)
 ├── qr_scan.rs          # camera QR scanning for parcel import (wasm; BarcodeDetector)
 ├── log.rs              # per-event message log + pending outbox (localStorage)
-├── entry_app/          # independent entry management (types, batch, sync, UI)
-│   ├── types.rs        #   EntryEvent, Entry, EntryStatus, EventStatus
-│   ├── batch.rs        #   staged-edit ops (EditOp, compact_ops, entry_diff)
-│   ├── sync.rs         #   entry wire format, enqueue_entry, parse_entry_body
-│   └── mod.rs          #   Model, Msg, init(), update(), view()
 ├── services/
 │   ├── qr.rs           # QR parcel codec (DEFLATE+base64, SVG rendering)
 │   └── matrix.rs       # matrix-sdk transport wrapper (wasm)
@@ -263,8 +258,13 @@ the app.
   `amend`/`void`) is planned — read `docs/plan/multi-transport.md` and its
   Phase 1 detail `docs/plan/identity-amendments.md` before touching the wire
   format (`timing_event.rs`) or sync plumbing.
-- Navigation/layout rework: app mode picker added (see `docs/plan/app-mode-and-qr-signing.md`);
-  burger menu, unified stopwatch, COC event status, About page still planned —
+- Navigation: the app **mode** system was removed — the current user's role
+  (`app::Role`: Organiser/Official) is derived from the open event + identity
+  (`app::refresh_role` / `role_for_event`), exact-match on owner/organisers;
+  no user-picked mode. `Screen::Entries`, `Screen::Start/Finish/Stopwatch` and
+  `entry_app/` were removed (the Timing hub renders those views).
+  See `docs/plan/identity-login.md`. Burger menu, unified stopwatch, COC event
+  status, About page still planned —
   see `docs/plan/layout-navigation.md` before restructuring `Screen`/`view_navbar`
   or the timing pages.
 - Bug reports go in `docs/bugs.md` (not at the repo root).

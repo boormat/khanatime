@@ -1,9 +1,27 @@
 # Identity & login flow — SSO-first audit identity
 
-> Status: **Parts 1–2 live, Part 3 doco done.** See
+> Status: **Parts 1–3 live.** The app **mode** system was removed and replaced
+> by an **event-derived role** (see below). See
 > `docs/practice-event-guide.md` for the practice-event + shared-device guide.
 > Related: `docs/plan/matrix-login.md` (OAuth/SSO), `docs/plan/multi-transport.md`
 > (dual homeservers), `docs/plan/event-admin-accounts.md` (accounts/contacts).
+
+## Role model (replaces the app mode)
+
+- `app::Role { Official, Organiser }` — **derived, never user-picked**.
+- `app::role_for_event(ev, sync_identity, app_identity)` (pure): Demo → Organiser;
+  no owner (draft) → Organiser; exact identity match on `event.owner` or an
+  organiser id → Organiser; else Official. Exact match only — no localpart fallback.
+- `app::refresh_role` runs on every event load (`Msg::SetEvent`,
+  `switch_to_draft`) and whenever the identity changes (SSO / local login /
+  restore / join).
+- Navbar screens follow the role: Organiser gets everything (incl. Event config
+  + Accounts); Official gets timing/results/comms but no event setup or account
+  admin. No-event shows the welcome hub (Test demo / Create / Spectate / Switch
+  / login + comms status).
+- Creating an event requires an identity ("Create an event" is disabled without
+  one); the creator is auto-set as owner + a key official, so an event always
+  has a user.
 
 ## Goal
 

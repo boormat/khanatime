@@ -155,43 +155,12 @@ pub fn view(model: crate::Model) -> View {
         div {
             h1(class="title") { "Events" }
             p(class="help") { "Choose how to get an event open." }
-            (view_mode_picker(model))
             (view_current(model))
             (view_open_events(model))
             (view_published(model))
             (view_plan(model))
             (crate::khana::helpers::view_handoff(model))
             (view_feedback(model))
-        }
-    }
-}
-
-/// Mode picker — compact button row.
-fn view_mode_picker(model: crate::Model) -> View {
-    let mode = model.mode.get();
-    view! {
-        div(class="box") {
-            div(class="field is-grouped is-grouped-multiline") {
-                div(class="control") {
-                    span(class="has-text-weight-semibold is-size-7 mr-2") { "Mode:" }
-                }
-                (crate::app::Mode::ALL.iter().map(|&m| {
-                    let is_active = m == mode;
-                    let cls = if is_active {
-                        "button is-small is-link"
-                    } else {
-                        "button is-small is-light"
-                    };
-                    view! {
-                        button(
-                            class=cls,
-                            on:click=move |_| crate::update(model, crate::Msg::SetMode(m)),
-                        ) {
-                            (m.label())
-                        }
-                    }
-                }).collect::<Vec<_>>())
-            }
         }
     }
 }
@@ -361,8 +330,10 @@ fn view_search_results(model: crate::Model) -> View {
     view! { (rows) }
 }
 
-/// Plan a new event — jumps to the Event admin draft form.
+/// Plan a new event — jumps to the Event admin draft form.  Requires an
+/// identity: every event must have a user/owner, so sign in first.
 fn view_plan(model: crate::Model) -> View {
+    let has_identity = model.sync.app_identity.with(|a| !a.is_empty());
     view! {
         div(class="box") {
             h2(class="title is-5") { "Plan a new event" }
@@ -373,12 +344,20 @@ fn view_plan(model: crate::Model) -> View {
                 div(class="control") {
                     button(
                         class="button is-link",
+                        disabled=!has_identity,
                         on:click=move |_| crate::update(model, crate::Msg::EventsMsg(Msg::PlanNew)),
                     ) {
                         span(class="icon is-small") { i(class="fa fa-plus") }
                         span { "Plan new event" }
                     }
                 }
+                (if has_identity {
+                    view! {}
+                } else {
+                    view! { p(class="help is-warning") {
+                        "Sign in first — every event needs a user as its owner."
+                    } }
+                })
             }
         }
     }

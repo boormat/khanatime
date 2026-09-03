@@ -91,6 +91,7 @@ fn set_local_identity_if_empty(model: Model, user_id: &str) {
     if model.sync.app_identity.with(|a| a.is_empty()) {
         crate::services::matrix::store_app_identity(user_id);
         model.sync.app_identity.set(user_id.to_string());
+        crate::app::refresh_role(model);
     }
 }
 
@@ -99,6 +100,7 @@ fn set_local_identity_if_empty(model: Model, user_id: &str) {
 fn set_matrix_identity(model: Model, user_id: &str) {
     crate::services::matrix::store_app_identity(user_id);
     model.sync.app_identity.set(user_id.to_string());
+    crate::app::refresh_role(model);
 }
 
 /// Resume a persisted Matrix session on app load (wasm only).  Driven by the
@@ -219,47 +221,6 @@ pub fn flush_pending(model: Model) {
     flush_pending_wasm(model);
     #[cfg(not(target_arch = "wasm32"))]
     let _ = model;
-}
-
-pub fn flush_pending_entry_app(model: Model) {
-    #[cfg(target_arch = "wasm32")]
-    flush_pending_entry_app_wasm(model);
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = model;
-}
-
-#[cfg(target_arch = "wasm32")]
-fn flush_pending_entry_app_wasm(model: Model) {
-    let Some(room) = crate::services::matrix::room() else {
-        return;
-    };
-    let id = model.entry_app.event.with(|e| e.id.clone());
-    if id.is_empty() {
-        return;
-    }
-    let pending = crate::log::load_pending(&id);
-    if pending.is_empty() {
-        return;
-    }
-    wasm_bindgen_futures::spawn_local(async move {
-        let room_id = room.room_id().to_string();
-        for msg in pending {
-            if crate::log::confirmed_in_room(&id, &msg.body, &room_id) {
-                crate::log::drop_pending(&id, &msg.local_id);
-                continue;
-            }
-            match crate::services::matrix::send_log_message(&room, &msg).await {
-                Ok(mid) => {
-                    crate::log::promote(&id, &msg.local_id, &mid);
-                }
-                Err(e) => {
-                    khanatime::log!("entry app flush stopped: {e}");
-                    break;
-                }
-            }
-        }
-        crate::log::reconcile(&id);
-    });
 }
 
 #[cfg(target_arch = "wasm32")]

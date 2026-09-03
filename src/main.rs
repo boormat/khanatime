@@ -1,5 +1,4 @@
 mod app;
-mod entry_app;
 mod ids;
 mod input;
 mod join;

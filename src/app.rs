@@ -20,12 +20,8 @@ pub enum Screen {
     KhanaRules,
     Results,
     Timekeeper,
-    Start,
-    Finish,
     Event,
-    Entries,
     Chat,
-    Stopwatch,
     Timing,
 }
 
@@ -41,12 +37,8 @@ impl Screen {
             Screen::KhanaRules => "rules",
             Screen::Results => "results",
             Screen::Timekeeper => "timekeeper",
-            Screen::Start => "start",
-            Screen::Finish => "finish",
             Screen::Event => "event",
-            Screen::Entries => "entries",
             Screen::Chat => "chat",
-            Screen::Stopwatch => "stopwatch",
             Screen::Timing => "timing",
         }
     }
@@ -61,12 +53,8 @@ impl Screen {
             "rules" => Screen::KhanaRules,
             "results" => Screen::Results,
             "timekeeper" => Screen::Timekeeper,
-            "start" => Screen::Start,
-            "finish" => Screen::Finish,
             "event" => Screen::Event,
-            "entries" => Screen::Entries,
             "chat" => Screen::Chat,
-            "stopwatch" => Screen::Stopwatch,
             "timing" => Screen::Timing,
             _ => return None,
         })
@@ -76,15 +64,7 @@ impl Screen {
     pub fn needs_event(self) -> bool {
         matches!(
             self,
-            Screen::Results
-                | Screen::Timekeeper
-                | Screen::Start
-                | Screen::Finish
-                | Screen::Stopwatch
-                | Screen::Event
-                | Screen::Entries
-                | Screen::Chat
-                | Screen::Timing
+            Screen::Results | Screen::Timekeeper | Screen::Event | Screen::Chat | Screen::Timing
         )
     }
 }
@@ -110,86 +90,14 @@ pub enum ParcelMode {
     TimingOnly,
 }
 
-/// App-level UI mode: controls which screens appear in the navbar.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Mode {
-    Testing,
-    Organiser,
-    Spectator,
+/// The current user's role on the open event — determines which screens show.
+/// Derived from the event + identity (see [`crate::app::refresh_role`]); never
+/// picked by the user.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Role {
+    #[default]
     Official,
-    Competitor,
-}
-
-impl Mode {
-    /// All modes in display order.
-    pub const ALL: [Mode; 5] = [
-        Mode::Testing,
-        Mode::Organiser,
-        Mode::Spectator,
-        Mode::Official,
-        Mode::Competitor,
-    ];
-
-    /// Human-readable label for the mode picker.
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Testing => "Testing",
-            Mode::Organiser => "Organiser",
-            Mode::Spectator => "Spectator",
-            Mode::Official => "Official",
-            Mode::Competitor => "Competitor",
-        }
-    }
-
-    /// Screens visible in the navbar for this mode (canonical order).
-    pub fn visible_screens(self) -> &'static [Screen] {
-        use Screen::*;
-        match self {
-            Mode::Testing => &[
-                Home, Events, Accounts, Qr, Help, KhanaRules, Results, Timekeeper, Start, Finish,
-                Event, Entries, Chat, Stopwatch, Timing,
-            ],
-            Mode::Organiser => &[
-                Home, Events, Accounts, Qr, Event, Start, Finish, Timekeeper, Stopwatch, Timing,
-                Results, Entries, Chat, Help, KhanaRules,
-            ],
-            Mode::Spectator => &[Home, Qr, Results],
-            Mode::Official => &[
-                Home, Events, Qr, Start, Finish, Timekeeper, Stopwatch, Timing, Results, Entries,
-                Chat, Help, KhanaRules,
-            ],
-            Mode::Competitor => &[Home, Events, Qr, Results, Entries, Help, KhanaRules],
-        }
-    }
-
-    /// Does this mode include the given screen?
-    pub fn has_screen(self, screen: Screen) -> bool {
-        self.visible_screens().contains(&screen)
-    }
-
-    /// Load from localStorage (`kt_mode`), defaulting to Competitor.
-    pub fn from_storage() -> Self {
-        let name = storage()
-            .and_then(|st| st.get_item("kt_mode").ok().flatten())
-            .unwrap_or_default();
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|m| m.label() == name)
-            .unwrap_or(Mode::Competitor)
-    }
-
-    /// Persist to localStorage.
-    pub fn save(self) {
-        if let Some(st) = storage() {
-            let _ = st.set_item("kt_mode", self.label());
-        }
-    }
-}
-
-/// localStorage helper (same pattern as `event::storage()`).
-fn storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
+    Organiser,
 }
 
 /// Khanacross domain state: event data, scores, and run records.
@@ -261,22 +169,15 @@ pub struct Screens {
     pub timing: crate::khana::page::timing::Model,
     pub chat: page::chat::Model,
     pub results: crate::khana::page::results::Model,
-    pub entry_app: crate::entry_app::Model,
-}
-
-/// Domain state for the entry app (independent of khanacross timing).
-#[derive(Clone, Copy)]
-pub struct EntryAppState {
-    pub event: Signal<crate::entry_app::types::EntryEvent>,
 }
 
 #[derive(Clone, Copy)]
 pub struct Model {
     pub screen: Signal<Screen>,
-    pub mode: Signal<Mode>,
+    /// The current user's role on the open event (derived, not user-picked).
+    pub role: Signal<Role>,
     pub khana: KhanaState,
     pub sync: SyncState,
-    pub entry_app: EntryAppState,
     pub screens: Screens,
     /// Wall-clock tick: updated every second by a timer, drives relative
     /// timestamps ("42s ago") in the timing log and attach panels.
@@ -285,7 +186,6 @@ pub struct Model {
 
 pub enum Msg {
     Show(Screen),
-    SetMode(Mode),
     SetEvent(String), // event id to load
     Reload,           // event or score data changed (in storage)
     Conn(crate::sync::Msg),
@@ -297,7 +197,6 @@ pub enum Msg {
     EventMsg(crate::khana::page::event::Msg),
     EventsMsg(page::events::Msg),
     ResultMsg(crate::khana::page::results::Msg),
-    EntryAppMsg(crate::entry_app::Msg),
     /// Export the current event's log as a QR parcel.
     ExportParcel,
     /// Import a pasted/scanned QR parcel into the current event.
@@ -391,7 +290,7 @@ impl Model {
 
         let m = Model {
             screen: create_signal(Screen::Event),
-            mode: create_signal(Mode::from_storage()),
+            role: create_signal(Role::Official),
             tick: create_signal(js_sys::Date::now() as i64),
             khana: KhanaState {
                 event: create_signal(event_info),
@@ -429,9 +328,6 @@ impl Model {
                 scan_status: create_signal(String::new()),
                 parcel_qr_paused: create_signal(false),
             },
-            entry_app: EntryAppState {
-                event: create_signal(crate::entry_app::types::EntryEvent::default()),
-            },
             screens: Screens {
                 home: page::home::init(),
                 events: page::events::init(),
@@ -445,7 +341,6 @@ impl Model {
                 timing: crate::khana::page::timing::init(),
                 chat: page::chat::init(),
                 results,
-                entry_app: crate::entry_app::init(),
             },
         };
         // Restore stopwatch test from persisted timing active_stage
@@ -472,14 +367,6 @@ pub fn show(model: Model, screen: Screen) {
 pub fn update(model: Model, msg: Msg) {
     match msg {
         Msg::Show(screen) => show(model, screen),
-        Msg::SetMode(m) => {
-            m.save();
-            model.mode.set(m);
-            let current = model.screen.get();
-            if !m.has_screen(current) {
-                show(model, Screen::Home);
-            }
-        }
 
         Msg::LoadDemo => {
             crate::event::ensure_demo();
@@ -574,14 +461,10 @@ pub fn update(model: Model, msg: Msg) {
             crate::event::session_set_event(&name);
             crate::event::session_set_recent(&name);
             model.screens.chat.expanded.set(Default::default());
-            // Fresh event: reset any staged entry edits.
-            model.screens.entry_app.staged.set(Vec::new());
-            model.screens.entry_app.confirm.set(None);
-            model.screens.entry_app.admin.set(false);
-            model.screens.entry_app.show_form.set(false);
             // And any pending "open the parcel's event" offer.
             model.sync.parcel_open_event.set(None);
             crate::app::reset_event_ui(model);
+            refresh_role(model);
             refresh_feed(model);
             crate::khana::page::results::update(model, crate::khana::page::results::Msg::Reload);
             crate::sync::join_current_event(model);
@@ -599,7 +482,6 @@ pub fn update(model: Model, msg: Msg) {
         Msg::EventMsg(msg) => crate::khana::page::event::update(model, msg),
         Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => crate::khana::page::results::update(model, msg),
-        Msg::EntryAppMsg(msg) => crate::entry_app::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
         Msg::ExportParcel => crate::sync::export_parcel(model),
         Msg::ImportParcel => crate::sync::import_parcel(model),
@@ -1089,6 +971,46 @@ pub fn reset_event_ui(model: Model) {
     crate::khana::page::start::reset(model);
 }
 
+/// Pure role rule: Demo → Organiser; no owner (draft) → Organiser; the session
+/// or app identity exactly matching the owner or an organiser id → Organiser;
+/// else Official.  (Exact match only — no localpart fallback.)
+pub fn role_for_event(
+    ev: &crate::event::EventInfo,
+    sync_identity: &str,
+    app_identity: &str,
+) -> Role {
+    if ev.is_demo() {
+        return Role::Organiser;
+    }
+    if ev.owner.is_none() {
+        return Role::Organiser;
+    }
+    let matches = ev
+        .organisers
+        .iter()
+        .any(|o| !o.id.is_empty() && (o.id == sync_identity || o.id == app_identity))
+        || ev.owner.as_deref() == Some(sync_identity)
+        || ev.owner.as_deref() == Some(app_identity);
+    if matches {
+        Role::Organiser
+    } else {
+        Role::Official
+    }
+}
+
+/// Derive the current user's role on the open event from identity + event.
+/// Called whenever the event or the identity changes.
+pub fn refresh_role(model: Model) {
+    let role = model.khana.event.with(|ev| {
+        role_for_event(
+            ev,
+            &model.sync.identity.get_clone(),
+            &model.sync.app_identity.get_clone(),
+        )
+    });
+    model.role.set(role);
+}
+
 /// Rebuild the chat feed from the current event's stored log + pending, and
 /// refresh the setup screen's "needs sync" flag (unsent setup manifest).
 pub fn refresh_feed(model: Model) {
@@ -1113,29 +1035,6 @@ pub fn refresh_feed(model: Model) {
                 .starts_with(crate::timing_event::TimingEvent::SETUP_PREFIX)
         });
     model.screens.setup.needs_sync.set(has_unsent_setup);
-}
-
-pub fn refresh_entry_app(model: Model) {
-    let id = model.entry_app.event.with(|e| e.id.clone());
-    if id.is_empty() {
-        return;
-    }
-    let log = crate::log::load_log(&id);
-    let pending = crate::log::load_pending(&id);
-    let mut entries = Vec::new();
-    for msg in log.iter().chain(pending.iter()) {
-        if let Some((entry, delete)) = crate::entry_app::sync::parse_entry_body(&msg.body) {
-            if delete {
-                entries.retain(|e: &crate::entry_app::types::Entry| e.entry_no != entry.entry_no);
-            } else if let Some(existing) = entries.iter_mut().find(|e| e.entry_no == entry.entry_no)
-            {
-                *existing = entry;
-            } else {
-                entries.push(entry);
-            }
-        }
-    }
-    model.entry_app.event.update(|ev| ev.entries = entries);
 }
 
 /// Enqueue a setup-manifest message for the current event (the durable record
@@ -1186,13 +1085,10 @@ pub fn view(model: Model) -> View {
 fn view_content(model: Model) -> View {
     let screen = model.screen.get();
     let needs_event = [
-        Screen::Start,
-        Screen::Finish,
         Screen::Timekeeper,
         Screen::Timing,
         Screen::Results,
         Screen::Chat,
-        Screen::Entries,
     ];
     let no_event = needs_event.contains(&screen) && model.khana.event.with(|e| e.is_null());
 
@@ -1216,13 +1112,9 @@ fn view_content(model: Model) -> View {
                     Screen::Help => page::help::view(),
                     Screen::KhanaRules => crate::khana::page::khana_rule::view(),
                     Screen::Timekeeper => crate::khana::page::timekeeper::view(model),
-                    Screen::Start => crate::khana::page::start::view(model),
-                    Screen::Finish => crate::khana::page::finish::view(model),
-                    Screen::Stopwatch => crate::khana::page::stopwatch::view(model),
                     Screen::Timing => crate::khana::page::timing::view(model),
                     Screen::Results => crate::khana::page::results::view(model),
                     Screen::Event => crate::khana::page::event::view(model),
-                    Screen::Entries => crate::entry_app::view(model),
                     Screen::Chat => page::chat::view(model),
                 }
             })
@@ -1318,11 +1210,11 @@ fn view_tieback_modal(model: Model) -> View {
 }
 
 fn view_navbar(model: Model) -> View {
-    let mode = model.mode.get();
+    let role = model.role.get();
     let has_event = !model.khana.event.with(|e| e.is_null());
 
     // One ordered list of all screens — importance order.
-    // Filtered by mode + event state.
+    // Filtered by role + event state.
     let all_items: &[(Screen, &str, &str)] = &[
         (Screen::Home, "fa fa-home", "Home"),
         (Screen::Timing, "fa fa-stopwatch", "Time"),
@@ -1330,7 +1222,6 @@ fn view_navbar(model: Model) -> View {
         (Screen::Chat, "fa fa-comments", "Chat"),
         (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Config"),
-        (Screen::Entries, "fa fa-users", "Entries"),
         (Screen::Timekeeper, "fa fa-stopwatch-20", "Manual"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
         (Screen::Qr, "fa fa-qrcode", "QR"),
@@ -1342,19 +1233,54 @@ fn view_navbar(model: Model) -> View {
     let needs_event = |s: Screen| {
         matches!(
             s,
-            Screen::Start
-                | Screen::Finish
-                | Screen::Timekeeper
-                | Screen::Timing
-                | Screen::Results
-                | Screen::Chat
-                | Screen::Entries
+            Screen::Timekeeper | Screen::Timing | Screen::Results | Screen::Chat
         )
+    };
+
+    // Role → visible screens.  Organisers get everything (config + accounts);
+    // officials get timing/results/comms but not event setup or account admin.
+    let role_screens: &[Screen] = match role {
+        Role::Organiser => &[
+            Screen::Home,
+            Screen::Timing,
+            Screen::Results,
+            Screen::Chat,
+            Screen::Events,
+            Screen::Event,
+            Screen::Timekeeper,
+            Screen::Accounts,
+            Screen::Qr,
+            Screen::Help,
+            Screen::KhanaRules,
+        ],
+        Role::Official => &[
+            Screen::Home,
+            Screen::Timing,
+            Screen::Results,
+            Screen::Chat,
+            Screen::Events,
+            Screen::Timekeeper,
+            Screen::Qr,
+            Screen::Help,
+            Screen::KhanaRules,
+        ],
+    };
+    // No event open: only the welcome/login hub + public screens.
+    let visible_screens = if !has_event {
+        &[
+            Screen::Home,
+            Screen::Events,
+            Screen::Qr,
+            Screen::Help,
+            Screen::KhanaRules,
+        ][..]
+    } else {
+        role_screens
     };
 
     let filtered: Vec<_> = all_items
         .iter()
-        .filter(|(s, _, _)| mode.has_screen(*s))
+        .filter(|(s, _, _)| visible_screens.contains(s))
         .filter(|(s, _, _)| !needs_event(*s) || has_event)
         .collect();
 
@@ -1445,12 +1371,8 @@ mod tests {
             Screen::KhanaRules,
             Screen::Results,
             Screen::Timekeeper,
-            Screen::Start,
-            Screen::Finish,
             Screen::Event,
-            Screen::Entries,
             Screen::Chat,
-            Screen::Stopwatch,
             Screen::Timing,
             Screen::Accounts,
             Screen::Qr,
@@ -1459,47 +1381,60 @@ mod tests {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));
         }
         assert_eq!(Screen::from_name("bogus"), None);
+        assert_eq!(Screen::from_name("entries"), None);
+        assert_eq!(Screen::from_name("start"), None);
     }
 
     #[test]
-    fn mode_visible_screens_contains_all() {
-        // Every screen should appear in at least one mode.
-        for screen in [
-            Screen::Home,
-            Screen::Events,
-            Screen::Help,
-            Screen::KhanaRules,
-            Screen::Results,
-            Screen::Timekeeper,
-            Screen::Start,
-            Screen::Finish,
-            Screen::Event,
-            Screen::Entries,
-            Screen::Chat,
-            Screen::Stopwatch,
-            Screen::Timing,
-            Screen::Accounts,
-            Screen::Qr,
-        ] {
-            assert!(
-                Mode::ALL.iter().any(|m| m.has_screen(screen)),
-                "{screen:?} not visible in any mode"
-            );
-        }
+    fn refresh_role_demo_is_organiser() {
+        let ev = crate::event::EventInfo {
+            id: crate::event::DEMO_EVENT_ID.into(),
+            ..Default::default()
+        };
+        assert!(ev.is_demo());
+        // refresh_role is driven by model signals; the pure predicate lives in
+        // the event-derived rule — demo → organiser.
+        assert_eq!(role_for_event(&ev, "", ""), Role::Organiser);
     }
 
     #[test]
-    fn mode_label_round_trips() {
-        for &m in &Mode::ALL {
-            let label = m.label();
-            let expected = match m {
-                Mode::Testing => "Testing",
-                Mode::Organiser => "Organiser",
-                Mode::Spectator => "Spectator",
-                Mode::Official => "Official",
-                Mode::Competitor => "Competitor",
-            };
-            assert_eq!(label, expected);
-        }
+    fn refresh_role_no_owner_is_organiser() {
+        let ev = crate::event::EventInfo::default(); // no owner
+        assert_eq!(role_for_event(&ev, "", ""), Role::Organiser);
+    }
+
+    #[test]
+    fn refresh_role_exact_identity_match() {
+        let mut ev = crate::event::EventInfo {
+            owner: Some("@alice:matrix.org".into()),
+            ..Default::default()
+        };
+        ev.organisers.push(crate::event::Official {
+            id: "@alice:matrix.org".into(),
+            name: "Alice".into(),
+            role: crate::event::ROLE_KEY_OFFICIAL.into(),
+            phone: None,
+            homeservers: vec![],
+        });
+        // Owner match via app identity.
+        assert_eq!(
+            role_for_event(&ev, "@alice:matrix.org", ""),
+            Role::Organiser
+        );
+        // Organiser-list match via session identity.
+        assert_eq!(
+            role_for_event(&ev, "", "@alice:matrix.org"),
+            Role::Organiser
+        );
+        // Someone else → Official.
+        assert_eq!(
+            role_for_event(&ev, "@bob:hs", "@bob:matrix.org"),
+            Role::Official
+        );
+        // Exact match only: different localpart is NOT a match.
+        assert_eq!(
+            role_for_event(&ev, "@alice:other", "@alice:other"),
+            Role::Official
+        );
     }
 }

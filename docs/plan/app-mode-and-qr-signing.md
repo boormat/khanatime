@@ -1,7 +1,10 @@
 # Plan: App Mode System + QR Parcel Signing
 
 **Date:** 2026-08-18
-**Status:** Proposed
+**Status:** Part 1 (App Mode) is **obsolete** — the mode system was removed.
+The user's role is now derived from the open event + identity (`app::Role`,
+`refresh_role`), not picked (`docs/plan/identity-login.md`). Part 2 (QR parcel
+signing) landed as per-observation signing (see `docs/research/Cryptography.md`).
 **Note:** Other code changes (Entry trim, homeserver picker fix) are landing simultaneously.
 
 ---

@@ -636,12 +636,9 @@ fn switch_to_draft(model: crate::Model, ev: crate::event::EventInfo) {
     crate::event::session_set_event(&id);
     crate::event::session_set_recent(&id);
     model.screens.chat.expanded.set(Default::default());
-    model.screens.entry_app.staged.set(Vec::new());
-    model.screens.entry_app.confirm.set(None);
-    model.screens.entry_app.admin.set(false);
-    model.screens.entry_app.show_form.set(false);
     model.sync.parcel_open_event.set(None);
     crate::app::reset_event_ui(model);
+    crate::app::refresh_role(model);
     crate::app::refresh_feed(model);
     let em = model.screens.setup;
     em.edit_event.set(Some(ev));
@@ -662,6 +659,21 @@ fn create_draft(model: crate::Model) {
     // A fresh event starts with a single test; the organiser adds more.
     e.stages = vec![crate::event::Stage::for_test(1)];
     e.ensure_uid();
+    // The creator is the default owner + key official — an event always has a
+    // user (create is gated on having an identity).
+    let creator = crate::khana::helpers::current_official(model);
+    if !creator.is_empty() {
+        e.owner = Some(creator.clone());
+        if !e.organisers.iter().any(|o| o.id == creator) {
+            e.organisers.push(crate::event::Official {
+                id: creator.clone(),
+                name: String::new(),
+                role: crate::event::ROLE_KEY_OFFICIAL.into(),
+                phone: None,
+                homeservers: vec![],
+            });
+        }
+    }
     model
         .screens
         .setup
