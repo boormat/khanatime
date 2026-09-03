@@ -11,13 +11,17 @@
 - `docs/research/` — comms research (Matrix, BLE, Berty, mesh, crypto)
 - `docs/plan/timing-unknown.md` — UNKNOWN entry flow + resolver (timing screens)
 - `docs/plan/car-numbers.md` — car numbers, entry identity, shared cars
-- `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format (deferred: just in time for the first official release)
+- `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format (first official release)
+- `docs/plan/release-versioning.md` — **app release pin**: event locked to `/vX.Y.Z/` URL; QR + `app_version` on messages/localStorage
+- `docs/plan/room-security.md` — timing-room lockdowns (invite-only write; QR levels 1–3; spectators read-only)
+- `docs/plan/ui-e2e.md` — **Playwright E2E** for click-flow / presentation / state regressions (pre-release)
 - `docs/plan/qr-join.md` — QR join links: scan-to-join bootstrap (URL → connect + adopt published event)
 - `docs/plan/multi-transport.md` — multi-transport timing: QR parcel handoff + dual homeserver relay, and event/observation ids with amendments
 - `docs/plan/identity-amendments.md` — Phase 1: event/observation ids + `amend`/`void` wire format v2 (implementation detail)
 - `docs/plan/layout-navigation.md` — nav/layout rework: burger menu, unified stopwatch, COC event status, About page
 - `docs/plan/matrix-login.md` — passwordless matrix.org login via OIDC (MAS) SSO: auth-code + PKCE flow, new-tab BroadcastChannel handoff
 - `AGENTS.md` — build/test commands and code layout
+- **Things to sort** (this file) — before show-and-tell / practice day / prod / 2nd release
 
 ---
 
@@ -355,9 +359,151 @@ of Y, categories with Outright locked.
 
 ---
 
+## Things to sort (release gates)
+
+Working priority list. Check items off here; detail lives in `docs/plan/` and
+`docs/bugs.md`. The milestone roadmap below (M1–M5) is historical and partly
+stale — prefer this section when deciding what to do next.
+
+### 0. Pre-release tooling — UI E2E (must start early)
+
+Unit + `wasm-bindgen-test` miss **click flows, presentation, and cross-page
+state** — those regressions keep hitting officials. Add Playwright before we
+lean on practice/prod. Detail: `docs/plan/ui-e2e.md`.
+
+- [ ] Scaffold `e2e/` Playwright project + `scripts/e2e.sh` (Trunk build/serve)
+- [ ] Stable `data-testid` (or aria) hooks on Timing / Results / navbar controls
+- [ ] Core specs green: Demo Start→Stop→Confirm→Results; Manual/TBA comment
+      gate; provisional edit doesn’t steal focus / hide buttons; event-switch
+      clears car/stage hangover
+- [ ] Desktop + one mobile Chromium project; traces on failure
+- [ ] Wire into CI / gate deploy once stable (may start advisory in `check.sh`)
+- [ ] Document in `AGENTS.md` next to wasm-test
+
+Do **not** wait for Matrix: first slice is Demo / localStorage-only. Publish +
+QR join specs follow once Level 1 room security exists.
+
+### 1. Before show-and-tell demo
+
+Short scripted walkthrough (demo-training or a throwaway local event). Goal:
+looks solid, doesn't crash, timing → results story is clear. Prefer the E2E
+core specs green so the walkthrough isn’t the only safety net.
+
+- [ ] Scripted walkthrough: open Demo → time a few cars (Start/Stop + Manual) →
+      confirm provisional → Results update; note any panic / blank UI
+- [ ] Mobile viewport pass on Timing + Results (phones are the audience)
+- [ ] Help / About enough to answer "what is this?" without a live narrator
+      (`docs/plan/layout-navigation.md` About page — or a short Help rewrite)
+- [ ] Deployed Pages build works for the demo URL
+      (https://boormat.github.io/khanatime/) — or a pinned `serve.sh` fallback
+- [ ] Optional wow: QR parcel handoff between two devices (offline box)
+- [ ] Known demo-killers fixed if they still reproduce (focus-steal, stale
+      provisional hiding buttons, TBA comment gate) — see `docs/bugs.md` B7–B14
+
+### 2. Before practice / training day
+
+Published practice event on a LAN Synapse with real officials and shared
+devices. Goal: join → time → sync across phones without a developer in the
+room. See `docs/practice-event-guide.md` + `docs/plan/remote-setup.md`.
+
+- [ ] Organiser setup one-pager: travel router / laptop hotspot / serve app over
+      LAN http (finish `docs/plan/remote-setup.md` checklist)
+- [ ] Practice event path verified end-to-end: Plan → name/year → publish →
+      invite QR → phone scan/join → time → second device sees results
+- [ ] Publish gaps closed enough for practice: alias-already-taken warning;
+      invite organisers / grant admin PL after rooms created
+      (`docs/plan/event-admin-accounts.md` §3)
+- [ ] QR join camera path on the phones you actually use (jsQR fallback already
+      for Brave; confirm Safari/Chrome Android)
+- [ ] Shared timekeeper laptop story documented and tried (event shared login
+      vs per-device accounts) — `docs/practice-event-guide.md`
+- [ ] Signing / trust gate explained to officials (unsigned drops; TOFU on
+      unknown keys) — no surprise "where did my times go?"
+- [ ] Mistake recovery on course: void + re-enter / amend UI usable without
+      Chat diagnostics (`docs/plan/identity-amendments.md` Correct/Void UI)
+- [ ] Wifi-fail fallback rehearsed: QR parcel export/import + relay-on-reconnect
+- [ ] Key-official real name + mobile enforced at publish (already required —
+      confirm the UX is obvious)
+
+### 3. Before prod / first official release
+
+Hardening practice can live without — until real weekend data must survive a
+deploy. **Two must-lands:** locked app releases + timing-room write lockdown.
+
+#### 3a. App release pin + schema version (must)
+
+Organiser locks the event to a **tagged WASM build**; invite URLs open that
+build, not floating Pages. Detail: `docs/plan/release-versioning.md` +
+`docs/plan/record-versioning.md`.
+
+- [ ] Versioned host paths: `…/khanatime/vX.Y.Z/` (immutable); floating
+      `…/khanatime/` is latest/demo only — **never** in event invite QRs
+- [ ] Bake `app_version` into the build (`X.Y.Z` vs `dev+hash`)
+- [ ] Event pin: store `app_version` on publish / freeze; setup manifest carries it
+- [ ] Invite QR base URL = pinned release path + existing join query
+      (`homeserver/event/sid/tid/reg`)
+- [ ] Adopt/resume: hard banner if running build ≠ event pin (published events)
+- [ ] Schema version on wire + localStorage envelopes; reject `version > current`
+- [ ] Carry `app_version` on outbound messages and localStorage for support
+- [ ] Deploy workflow publishes `/vX.Y.Z/` + optional latest; `check.sh` gates it
+- [ ] About shows running `app_version`
+
+#### 3b. Timing-room security (must)
+
+Timing room is **not public-write**. Official write QR is a secret.
+Detail: `docs/plan/room-security.md`.
+
+- [ ] Publish: `join_rules: invite`, elevated `events_default` (writers need PL)
+- [ ] Level 1 (standard): Matrix invite embedded in event/QR → join with **write
+      PL**; only officials scan; leaked QR ≈ rotate invite
+- [ ] Spectators: read-only invite **or** discover/peek — **no** write PL
+      (default discover OK for practice)
+- [ ] Level 2: same crypto/ACL, ops-only — invite shown screen-to-screen, not
+      printed
+- [ ] Results finalisation: mark Finished + Results UI; **no** separate public
+      results room for v1 (read-only timing access is enough)
+- [ ] Practice guide: treat write QR as a key; don’t post it publicly
+- [ ] Keep body signing/TOFU as defence-in-depth (not a substitute for ACL)
+
+#### 3c. Other first-release polish
+
+- [ ] E2E harden: nav/Results specs; optional screenshots; Synapse publish/join
+      smoke on pinned `/vX.Y.Z/` (`docs/plan/ui-e2e.md`)
+- [ ] Panic / error reporting polish
+- [ ] Mobile layout pass; decide PWA / service worker (SW removed earlier)
+- [ ] COC Event Status + withdraw reason + stage closed/missed
+      (`docs/plan/layout-navigation.md`)
+- [ ] Timing UNKNOWN / TBA resolver (`docs/plan/timing-unknown.md`)
+- [ ] Multi-stopwatch averaging + timekeeper outlier discard (regs path)
+- [ ] Results: tied positions (`Pos.eq` → `=1`); Finish live timestamps (T8)
+- [ ] Event-config edit-context hangover (B13 leftover)
+
+### 4. Second release
+
+After a locked v1 is in the wild. Detail: `docs/plan/multi-transport.md` +
+`release-versioning.md` § Second release.
+
+- [ ] Dual homeserver / event-LAN webserver support
+- [ ] Invite QRs still **point at the GitHub release URL** by default
+- [ ] In-app scan of invite URLs: parse query, **ignore host/path**, run the
+      installed release; still honour event `app_version` pin
+- [ ] LAN fallback: local served `/vX.Y.Z/` (or laptop http) when offline —
+      secondary to the GitHub release QR
+- [ ] Level 3 enrolment: official shows identity QR → key official scans →
+      register + room invite + write PL (`room-security.md`)
+- [ ] Dual-HS relay + auto-fanout (Pillar 2)
+
+**Explicitly later (not a release gate unless an event demands it):** Voice PTT /
+Element Call widget; car photos; RaptorQ fountain QR; full start/finish
+domain-model rewrite in M1 (current stopwatch + observation model is the live
+path); derived public results room.
+
+---
+
 ## Roadmap / TODO
 
-Milestone order; check items off as done.
+Historical milestone order (partly stale vs current app). Prefer **Things to
+sort** above. Check items off as done only if still accurate.
 
 ### M1 — Domain model + storage (no Matrix yet)
 - [ ] Move timing to separate start/finish event records (pairing key
