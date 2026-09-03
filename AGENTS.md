@@ -123,8 +123,7 @@ src/
 │   ├── qr.rs           # QR parcel codec (DEFLATE+base64, SVG rendering)
 │   └── matrix.rs       # matrix-sdk transport wrapper (wasm)
 ├── page/               # shared pages (generic, not khanacross-specific)
-│   ├── home.rs         # sign-in + current-event dashboard
-│   ├── events.rs       # event hub: demo / search published / QR / plan new
+│   ├── home.rs         # fixed hub: identity/status, current event, create, saved events
 │   ├── accounts.rs     # account/homeserver management
 │   ├── chat.rs         # read-only room message view
 │   └── help.rs         # usage help

@@ -229,6 +229,7 @@ fn view_stage_list(model: crate::Model) -> View {
             p(class="subtitle is-6 has-text-grey") {
                 (format!("{count} stage{}", if count == 1 { "" } else { "s" }))
             }
+            (crate::page::home::view_status_summary(model))
             (stage_items)
         }
     }

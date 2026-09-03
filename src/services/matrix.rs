@@ -32,7 +32,6 @@ use ruma::{
     api::{
         client::{
             account::register::{self, RegistrationKind},
-            directory::get_public_rooms_filtered,
             message::get_message_events,
             room::{
                 create_room::{
@@ -303,18 +302,6 @@ pub fn load_session_for(homeserver: &str) -> Option<Account> {
         .find(|a| a.homeserver == homeserver && a.active)
         .cloned()
         .or_else(|| accounts.into_iter().find(|a| a.homeserver == homeserver))
-}
-
-/// True when `homeserver` belongs to matrix.org.  Its session is stored as the
-/// resolved endpoint (matrix-client.matrix.org), so match by host.  Delegates
-/// to the shared pure helper (single source of truth, see `event.rs`).
-pub fn is_matrix_org(homeserver: &str) -> bool {
-    crate::event::is_matrix_org_homeserver(homeserver)
-}
-
-/// True when a stored account belongs to matrix.org.
-pub fn has_matrix_org_session() -> bool {
-    read_accounts().iter().any(|a| is_matrix_org(&a.homeserver))
 }
 
 /// The currently-active homeserver (most recently used), if any.
@@ -1239,56 +1226,6 @@ pub async fn ensure_client_for(homeserver: &str) -> Result<Client, String> {
     }
     set_client(Some(c.clone()));
     Ok(c)
-}
-
-/// A published event found via the room-directory search.
-#[derive(Debug, Clone)]
-pub struct EventSearchResult {
-    pub name: String,
-    pub alias: String,
-    pub room_id: String,
-}
-
-/// Search the homeserver's public room directory for published khanatime event
-/// spaces (rooms with an `io.kt.event`-style alias or a `kt-` alias).
-pub async fn search_events(client: &Client, term: &str) -> Result<Vec<EventSearchResult>, String> {
-    let mut request = get_public_rooms_filtered::v3::Request::new();
-    request.limit = Some(uint!(20));
-    let mut filter = ruma::directory::Filter::default();
-    filter.generic_search_term = Some(term.to_string());
-    request.filter = filter;
-    let response = client.send(request).await.map_err(|e| e.to_string())?;
-    let out = response
-        .chunk
-        .into_iter()
-        .filter(|c| c.room_type == Some(RoomType::Space))
-        .filter(|c| {
-            let alias = c
-                .canonical_alias
-                .as_ref()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
-            alias.starts_with("#kt-")
-                || c.name
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains("khanatime")
-        })
-        .map(|c| {
-            let alias = c
-                .canonical_alias
-                .as_ref()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
-            EventSearchResult {
-                name: c.name.unwrap_or_default(),
-                alias,
-                room_id: c.room_id.to_string(),
-            }
-        })
-        .collect();
-    Ok(out)
 }
 
 /// Join an event space by **room id** (no alias) and build the

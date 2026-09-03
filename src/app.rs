@@ -13,7 +13,6 @@ use sycamore::prelude::*;
 pub enum Screen {
     #[default]
     Home,
-    Events,
     Accounts,
     Qr,
     Help,
@@ -30,7 +29,6 @@ impl Screen {
     pub fn name(self) -> &'static str {
         match self {
             Screen::Home => "home",
-            Screen::Events => "events",
             Screen::Accounts => "accounts",
             Screen::Qr => "qr",
             Screen::Help => "help",
@@ -46,7 +44,6 @@ impl Screen {
     pub fn from_name(name: &str) -> Option<Screen> {
         Some(match name {
             "home" => Screen::Home,
-            "events" => Screen::Events,
             "accounts" => Screen::Accounts,
             "qr" => Screen::Qr,
             "help" => Screen::Help,
@@ -158,7 +155,6 @@ pub struct SyncState {
 #[derive(Clone, Copy)]
 pub struct Screens {
     pub home: page::home::Model,
-    pub events: page::events::Model,
     pub accounts: page::accounts::Model,
     pub qr: page::qr::Model,
     pub setup: crate::khana::page::event::Model,
@@ -195,7 +191,6 @@ pub enum Msg {
     StopwatchMsg(crate::khana::page::stopwatch::Msg),
     TimingMsg(crate::khana::page::timing::Msg),
     EventMsg(crate::khana::page::event::Msg),
-    EventsMsg(page::events::Msg),
     ResultMsg(crate::khana::page::results::Msg),
     /// Export the current event's log as a QR parcel.
     ExportParcel,
@@ -330,7 +325,6 @@ impl Model {
             },
             screens: Screens {
                 home: page::home::init(),
-                events: page::events::init(),
                 accounts: page::accounts::init(),
                 qr: page::qr::init(),
                 setup: crate::khana::page::event::init(),
@@ -480,7 +474,6 @@ pub fn update(model: Model, msg: Msg) {
         Msg::StopwatchMsg(msg) => crate::khana::page::stopwatch::update(model, msg),
         Msg::TimingMsg(msg) => crate::khana::page::timing::update(model, msg),
         Msg::EventMsg(msg) => crate::khana::page::event::update(model, msg),
-        Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => crate::khana::page::results::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
         Msg::ExportParcel => crate::sync::export_parcel(model),
@@ -1099,14 +1092,13 @@ fn view_content(model: Model) -> View {
                     div(class="notification is-warning is-light mt-4") {
                         p { "No event loaded." }
                         a(class="has-text-link", on:click=move |_| {
-                            crate::update(model, crate::Msg::Show(crate::Screen::Events));
+                            crate::update(model, crate::Msg::Show(crate::Screen::Home));
                         }) { "Pick an event" }
                     }
                 }
             } else {
                 match screen {
                     Screen::Home => page::home::view(model),
-                    Screen::Events => page::events::view(model),
                     Screen::Accounts => page::accounts::view(model),
                     Screen::Qr => page::qr::view(model),
                     Screen::Help => page::help::view(),
@@ -1220,7 +1212,6 @@ fn view_navbar(model: Model) -> View {
         (Screen::Timing, "fa fa-stopwatch", "Time"),
         (Screen::Results, "fa fa-trophy", "Results"),
         (Screen::Chat, "fa fa-comments", "Chat"),
-        (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Config"),
         (Screen::Timekeeper, "fa fa-stopwatch-20", "Manual"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
@@ -1245,7 +1236,6 @@ fn view_navbar(model: Model) -> View {
             Screen::Timing,
             Screen::Results,
             Screen::Chat,
-            Screen::Events,
             Screen::Event,
             Screen::Timekeeper,
             Screen::Accounts,
@@ -1258,7 +1248,6 @@ fn view_navbar(model: Model) -> View {
             Screen::Timing,
             Screen::Results,
             Screen::Chat,
-            Screen::Events,
             Screen::Timekeeper,
             Screen::Qr,
             Screen::Help,
@@ -1267,13 +1256,7 @@ fn view_navbar(model: Model) -> View {
     };
     // No event open: only the welcome/login hub + public screens.
     let visible_screens = if !has_event {
-        &[
-            Screen::Home,
-            Screen::Events,
-            Screen::Qr,
-            Screen::Help,
-            Screen::KhanaRules,
-        ][..]
+        &[Screen::Home, Screen::Qr, Screen::Help, Screen::KhanaRules][..]
     } else {
         role_screens
     };
@@ -1366,7 +1349,6 @@ mod tests {
     fn screen_name_round_trips() {
         let all = [
             Screen::Home,
-            Screen::Events,
             Screen::Help,
             Screen::KhanaRules,
             Screen::Results,
@@ -1381,6 +1363,7 @@ mod tests {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));
         }
         assert_eq!(Screen::from_name("bogus"), None);
+        assert_eq!(Screen::from_name("events"), None);
         assert_eq!(Screen::from_name("entries"), None);
         assert_eq!(Screen::from_name("start"), None);
     }
