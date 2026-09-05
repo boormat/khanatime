@@ -1243,6 +1243,23 @@ pub fn is_matrix_org_homeserver(homeserver: &str) -> bool {
     host == "matrix.org" || host.ends_with(".matrix.org")
 }
 
+/// The canonical key for a homeserver's stored account/config.  matrix.org is
+/// reached through its well-known client-server endpoint
+/// `https://matrix-client.matrix.org`, so a resolved client reports that URL
+/// even though the user configured `https://matrix.org` — sessions must be
+/// stored under the config's URL or they never associate (B24).  Also strips
+/// the trailing slash a matrix-sdk `Url` serializes with, so a resolved client
+/// reports `https://matrix-client.matrix.org/` (slash included).
+#[allow(dead_code)] // used from services/matrix.rs (wasm build)
+pub fn canonical_homeserver(homeserver: &str) -> String {
+    let hs = homeserver.trim_end_matches('/');
+    if hs == "https://matrix-client.matrix.org" {
+        "https://matrix.org".to_string()
+    } else {
+        hs.to_string()
+    }
+}
+
 /// Default Element Web origin for `homeserver` (used when the event has no
 /// explicit `element_link`): app.element.io for Matrix, else the local Element
 /// dev instance.  Empty for an unknown/blank homeserver.
@@ -3231,6 +3248,32 @@ mod tests {
         assert_eq!(shared_car_key(" abc 123 "), "abc 123");
         assert_eq!(shared_car_key("Bob's MX5"), "bob's mx5");
         assert_eq!(shared_car_key("Erin's   MX-5"), "erin's mx-5");
+    }
+
+    #[test]
+    fn canonical_homeserver_maps_matrix_org_endpoint() {
+        assert_eq!(
+            canonical_homeserver("https://matrix-client.matrix.org"),
+            "https://matrix.org"
+        );
+        // A matrix-sdk Url serializes with a trailing slash — still canonical.
+        assert_eq!(
+            canonical_homeserver("https://matrix-client.matrix.org/"),
+            "https://matrix.org"
+        );
+        assert_eq!(
+            canonical_homeserver("https://matrix.org"),
+            "https://matrix.org"
+        );
+        assert_eq!(
+            canonical_homeserver("http://localhost:8008"),
+            "http://localhost:8008"
+        );
+        // Trailing slash is normalised off, so lookups agree with typed configs.
+        assert_eq!(
+            canonical_homeserver("http://localhost:8008/"),
+            "http://localhost:8008"
+        );
     }
 
     #[test]

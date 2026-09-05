@@ -964,7 +964,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 set_local_identity_if_empty(model, &user_id);
                 model.sync.conn.set(ConnState::LoggedIn(user_id));
                 model.sync.room.set(room_id);
-                crate::update(model, crate::Msg::Show(crate::Screen::Home));
+                crate::update(model, crate::Msg::Show(model.sync.return_to.get_clone()));
                 flush_pending(model);
                 // Resume a pending join if it targets this homeserver.
                 let pending = model.sync.pending_join.get_clone();
@@ -1159,7 +1159,7 @@ fn sso_complete(model: Model, callback_url: String) {
                     crate::update(model, crate::Msg::Join(link));
                     return;
                 }
-                crate::update(model, crate::Msg::Show(crate::Screen::Home));
+                crate::update(model, crate::Msg::Show(model.sync.return_to.get_clone()));
                 flush_pending(model);
             }
             Err(e) => model.sync.conn.set(ConnState::Error(e)),

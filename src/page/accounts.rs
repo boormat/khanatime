@@ -13,6 +13,8 @@ pub struct Model {
     pub feedback: Signal<String>,
     /// Homeserver awaiting a Forget confirmation ("are you sure" modal).
     pub forget_target: Signal<Option<String>>,
+    /// Homeserver/contact awaiting a Remove confirmation (B26).
+    pub remove_target: Signal<Option<RemoveTarget>>,
     /// Send Hello modal state: homeserver + user_id of selected account.
     pub hello_target: Signal<Option<(String, String)>>,
     // Unified sign-in / create section (used by modal)
@@ -45,6 +47,16 @@ pub enum QrTarget {
     Contact(String),
 }
 
+/// A destructive remove awaiting confirmation (B26) — the delete never fires
+/// on a stray click; the confirm modal requires an explicit "Remove".
+#[derive(Clone, PartialEq, Eq)]
+pub enum RemoveTarget {
+    /// Remove a homeserver config (only offered when it has no accounts).
+    Homeserver(String),
+    /// Remove a contact from this device.
+    Contact(String),
+}
+
 /// Reachability state of a Matrix homeserver, shown as a status chip.
 #[derive(Clone, PartialEq)]
 pub enum ConnStatus {
@@ -68,6 +80,7 @@ impl Model {
             show_qr: create_signal(None),
             feedback: create_signal(String::new()),
             forget_target: create_signal(None),
+            remove_target: create_signal(None),
             hello_target: create_signal(None),
             create_hs: create_signal(String::new()),
             create_type: create_signal(0u8),
@@ -126,6 +139,7 @@ pub fn view(model: crate::Model) -> View {
                 None => view! {},
             })
             (view_forget_modal(model))
+            (view_remove_modal(model))
             (view_hello_modal(model))
             (if !sm.feedback.get_clone().is_empty() {
                 let msg = sm.feedback.get_clone();
@@ -275,8 +289,9 @@ fn view_homeservers(model: crate::Model) -> View {
                                 class="button is-small is-danger is-outlined",
                                 title="Remove homeserver",
                                 on:click=move |_| {
-                                    crate::services::matrix::remove_homeserver(&hs_url_remove);
-                                    sm.refresh.update(|v| v.wrapping_add(1));
+                                    sm.remove_target.set(Some(RemoveTarget::Homeserver(
+                                        hs_url_remove.clone(),
+                                    )));
                                 },
                             ) {
                                 span(class="icon is-small") { i(class="fa fa-xmark") }
@@ -447,8 +462,7 @@ fn view_contacts(model: crate::Model) -> View {
                             class="button is-danger is-outlined",
                             title="Remove contact",
                             on:click=move |_| {
-                                crate::services::matrix::remove_contact(&c_uid2);
-                                sm.refresh.set(sm.refresh.get() + 1);
+                                sm.remove_target.set(Some(RemoveTarget::Contact(c_uid2.clone())));
                             },
                         ) {
                             span(class="icon is-small") { i(class="fa fa-trash") }
@@ -530,12 +544,33 @@ fn view_action_buttons(_model: crate::Model) -> View {
 fn view_create_modal(model: crate::Model) -> View {
     let sm = model.screens.accounts;
     let homeservers = crate::services::matrix::load_homeservers();
-    let hs_opts: Vec<View> = homeservers
+    let hs_tags: Vec<View> = homeservers
         .iter()
         .map(|hs| {
-            let label = crate::page::home::hs_host_port(&hs.url);
             let url = hs.url.clone();
-            view! { option(value=url) { (label) } }
+            view! {
+                (move || {
+                    let url = url.clone();
+                    let label = crate::page::home::hs_host_port(&url);
+                    let selected = sm.create_hs.get_clone() == url;
+                    let cls = format!(
+                        "button is-small kt-hs-tag {}",
+                        if selected { "is-primary is-selected" } else { "is-light" }
+                    );
+                    view! {
+                        button(
+                            class=cls,
+                            title=if selected { "Selected" } else { "Use this homeserver" },
+                            on:click=move |_| sm.create_hs.set(url.clone()),
+                        ) {
+                            span(class="icon is-small") {
+                                i(class=if selected { "fa fa-circle-check" } else { "fa fa-circle" })
+                            }
+                            span { (label) }
+                        }
+                    }
+                })
+            }
         })
         .collect();
     let selected_hs = sm.create_hs.get_clone();
@@ -564,7 +599,6 @@ fn view_create_modal(model: crate::Model) -> View {
             .collect()
     };
 
-    let hs_empty = hs_opts.is_empty();
     let event_empty = event_opts.is_empty();
 
     // Right-column form content
@@ -585,6 +619,7 @@ fn view_create_modal(model: crate::Model) -> View {
                         class="button is-link",
                         on:click=move |_| {
                             sm.show_create.set(false);
+                            model.sync.return_to.set(crate::Screen::Accounts);
                             crate::update(model, crate::Msg::Conn(crate::sync::Msg::SsoLoginFor(hs_for_sso.clone())));
                         },
                     ) {
@@ -682,13 +717,8 @@ fn view_create_modal(model: crate::Model) -> View {
                         div(class="column is-4") {
                             div(class="field") {
                                 label(class="label") { "Homeserver" }
-                                div(class="control") {
-                                    div(class="select is-fullwidth") {
-                                        select(bind:value=sm.create_hs, disabled=hs_empty) {
-                                            option(value="") { "Select…" }
-                                            (hs_opts)
-                                        }
-                                    }
+                                div(class="kt-hs-tags") {
+                                    (hs_tags)
                                 }
                                 p(class="help") {
                                     (move || view_hs_status(
@@ -753,6 +783,7 @@ fn view_create_modal(model: crate::Model) -> View {
                                 let hs = sm.create_hs.get_clone();
                                 let username = sm.create_user.get_clone();
                                 sm.show_create.set(false);
+                                model.sync.return_to.set(crate::Screen::Accounts);
                                 crate::update(model, crate::Msg::Conn(crate::sync::Msg::AddHomeserver { hs, username }));
                             },
                         ) {
@@ -851,6 +882,26 @@ fn view_add_hs_modal(model: crate::Model) -> View {
                         ) {
                             span(class="icon is-small") { i(class="fa fa-bolt") }
                             span { "matrix.org" }
+                        }
+                        button(
+                            class="button is-light is-small",
+                            on:click=move |_| {
+                                sm.add_hs_url.set("http://localhost:8008".to_string());
+                                sm.add_hs_name.set("localhost".to_string());
+                            },
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-server") }
+                            span { "localhost:8008" }
+                        }
+                        button(
+                            class="button is-light is-small",
+                            on:click=move |_| {
+                                sm.add_hs_url.set("http://boomtime.local:8008".to_string());
+                                sm.add_hs_name.set("boomtime.local".to_string());
+                            },
+                        ) {
+                            span(class="icon is-small") { i(class="fa fa-server") }
+                            span { "boomtime.local:8008" }
                         }
                     }
                     div(class="field") {
@@ -1193,5 +1244,70 @@ fn view_forget_modal(model: crate::Model) -> View {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn view_forget_modal(_model: crate::Model) -> View {
+    view! {}
+}
+
+// ---------------------------------------------------------------------------
+// Remove confirmation modal (homeserver / contact) — B26
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "wasm32")]
+fn view_remove_modal(model: crate::Model) -> View {
+    let sm = model.screens.accounts;
+    let Some(target) = sm.remove_target.get_clone() else {
+        return view! {};
+    };
+    let (title, body) = match &target {
+        RemoveTarget::Homeserver(url) => (
+            "Remove this homeserver?",
+            format!(
+                "Remove the homeserver entry for {}.",
+                crate::page::home::hs_host_port(url)
+            ),
+        ),
+        RemoveTarget::Contact(uid) => (
+            "Remove this contact?",
+            format!("Remove the contact {uid} from this device."),
+        ),
+    };
+    let confirm_target = target.clone();
+    view! {
+        div(class="modal is-active") {
+            div(class="modal-background", on:click=move |_| sm.remove_target.set(None))
+            div(class="modal-card") {
+                header(class="modal-card-head") {
+                    p(class="modal-card-title") { (title) }
+                    button(class="delete", on:click=move |_| sm.remove_target.set(None))
+                }
+                section(class="modal-card-body") {
+                    p { (body) }
+                }
+                footer(class="modal-card-foot") {
+                    button(
+                        class="button is-danger",
+                        on:click=move |_| {
+                            sm.remove_target.set(None);
+                            match &confirm_target {
+                                RemoveTarget::Homeserver(url) => {
+                                    crate::services::matrix::remove_homeserver(url);
+                                }
+                                RemoveTarget::Contact(uid) => {
+                                    crate::services::matrix::remove_contact(uid);
+                                }
+                            }
+                            sm.refresh.update(|v| v.wrapping_add(1));
+                        },
+                    ) { "Remove" }
+                    button(class="button", on:click=move |_| sm.remove_target.set(None)) {
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn view_remove_modal(_model: crate::Model) -> View {
     view! {}
 }

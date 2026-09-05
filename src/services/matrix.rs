@@ -227,6 +227,10 @@ pub fn save_session_with_password(client: &Client, homeserver: &str, password: &
 }
 
 fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>) {
+    // Store under the canonical URL: a resolved matrix.org client reports
+    // matrix-client.matrix.org, but the account must live under the user's
+    // `https://matrix.org` config so it associates (B24).
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let Some(session) = client.session() else {
         return;
     };
@@ -260,9 +264,17 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
         .iter()
         .find(|h| h.url == homeserver)
         .map(|h| h.reg)
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            // No config yet: matrix.org always needs SSO, anything else is
+            // treated as an open-registration server.
+            if crate::event::is_matrix_org_homeserver(&homeserver) {
+                crate::event::RegistrationMode::Sso
+            } else {
+                crate::event::RegistrationMode::Open
+            }
+        });
     // Ensure a homeserver entry exists.
-    ensure_homeserver(homeserver, reg);
+    ensure_homeserver(&homeserver, reg);
     let mut accounts = read_accounts();
     // Mark only this account active; deactivate others on the same homeserver.
     for a in accounts.iter_mut() {
@@ -277,6 +289,18 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
         existing.kind = kind;
         existing.active = true;
     } else {
+        // B25: a new account doubles as a contact (no credentials) so the
+        // owner can be shared/added without re-entering their details.  Only
+        // on genuine creation — existing-account updates skip this, so a
+        // user-edited contact isn't clobbered on re-login.  (CreateAccount's
+        // explicit save_contact enriches it with name/description afterwards.)
+        save_contact(&Contact {
+            user_id: user_id.clone(),
+            name: String::new(),
+            description: String::new(),
+            phone: None,
+            signing_key: None,
+        });
         accounts.push(Account {
             homeserver: homeserver.to_string(),
             user_id,
@@ -296,6 +320,7 @@ pub fn load_sessions() -> Vec<Account> {
 
 /// The active (or first) account for a specific homeserver, if any.
 pub fn load_session_for(homeserver: &str) -> Option<Account> {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let accounts = read_accounts();
     accounts
         .iter()
@@ -314,18 +339,20 @@ pub fn active_hs() -> Option<String> {
 
 /// Set the registration mode recorded for a homeserver.
 pub fn set_session_reg(homeserver: &str, reg: crate::event::RegistrationMode) {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let mut homeservers = read_homeservers();
     if let Some(h) = homeservers.iter_mut().find(|h| h.url == homeserver) {
         h.reg = reg;
         write_homeservers(&homeservers);
     } else {
         // Create a homeserver entry if none exists yet.
-        ensure_homeserver(homeserver, reg);
+        ensure_homeserver(&homeserver, reg);
     }
 }
 
 /// Remove all accounts for `homeserver`.
 pub fn remove_session(homeserver: &str) {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let accounts = read_accounts();
     let filtered: Vec<_> = accounts
         .into_iter()
@@ -375,16 +402,19 @@ pub fn load_homeservers() -> Vec<HomeserverConfig> {
 }
 
 pub fn save_homeserver(hs: &HomeserverConfig) {
+    let mut entry = hs.clone();
+    entry.url = crate::event::canonical_homeserver(&hs.url);
     let mut list = read_homeservers();
-    if let Some(existing) = list.iter_mut().find(|h| h.url == hs.url) {
-        *existing = hs.clone();
+    if let Some(existing) = list.iter_mut().find(|h| h.url == entry.url) {
+        *existing = entry;
     } else {
-        list.push(hs.clone());
+        list.push(entry);
     }
     write_homeservers(&list);
 }
 
 pub fn remove_homeserver(url: &str) {
+    let url = crate::event::canonical_homeserver(url);
     let list = read_homeservers();
     let filtered: Vec<_> = list.into_iter().filter(|h| h.url != url).collect();
     write_homeservers(&filtered);
@@ -393,16 +423,17 @@ pub fn remove_homeserver(url: &str) {
 /// Ensure a `HomeserverConfig` exists for `url`.  Creates a minimal entry with
 /// the given registration mode if none exists yet.
 fn ensure_homeserver(url: &str, reg: crate::event::RegistrationMode) {
+    let url = crate::event::canonical_homeserver(url);
     let mut list = read_homeservers();
     if list.iter().any(|h| h.url == url) {
         return;
     }
     list.push(HomeserverConfig {
-        url: url.to_string(),
-        name: crate::page::home::hs_host_port(url),
+        url: url.clone(),
+        name: crate::page::home::hs_host_port(&url),
         description: String::new(),
         reg,
-        element_link: crate::event::element_link_default(url),
+        element_link: crate::event::element_link_default(&url),
     });
     write_homeservers(&list);
 }
@@ -427,14 +458,16 @@ pub fn load_accounts() -> Vec<Account> {
 }
 
 pub fn save_account(account: &Account) {
+    let mut entry = account.clone();
+    entry.homeserver = crate::event::canonical_homeserver(&account.homeserver);
     let mut list = read_accounts();
     if let Some(existing) = list
         .iter_mut()
-        .find(|a| a.homeserver == account.homeserver && a.user_id == account.user_id)
+        .find(|a| a.homeserver == entry.homeserver && a.user_id == entry.user_id)
     {
-        *existing = account.clone();
+        *existing = entry;
     } else {
-        list.push(account.clone());
+        list.push(entry);
     }
     write_accounts(&list);
 }
@@ -459,7 +492,6 @@ pub fn load_contacts() -> Vec<Contact> {
     read_contacts()
 }
 
-#[allow(dead_code)]
 pub fn save_contact(contact: &Contact) {
     let mut list = read_contacts();
     if let Some(existing) = list.iter_mut().find(|c| c.user_id == contact.user_id) {
@@ -551,6 +583,75 @@ pub fn migrate_session_storage() {
     // Remove legacy keys — they are now fully superseded.
     let _ = st.remove_item("kt_sync_sessions");
     let _ = st.remove_item("kt_sync_active");
+}
+
+/// Fold re-keyed endpoints into their canonical homeserver URL and drop
+/// duplicates.  matrix.org sessions created before the B24 canonical-key fix
+/// are stored under the resolved endpoint (`matrix-client.matrix.org`); this
+/// maps them back so they associate with the `https://matrix.org` config.
+/// Prefers user-configured (already canonical) entries over re-keyed ones.
+pub(crate) fn normalize_homeservers(list: Vec<HomeserverConfig>) -> Vec<HomeserverConfig> {
+    let mut out: Vec<HomeserverConfig> = Vec::new();
+    // First pass: keep the user-configured entries (already canonical).
+    for hs in &list {
+        if hs.url == crate::event::canonical_homeserver(&hs.url)
+            && !out.iter().any(|o| o.url == hs.url)
+        {
+            out.push(hs.clone());
+        }
+    }
+    // Second pass: re-key any remaining (resolved-endpoint) entries.
+    for hs in list {
+        let canonical = crate::event::canonical_homeserver(&hs.url);
+        if !out.iter().any(|o| o.url == canonical) {
+            let mut entry = hs;
+            entry.url = canonical;
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Same as [`normalize_homeservers`] for accounts: re-key the homeserver field
+/// and dedupe by `(homeserver, user_id)`, preferring the active account and
+/// the already-canonical entry (the fresh SSO write) over a re-keyed one.
+pub(crate) fn normalize_accounts(list: Vec<Account>) -> Vec<Account> {
+    let mut out: Vec<Account> = Vec::new();
+    for a in list {
+        let canonical = crate::event::canonical_homeserver(&a.homeserver);
+        if let Some(existing) = out
+            .iter_mut()
+            .find(|o| o.homeserver == canonical && o.user_id == a.user_id)
+        {
+            // Prefer active over inactive, then the already-canonical write.
+            if (a.active && !existing.active)
+                || (a.active == existing.active && a.homeserver == canonical)
+            {
+                *existing = a;
+            }
+        } else {
+            let mut entry = a;
+            entry.homeserver = canonical;
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Re-key any stored homeservers/accounts that live under the resolved
+/// matrix.org endpoint, so pre-fix SSO data associates with the `https://
+/// matrix.org` config (and can actually be forgotten).  Idempotent: after the
+/// first run the data is already canonical.  Called once at startup.
+pub fn normalize_homeserver_storage() {
+    let homeservers = read_homeservers();
+    let normalized = normalize_homeservers(homeservers);
+    if normalized != read_homeservers() {
+        write_homeservers(&normalized);
+    }
+    // `Account` isn't PartialEq (credential kinds); re-keying is idempotent so
+    // writing every run is harmless.
+    let accounts = read_accounts();
+    write_accounts(&normalize_accounts(accounts));
 }
 
 // ----- OAuth / OIDC SSO (passwordless matrix.org accounts) -----
@@ -1171,7 +1272,11 @@ pub async fn finalize_rooms(
 /// manual Home login) — SSO-only servers error with a clear message.
 pub async fn ensure_client_for(homeserver: &str) -> Result<Client, String> {
     if let Some(c) = client() {
-        if c.homeserver().as_str() == homeserver {
+        // The resolved client reports `https://matrix-client.matrix.org/`; the
+        // config URL is `https://matrix.org` — compare canonically (B24).
+        if crate::event::canonical_homeserver(c.homeserver().as_str())
+            == crate::event::canonical_homeserver(homeserver)
+        {
             return Ok(c);
         }
     }
@@ -1494,5 +1599,89 @@ mod wasm_tests {
         // Clearing removes it.
         store_app_identity("");
         assert_eq!(load_app_identity(), "");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hs(url: &str) -> HomeserverConfig {
+        HomeserverConfig {
+            url: url.into(),
+            name: crate::page::home::hs_host_port(url),
+            description: String::new(),
+            reg: crate::event::RegistrationMode::Sso,
+            element_link: crate::event::element_link_default(url),
+        }
+    }
+
+    fn acct(homeserver: &str, user: &str, active: bool) -> Account {
+        Account {
+            homeserver: homeserver.into(),
+            user_id: format!("@{user}:matrix.org"),
+            description: String::new(),
+            account_type: AccountType::Personal,
+            kind: StoredAuth::Matrix {
+                device_id: "D".into(),
+                access_token: "T".into(),
+                refresh_token: None,
+                password: String::new(),
+            },
+            active,
+        }
+    }
+
+    #[test]
+    fn normalize_homeservers_folds_resolved_endpoint() {
+        // User-configured matrix.org config is kept; the stale resolved-endpoint
+        // entry (whatever order) is dropped.
+        let list = vec![
+            hs("https://matrix-client.matrix.org"),
+            hs("https://matrix.org"),
+        ];
+        let out = normalize_homeservers(list);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "https://matrix.org");
+        assert_eq!(out[0].name, "matrix.org");
+
+        // Only a resolved-endpoint entry: re-key it.
+        let out = normalize_homeservers(vec![hs("https://matrix-client.matrix.org")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "https://matrix.org");
+
+        // Non-matrix servers pass through untouched.
+        let out = normalize_homeservers(vec![hs("http://localhost:8008")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "http://localhost:8008");
+    }
+
+    #[test]
+    fn normalize_accounts_dedupes_and_prefers_canonical_active() {
+        // Stale resolved-endpoint account + fresh canonical account for the
+        // same user: the canonical (fresh) one wins.
+        let list = vec![
+            acct("https://matrix-client.matrix.org", "alice", true),
+            acct("https://matrix.org", "alice", true),
+        ];
+        let out = normalize_accounts(list);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].homeserver, "https://matrix.org");
+        assert_eq!(out[0].user_id, "@alice:matrix.org");
+        assert!(out[0].active);
+
+        // Only a resolved-endpoint account: re-key it.
+        let out = normalize_accounts(vec![acct("https://matrix-client.matrix.org", "bob", true)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].homeserver, "https://matrix.org");
+        assert_eq!(out[0].user_id, "@bob:matrix.org");
+
+        // Different users on the same endpoint stay separate.
+        let out = normalize_accounts(vec![
+            acct("https://matrix-client.matrix.org", "alice", true),
+            acct("https://matrix-client.matrix.org", "bob", false),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|a| a.homeserver == "https://matrix.org"));
     }
 }

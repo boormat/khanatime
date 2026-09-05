@@ -412,46 +412,70 @@ counts.
 make "?" a normal car chip (car icon, like the others) at the **start** of the
 row of cars that have done all their runs.
 
-### B22. "Sign in or create" modal — homeserver dropdown alignment
-**File:** `src/page/accounts.rs` (`view_create_modal`, homeserver `<select>` at
-line 533-538)
+### ~~B22. "Sign in or create" modal — homeserver dropdown alignment~~ ✅ DONE
+**File:** `src/page/accounts.rs` (`view_create_modal`, homeserver `<select>`)
 **Severity:** Low (UI)
 **Detail:** The homeserver picker in the create/sign-in modal is a `<select>`
-dropdown with poor alignment. Replace with selectable homeserver **tag/button**
-pickers (consistent with the other tag pickers in the app).
+dropdown with poor alignment.
+**Fix:** replaced with selectable homeserver **tag/button** pickers
+(`.kt-hs-tags`, selected = `is-primary is-selected`), consistent with the
+other tag pickers in the app.
 
-### B23. SSO sign-in from #accounts redirects to Home
+### ~~B23. SSO sign-in from #accounts redirects to Home~~ ✅ DONE
 **File:** `src/sync.rs` (`sso_complete` / `add_homeserver` end with
-`Show(Screen::Home)`)
+`Show(Screen::Home)`), `src/app.rs` (`SyncState.return_to`)
 **Severity:** Medium
 **Detail:** Signing in via SSO while on the Accounts page bounces you to Home.
 `CreateAccount` (app.rs) stays on Accounts — the redirect is the SSO/login path,
 which should return to Accounts (or the originating screen), not Home.
+**Fix:** a `return_to` screen signal is set at the dispatch site (Accounts'
+SSO + "Login with password" buttons → `Accounts`); `sso_complete` and
+`add_homeserver`'s login path show `return_to` instead of hardcoded Home. A
+parked join still resumes first.
 
-### B24. SSO accounts not associated with matrix.org
-**File:** `src/services/matrix.rs` (`resolved_homeserver_url`, `save_session`),
-`src/sync.rs` (`sso_complete`)
+### ~~B24. SSO accounts not associated with matrix.org~~ ✅ DONE
+**File:** `src/services/matrix.rs` (`save_session_inner`, `ensure_homeserver`,
+`set_session_reg`, `save_homeserver`, `save_account`, `ensure_client_for`),
+`src/khana/event.rs` (`canonical_homeserver`)
 **Severity:** Medium
 **Detail:** `new_client("https://matrix.org")` resolves to
-`matrix-client.matrix.org` (matrix.rs:674) and SSO saves the session keyed by
+`matrix-client.matrix.org` and SSO saved the session keyed by
 `client.homeserver()` (sync.rs:1129), while the homeserver config entry is
-`https://matrix.org` — so SSO accounts don't associate with the matrix.org
+`https://matrix.org` — so SSO accounts didn't associate with the matrix.org
 entry (exact-string match). Non-SSO (local synapse) accounts match fine.
-**Fix:** normalise the homeserver key on save (map the resolved endpoint →
-canonical URL) so SSO accounts land under `https://matrix.org`.
+**Root cause:** a matrix-sdk `Url` serializes with a **trailing slash**, so
+`client.homeserver()` is `https://matrix-client.matrix.org/` — an exact string
+match against `https://matrix-client.matrix.org` misses, and the account +
+config were stored under the trailing-slash resolved URL (a separate
+"matrix-client.matrix.org" entry) on every fresh SSO.
+**Fix:** `canonical_homeserver` trims trailing slashes and maps the resolved
+matrix.org endpoint → `https://matrix.org`. Every low-level writer
+(`save_session_inner`, `ensure_homeserver`, `set_session_reg`, `save_homeserver`,
+`save_account`) and the lookups (`load_session_for`, `remove_session`,
+`remove_homeserver`) canonicalize, and `ensure_client_for` compares canonically
+so it reuses the active client. Startup `normalize_homeserver_storage()` folds
+any pre-fix entries. No migration needed beyond that (pre-release).
 
-### B25. Creating an account should also create a Contact
+### ~~B25. Creating an account should also create a Contact~~ ✅ DONE
 **File:** `src/app.rs` (`Msg::CreateAccount`)
 **Severity:** Medium
-**Detail:** Creating an account doesn't add the user to contacts. Add a separate
-Contact on account create; deleting the account must **not** remove the contact.
+**Detail:** Creating an account doesn't add the user to contacts.
+**Fix:** a new account now also upserts a `Contact`. The creation lives in
+`save_session_inner`'s new-account branch, so it fires on **every** path that
+creates an account — SSO, username/password create, and the add-homeserver
+auto-register — while re-logins of an existing account skip it. The
+`CreateAccount` handler then enriches the contact with name/description.
+Account deletion only touches accounts, so the contact survives.
 
-### B26. Destructive deletes need a deliberate gesture + confirm
-**Files:** app-wide (homeserver/account/saved-event delete buttons)
+### ~~B26. Destructive deletes need a deliberate gesture + confirm~~ ✅ DONE
+**Files:** `src/page/accounts.rs` (homeserver remove, contact remove),
+`view_remove_modal`
 **Severity:** Medium
-**Detail:** Delete actions fire on a stray click. Prefer a deliberate gesture +
-a confirm step: click-and-hold on mobile (feasible on WASM via pointer events),
-and on desktop right-click / hold / explicit X button — then confirm.
+**Detail:** Some delete actions fired on a stray click. Account forget and
+saved-event delete already had confirm modals; homeserver remove and contact
+remove fired immediately.
+**Fix:** both now arm a `RemoveTarget` and confirm via a modal (mirroring the
+forget modal) — no immediate deletes remain.
 
 ### B27. Signing-key display → compact tag + share modal
 **File:** `src/page/accounts.rs` (`view_signing_key`)
@@ -459,14 +483,15 @@ and on desktop right-click / hold / explicit X button — then confirm.
 **Detail:** Collapse the signing-key card to a small tag near the bottom of the
 page with a **share** button that opens a modal (QR / copy URI / other) — the
 general share pattern, to save space.
+**Status:** skipped for now (space savings not worth the churn).
 
-### B28. Add-homeserver quick-pick buttons
+### ~~B28. Add-homeserver quick-pick buttons~~ ✅ DONE
 **File:** `src/page/accounts.rs` (`view_add_hs_modal`)
 **Severity:** Low
 **Detail:** Offer one-tap buttons for common local homeservers
-(`localhost:8008`, `boomtime.local:8008`). Synapse's default client port is
-**8008**; when deployed for real, 8008 is the standard (commonly behind a
-reverse proxy).
+(`localhost:8008`, `boomtime.local:8008`) alongside the existing `matrix.org`
+button. Synapse's default client API port is **8008** (8448 is federation-only,
+not used — decided to stay on 8008).
 
 ### ~~B29. #timing — staged car replaceable after it has started~~ ✅ DONE
 **File:** `src/khana/page/stopwatch.rs` (`view_action_buttons`,

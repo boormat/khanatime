@@ -146,6 +146,10 @@ pub struct SyncState {
     /// Username/password entered in the tieback modal.
     pub tieback_user: Signal<String>,
     pub tieback_pass: Signal<String>,
+    /// The screen a login (SSO or password) should return to once it completes
+    /// — set at the dispatch site, since Home's and Accounts' login buttons
+    /// share the same sync path (B23).
+    pub return_to: Signal<Screen>,
     /// The animated QR sequence is paused on its current frame.
     pub parcel_qr_paused: Signal<bool>,
 }
@@ -255,6 +259,10 @@ impl Model {
         // Migrate old kt_sync_sessions into the new homeservers/accounts model.
         #[cfg(target_arch = "wasm32")]
         crate::services::matrix::migrate_session_storage();
+        // Fold any pre-fix matrix-client.matrix.org entries back under
+        // https://matrix.org (B24), so old SSO accounts associate.
+        #[cfg(target_arch = "wasm32")]
+        crate::services::matrix::normalize_homeserver_storage();
 
         let session_key = crate::event::session_event_name();
         // No real event selected yet: start with NO current event (empty id +
@@ -316,6 +324,7 @@ impl Model {
                 tieback: create_signal(None),
                 tieback_user: create_signal(String::new()),
                 tieback_pass: create_signal(String::new()),
+                return_to: create_signal(Screen::Home),
                 scan_active: create_signal(false),
                 scan_preview: create_signal(None),
                 scan_status: create_signal(String::new()),
@@ -670,7 +679,7 @@ pub fn update(model: Model, msg: Msg) {
                             .find(|a| a.homeserver == hs && a.user_id == user_id)
                         {
                             a.account_type = acc_type;
-                            a.description = description;
+                            a.description = description.clone();
                             crate::services::matrix::save_account(a);
                         }
                         Ok::<_, String>(user_id)
@@ -678,6 +687,18 @@ pub fn update(model: Model, msg: Msg) {
                     .await;
                     match res {
                         Ok(user_id) => {
+                            // B25: an account doubles as a contact (no
+                            // credentials), so the owner can be shared/added
+                            // without re-entering their details.
+                            crate::services::matrix::save_contact(
+                                &crate::services::matrix::Contact {
+                                    user_id: user_id.clone(),
+                                    name: username,
+                                    description,
+                                    phone: None,
+                                    signing_key: None,
+                                },
+                            );
                             sm.feedback
                                 .set(format!("Created {}. Use Login to sign in.", user_id));
                             sm.refresh.update(|v| v.wrapping_add(1));
