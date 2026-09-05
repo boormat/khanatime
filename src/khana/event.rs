@@ -1540,34 +1540,91 @@ pub fn demo_event() -> EventInfo {
             .collect(),
         ..Default::default()
     };
-    // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
-    ev.stages[1].runs_total = 3;
-    ev.stages[1].runs_scored = 2;
-    // Stage 3 is 0 of 0: everyone completes it with a total time of zero, so
-    // positions tie and the cumulative chain continues on to stage 4.
-    ev.stages[2].runs_total = 0;
-    ev.stages[2].runs_scored = 0;
-    // Stage 4 is a normal single run after the zero stage.
-    ev.stages[3].runs_total = 1;
-    ev.stages[3].runs_scored = 1;
-    for (car, name, classes) in [
-        ("1", "Alice", &["Outright", "Female"][..]),
-        ("2", "Bob", &["Outright"][..]),
-        ("3", "Carol", &["Outright", "Female", "Junior"][..]),
-        ("4", "Dan", &["Outright", "Junior"][..]),
-        ("5", "Erin", &["Outright", "Female"][..]),
-        ("6", "Frank", &["Outright"][..]),
-        ("12", "Gail", &["Outright", "Female"][..]),
-    ] {
+    // Named stages: Windmill, Back Dam (best 1 of 2), Powerline (0 of 0),
+    // The Paddock.
+    for (i, name) in ["Windmill", "Back Dam", "Powerline", "The Paddock"]
+        .iter()
+        .enumerate()
+    {
+        ev.stages[i].name = name.to_string();
+    }
+    // Stage 2 is the multi-run test: best 1 of 2.
+    ev.stages[1].runs_total = 2;
+    ev.stages[1].runs_scored = 1;
+    // Stage 3 is a normal single run.
+    ev.stages[2].runs_total = 1;
+    ev.stages[2].runs_scored = 1;
+    // Stage 4 (T4) is 0 of 0: everyone completes it with a total time of zero.
+    ev.stages[3].runs_total = 0;
+    ev.stages[3].runs_scored = 0;
+    let mut push = |car: &str,
+                    name: &str,
+                    classes: &[&str],
+                    vehicle: &str,
+                    desc: &str,
+                    passenger: Option<&str>| {
         ev.add_entry(car, name);
         if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
             entry.classes = classes.iter().map(|s| s.to_string()).collect();
+            entry.vehicle = Some(vehicle.to_string());
+            entry.description = Some(desc.to_string());
+            entry.passenger = passenger.map(|p| p.to_string());
         }
-    }
-    // Erin and Gail share Erin's MX-5 (a typed shared-car name).
+    };
+    push(
+        "1",
+        "Andy",
+        &["Outright", "Female"],
+        "wrx",
+        "blue wrx",
+        Some("Sam"),
+    );
+    push("2", "Bob B", &["Outright"], "318", "red bmw", None);
+    push(
+        "3",
+        "Simey",
+        &["Outright", "Female", "Junior"],
+        "evo7",
+        "silver evo 7",
+        None,
+    );
+    push(
+        "4",
+        "Sub",
+        &["Outright", "Junior"],
+        "datsun 180B",
+        "green datsun 180b",
+        Some("Tess"),
+    );
+    push(
+        "5",
+        "Petey",
+        &["Outright", "Female"],
+        "mx5",
+        "white mx-5",
+        None,
+    );
+    push(
+        "6",
+        "Frank",
+        &["Outright"],
+        "corolla",
+        "black corolla",
+        None,
+    );
+    push(
+        "12",
+        "Gail",
+        &["Outright", "Female"],
+        "mx5",
+        "white mx-5",
+        None,
+    );
+    push("007", "Mat", &["Outright"], "bmw", "blue bmw", None);
+    // Petey and Gail share Petey's MX-5 (a typed shared-car name).
     for car in ["5", "12"] {
         if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
-            entry.shared = Some("Erin's MX-5".to_string());
+            entry.shared = Some("Petey's MX-5".to_string());
         }
     }
     ev.ensure_uid();
@@ -2933,9 +2990,9 @@ mod tests {
     #[test]
     fn demo_runs_scored_of_total_sums_runs_on_stage() {
         let ev = demo_event();
-        // Stage 2 ships as best-2-of-3; exercise that configuration.
-        assert_eq!(ev.stages[1].runs_total, 3);
-        assert_eq!(ev.stages[1].runs_scored, 2);
+        // Stage 2 ships as best-1-of-2; exercise that configuration.
+        assert_eq!(ev.stages[1].runs_total, 2);
+        assert_eq!(ev.stages[1].runs_scored, 1);
         let finish = |ith: u8, ds: u16| RunRecord {
             r#type: "finish".into(),
             test: 2,
@@ -2944,33 +3001,33 @@ mod tests {
             time_ds: Some(ds),
             ..Default::default()
         };
-        let runs = vec![finish(1, 450), finish(2, 470), finish(3, 100)];
+        let runs = vec![finish(1, 450), finish(2, 100)];
         let rv = create_result_view(&ev, &runs, "Outright");
         let stage2 = &rv.rows["1"].columns[1].as_ref().unwrap();
-        // Best 2 of 3 = 450 + 100 = 550.
-        assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 550);
+        // Best 1 of 2 = 100.
+        assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 100);
         // Display order is run order, with the non-counting run struck out.
         let shown: Vec<(i64, u32, bool)> = stage2
             .runs
             .iter()
             .map(|r| (r.ts, r.score, r.counted))
             .collect();
-        assert_eq!(shown, vec![(1, 450, true), (2, 470, false), (3, 100, true)]);
+        assert_eq!(shown, vec![(1, 450, false), (2, 100, true)]);
     }
 
     #[test]
     fn demo_event_has_zero_run_stage() {
         let ev = demo_event();
         assert_eq!(ev.stage_count(), 4);
-        // Stage 2 stays the multi-run test.
-        assert_eq!(ev.stages[1].runs_total, 3);
-        assert_eq!(ev.stages[1].runs_scored, 2);
-        // Stage 3 is 0 of 0: everyone completes it with a zero total.
-        assert_eq!(ev.stages[2].runs_total, 0);
-        assert_eq!(ev.stages[2].runs_scored, 0);
-        // Stage 4 is a normal single run after the zero stage.
-        assert_eq!(ev.stages[3].runs_total, 1);
-        assert_eq!(ev.stages[3].runs_scored, 1);
+        // Stage 2 stays the multi-run test (best 1 of 2).
+        assert_eq!(ev.stages[1].runs_total, 2);
+        assert_eq!(ev.stages[1].runs_scored, 1);
+        // Stage 3 is a normal single run.
+        assert_eq!(ev.stages[2].runs_total, 1);
+        assert_eq!(ev.stages[2].runs_scored, 1);
+        // Stage 4 (T4) is 0 of 0: everyone completes it with a zero total.
+        assert_eq!(ev.stages[3].runs_total, 0);
+        assert_eq!(ev.stages[3].runs_scored, 0);
     }
 
     #[test]
