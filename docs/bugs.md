@@ -607,6 +607,41 @@ no session is stored.
 
 ---
 
+### ~~B36. Connect fails after matrix.org publish — `invalid_grant ... access grant is invalid, expired or revoked`~~ ✅ DONE
+**Files:** `src/services/matrix.rs` (`start_sync`, `is_invalid_grant`,
+`recover_with_stored_password`, `deactivate_session_for`), `src/sync.rs`
+(`restore_and_connect`)
+**Severity:** High
+**Detail:** After publishing to matrix.org the connect step failed with
+`failed to detect refresh token: server returned error response invalid_grant
+provided access grant is invalid, expired or revoked`, and every reload/publish
+retried the same dead session. Two underlying problems:
+- **Stale stored refresh token.** matrix-sdk (built with `handle_refresh_tokens`)
+  rotates refresh tokens on every refresh, persisting the new ones only to its
+  own IndexedDB store; the app's `kt_accounts` was re-saved only at connect
+  time, so after any mid-session auto-refresh a reload restored the already
+  revoked grant → `invalid_grant`.
+- **No recovery path.** `restore_and_connect` surfaced the raw SDK error and
+  left the dead session active, so reconnects failed forever. The stored
+  password (open-reg servers) documented for expiry re-login was never used.
+**Fix:**
+- `start_sync` now subscribes to `client.subscribe_to_session_changes()` and
+  re-saves the session (`save_session`) whenever tokens change, so the stored
+  grant stays in lockstep with rotation (covers every connect path).
+- On an `invalid_grant` connect error, `restore_and_connect` recovers: a
+  password account with a stored password re-logs in transparently
+  (`recover_with_stored_password`); an SSO/no-password account (matrix.org) is
+  deactivated (`deactivate_session_for`) and a clear
+  "session expired or was revoked — sign in again" error is shown instead of the
+  raw SDK message. The sync loop also stops (instead of retrying silently) on
+  `invalid_grant`, mirroring the stale-sync-token handling.
+- The account-list "Login" button was restore-only, so an SSO account with a
+  dead grant just re-restored the dead tokens. `relogin` now routes `OAuth`
+  accounts to the fresh SSO flow (always), and the button is labelled
+  "Sign in with SSO" for them; password accounts keep the one-tap restore.
+
+---
+
 ## Priority Suggestion
 
 **Phase 1 — Critical bugs:** ✅ Complete (B1–B3)

@@ -136,7 +136,31 @@ pub fn restore_and_connect(model: Model, stored: crate::services::matrix::Accoun
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&stored.homeserver).await?;
-            crate::services::matrix::restore_session(&client, &stored).await?;
+            match crate::services::matrix::restore_session(&client, &stored).await {
+                Ok(()) => {}
+                Err(e) if crate::services::matrix::is_invalid_grant(&e) => {
+                    // The stored refresh grant is dead (expired, rotated away
+                    // or revoked server-side).  Recover: password accounts log
+                    // back in with the stored password (minting a fresh grant);
+                    // SSO sessions have no password and must re-run sign-in.
+                    if crate::services::matrix::recover_with_stored_password(&client, &stored)
+                        .await
+                        .is_ok()
+                    {
+                        khanatime::log!("recovered session via stored password (invalid grant)");
+                    } else {
+                        crate::services::matrix::deactivate_session_for(
+                            &stored.homeserver,
+                            &stored.user_id,
+                        );
+                        return Err(format!(
+                            "Your session on {} expired or was revoked — sign in again.",
+                            stored.homeserver
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
             // Re-persist (refresh tokens rotate on restore) and mark active.
             crate::services::matrix::save_session(&client, &stored.homeserver);
             crate::services::matrix::set_client(Some(client.clone()));
@@ -852,7 +876,9 @@ fn logout(model: Model) {
 }
 
 /// One-tap re-login after a soft logout: restore the stored session for
-/// `homeserver` and connect exactly like [resume_on_load].
+/// `homeserver` and connect exactly like [resume_on_load].  SSO (OAuth)
+/// accounts can't be restored once their grant is dead, so they always get a
+/// fresh authorization instead (the popup opens within this click's gesture).
 #[cfg(target_arch = "wasm32")]
 fn relogin(model: Model, hs: String) {
     let Some(stored) = crate::services::matrix::load_session_for(&hs) else {
@@ -862,6 +888,13 @@ fn relogin(model: Model, hs: String) {
             .set(ConnState::Error(format!("No stored session for {hs}")));
         return;
     };
+    if matches!(
+        stored.kind,
+        crate::services::matrix::StoredAuth::OAuth { .. }
+    ) {
+        sso_login_for(model, hs);
+        return;
+    }
     restore_and_connect(model, stored);
 }
 

@@ -186,6 +186,12 @@ fn view_homeservers(model: crate::Model) -> View {
             };
             let active = a.active;
             let is_personal = a.account_type == crate::services::matrix::AccountType::Personal;
+            let is_oauth = matches!(a.kind, crate::services::matrix::StoredAuth::OAuth { .. });
+            let (login_label, login_icon_class) = if is_oauth {
+                ("Sign in with SSO", "fa fa-id-badge")
+            } else {
+                ("Login", "fa fa-right-to-bracket")
+            };
             let a_hs = a.homeserver.clone();
             let a_hs_forget = a.homeserver.clone();
             let a_hs3 = a.homeserver.clone();
@@ -223,8 +229,8 @@ fn view_homeservers(model: crate::Model) -> View {
                                             sm.refresh.update(|v| v.wrapping_add(1));
                                         },
                                     ) {
-                                        span(class="icon is-small") { i(class="fa fa-right-to-bracket") }
-                                        span { "Login" }
+                                        span(class="icon is-small") { i(class=login_icon_class) }
+                                        span { (login_label) }
                                     }
                                 }
                             })

@@ -379,6 +379,20 @@ pub fn deactivate_session() {
     clear_session();
 }
 
+/// Deactivate the session for a specific `user_id` on `homeserver` (B36): the
+/// stored credentials stay listed (with its Login button), but the session
+/// stops being resumed automatically once its tokens are known to be dead.
+pub fn deactivate_session_for(homeserver: &str, user_id: &str) {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
+    let mut accounts = read_accounts();
+    for a in accounts.iter_mut() {
+        if a.homeserver == homeserver && a.user_id == user_id {
+            a.active = false;
+        }
+    }
+    write_accounts(&accounts);
+}
+
 // ----- homeserver / account / contact persistence -----
 
 fn read_homeservers() -> Vec<HomeserverConfig> {
@@ -922,6 +936,37 @@ async fn try_login(
         .send()
         .await
         .map(|_| ())
+}
+
+/// True when a connect/sync error means the stored refresh grant is dead
+/// (expired, rotated away, or revoked server-side).  matrix-sdk surfaces these
+/// as the server's `invalid_grant` JSON error (`provided access grant is
+/// invalid, expired or revoked`) wrapped in a refresh-token failure.
+pub fn is_invalid_grant(e: &str) -> bool {
+    let e = e.to_lowercase();
+    [
+        "invalid_grant",
+        "access grant is invalid",
+        "expired or revoked",
+    ]
+    .iter()
+    .any(|needle| e.contains(needle))
+}
+
+/// Recover a stored password-login session whose refresh grant has died: log
+/// back in with the stored password, which mints a fresh grant.  Only works for
+/// `StoredAuth::Matrix` accounts that saved a password (open-registration
+/// servers); SSO/OAuth sessions have no password and must re-run SSO.
+pub async fn recover_with_stored_password(client: &Client, stored: &Account) -> Result<(), String> {
+    let password = match &stored.kind {
+        StoredAuth::Matrix { password, .. } if !password.is_empty() => password.clone(),
+        _ => return Err("no stored password — SSO sign-in required".to_string()),
+    };
+    let username = crate::event::user_id_localpart(&stored.user_id);
+    try_login(client, &username, &password)
+        .await
+        .map(|_| ())
+        .map_err(|e| describe_login_failure(&e, &username))
 }
 
 /// The Matrix error code of a client-server API error, if it is one.
@@ -1526,6 +1571,25 @@ pub async fn backfill_room_history(
 /// `on_error` is called for errors that should surface to the user (e.g. a
 /// stale sync token) instead of being silently retried forever.
 pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>, on_error: Rc<dyn Fn(String)>) {
+    // Keep the stored session tokens in sync with matrix-sdk's auto-refreshes
+    // (B36): refresh tokens rotate on every refresh, so the localStorage
+    // account must be re-saved whenever they change, or a later connect
+    // restores the revoked grant and fails with `invalid_grant`.
+    let persist_client = client.clone();
+    let persist_hs = client.homeserver().to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut rx = persist_client.subscribe_to_session_changes();
+        loop {
+            if rx.recv().await.is_err() {
+                // Capacity-1 channel: a lagged refresh is reported as an error.
+                // `persist_client` keeps the sender alive, so errors only mean
+                // missed intermediate updates — the next change (or a later
+                // connect's save_session) captures the latest tokens anyway.
+                continue;
+            }
+            save_session(&persist_client, &persist_hs);
+        }
+    });
     wasm_bindgen_futures::spawn_local(async move {
         let settings = SyncSettings::new().timeout(Duration::from_secs(30));
         // sync_stream borrows `client` for the stream's lifetime, so a clone
@@ -1559,6 +1623,17 @@ pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>, on_error: R
                                 .to_string(),
                         );
                         khanatime::log!("matrix sync error (token invalidated, stopping): {msg}");
+                        break;
+                    }
+                    if is_invalid_grant(&msg) {
+                        // The refresh grant died mid-session (expired, rotated
+                        // away or revoked server-side).  Stop retrying and
+                        // point the user at a fresh sign-in.
+                        on_error(
+                            "Your session expired or was revoked — sign in again to resume."
+                                .to_string(),
+                        );
+                        khanatime::log!("matrix sync error (invalid grant, stopping): {msg}");
                         break;
                     }
                     khanatime::log!("matrix sync error: {msg}");
@@ -1714,5 +1789,22 @@ mod tests {
         ]);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|a| a.homeserver == "https://matrix.org"));
+    }
+
+    #[test]
+    fn invalid_grant_classifies_oauth_refresh_failures() {
+        // matrix-sdk wraps the server's invalid_grant JSON error in the
+        // refresh-token failure it surfaces to the app.
+        assert!(is_invalid_grant(
+            "failed to detect refresh token: server returned error response \
+             invalid_grant provided access grant is invalid, expired or revoked"
+        ));
+        assert!(is_invalid_grant(
+            "error refreshing an OAuth 2.0 token: the access grant is invalid"
+        ));
+        // Unrelated failures are NOT treated as a dead grant.
+        assert!(!is_invalid_grant("Invalid stream token"));
+        assert!(!is_invalid_grant("network error: connection refused"));
+        assert!(!is_invalid_grant(""));
     }
 }
