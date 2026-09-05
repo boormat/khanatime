@@ -128,10 +128,10 @@ pub fn resume_on_load(model: Model) {
 }
 
 /// Build a client from a stored session, restore it, join the current event's
-/// timing room and start syncing.  Reused by [resume_on_load] and one-tap
-/// Re-login.
+/// timing room and start syncing.  Reused by [resume_on_load], one-tap
+/// Re-login, and (via [connect_after_publish]) right after a publish.
 #[cfg(target_arch = "wasm32")]
-fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
+pub fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
     model.sync.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
@@ -146,7 +146,7 @@ fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
             )
             .await;
             crate::services::matrix::set_room(room.clone());
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             if room.is_some() {
                 spawn_backfill(model);
             }
@@ -190,6 +190,19 @@ pub fn join_current_event(model: Model) {
         }
         flush_pending(model);
     });
+}
+
+/// Full connect after a publish: restore the stored session for `hs`, join the
+/// current event's room and start the sync loop.  `join_current_event` alone
+/// only re-joins the room — it doesn't start sync or set `LoggedIn`, so a
+/// publish from an offline state left the app looking disconnected until a
+/// refresh (which runs [restore_and_connect] via `resume_on_load`).
+#[cfg(target_arch = "wasm32")]
+pub fn connect_after_publish(model: Model, hs: &str) {
+    match crate::services::matrix::load_session_for(hs) {
+        Some(stored) => restore_and_connect(model, stored),
+        None => join_current_event(model),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -697,7 +710,7 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
             // Adopt the event by space room id (no alias), seed locally.
             let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
             crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             Ok::<_, String>(JoinDone::Joined(ev.id))
         }
         .await;
@@ -788,7 +801,7 @@ fn tieback_connect(model: Model, username: String, password: String) {
             crate::services::matrix::set_client(Some(client.clone()));
             let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
             crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             Ok::<_, String>(ev)
         }
         .await;
@@ -943,7 +956,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 )
                 .await;
                 crate::services::matrix::set_room(room.clone());
-                crate::services::matrix::start_sync(client, sink_for(model));
+                crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
                 if room.is_some() {
                     spawn_backfill(model);
                 }
@@ -1133,7 +1146,7 @@ fn sso_complete(model: Model, callback_url: String) {
             )
             .await;
             crate::services::matrix::set_room(room.clone());
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             if room.is_some() {
                 spawn_backfill(model);
             }
@@ -1175,6 +1188,15 @@ fn sso_complete(model: Model, callback_url: String) {
 #[cfg(target_arch = "wasm32")]
 fn sink_for(model: Model) -> Rc<dyn Fn(crate::services::matrix::IncomingMessage)> {
     Rc::new(move |msg| handle_incoming(model, msg))
+}
+
+/// Sync-loop error callback: surfaces the message as a connection error (used
+/// for terminal conditions like an invalidated sync token).
+#[cfg(target_arch = "wasm32")]
+fn sync_error_for(model: Model) -> Rc<dyn Fn(String)> {
+    Rc::new(move |msg| {
+        model.sync.conn.set(ConnState::Error(msg));
+    })
 }
 
 #[cfg(target_arch = "wasm32")]

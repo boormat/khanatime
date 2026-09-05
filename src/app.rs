@@ -1046,21 +1046,10 @@ pub fn enqueue_setup(model: Model) {
     if id.is_empty() {
         return;
     }
-    let mut ev = model.khana.event.get_clone();
-    // Sign at save — the event's signing fields are populated here, not at
-    // publish time, so setup manifests are always signed.
-    if ev.signature.is_none() {
-        // Generate an in-memory key if storage is blocked so signing never fails.
-        let keys = crate::signing::DeviceKeys::load_or_generate();
-        let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
-        ev.signature = Some(sig);
-        ev.signing_key = Some(key);
-    }
-    let body = format!(
-        "{}{}",
-        crate::timing_event::TimingEvent::SETUP_PREFIX,
-        serde_json::to_string(&ev).unwrap()
-    );
+    let ev = model.khana.event.get_clone();
+    // `setup_body` always signs the CURRENT payload — a carried-over signature
+    // (replay/echo) won't match once the event has been mutated (B32).
+    let body = crate::event::setup_body(&ev);
     let sender = model.sync.identity.get_clone();
     // Setup is last-writer-wins: replace any superseded setup in the outbox so
     // a draft's Save Local history never gets flushed into the room on publish.

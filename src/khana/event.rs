@@ -1260,6 +1260,30 @@ pub fn canonical_homeserver(homeserver: &str) -> String {
     }
 }
 
+/// The IndexedDB store name for a homeserver's sync state.  matrix-sdk keeps
+/// the sync token per store (not per homeserver), so a shared store lets one
+/// homeserver's token leak into another and the server rejects it with
+/// "Invalid stream token".  Keying the store by homeserver isolates them.
+/// The canonical homeserver URL is used so matrix.org and its resolved
+/// endpoint share one store.
+#[allow(dead_code)] // used from services/matrix.rs (wasm build)
+pub fn homeserver_store_key(homeserver: &str) -> String {
+    let hs = canonical_homeserver(homeserver);
+    let host = hs
+        .split("://")
+        .nth(1)
+        .unwrap_or(&hs)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(&hs)
+        .to_lowercase();
+    let safe: String = host
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("khanatime_sync_{safe}")
+}
+
 /// Default Element Web origin for `homeserver` (used when the event has no
 /// explicit `element_link`): app.element.io for Matrix, else the local Element
 /// dev instance.  Empty for an unknown/blank homeserver.
@@ -1561,18 +1585,17 @@ pub fn ensure_demo() {
 }
 
 /// The `khanatime_setup:` manifest body for an event.
+/// Build the signed setup-manifest body for `ev`.  Always re-signs over the
+/// current payload: a carried-over signature (replay/echo) won't match once
+/// the event has been mutated (B32).
 ///
-/// Signs the EventInfo with the device key if not already signed.
+/// Signs the EventInfo with the device key.
 pub fn setup_body(ev: &EventInfo) -> String {
     let mut ev = ev.clone();
-    if ev.signature.is_none() {
-        // Generate an in-memory key if storage is blocked so signing never fails
-        // (and unsigned data — which is now rejected — can never be produced).
-        let keys = crate::signing::DeviceKeys::load_or_generate();
-        let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
-        ev.signature = Some(sig);
-        ev.signing_key = Some(key);
-    }
+    let keys = crate::signing::DeviceKeys::load_or_generate();
+    let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
+    ev.signature = Some(sig);
+    ev.signing_key = Some(key);
     format!(
         "{}{}",
         crate::timing_event::TimingEvent::SETUP_PREFIX,
@@ -3248,6 +3271,27 @@ mod tests {
         assert_eq!(shared_car_key(" abc 123 "), "abc 123");
         assert_eq!(shared_car_key("Bob's MX5"), "bob's mx5");
         assert_eq!(shared_car_key("Erin's   MX-5"), "erin's mx-5");
+    }
+
+    #[test]
+    fn homeserver_store_key_is_per_server() {
+        assert_eq!(
+            homeserver_store_key("http://localhost:8008"),
+            "khanatime_sync_localhost_8008"
+        );
+        assert_eq!(
+            homeserver_store_key("http://boomtime.local:8008"),
+            "khanatime_sync_boomtime_local_8008"
+        );
+        assert_eq!(
+            homeserver_store_key("https://matrix.org"),
+            "khanatime_sync_matrix_org"
+        );
+        // The resolved endpoint (with trailing slash) maps to the same store.
+        assert_eq!(
+            homeserver_store_key("https://matrix-client.matrix.org/"),
+            "khanatime_sync_matrix_org"
+        );
     }
 
     #[test]

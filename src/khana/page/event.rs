@@ -711,6 +711,10 @@ fn copy_as_new(model: crate::Model) {
     e.event_homeservers = vec![];
     e.owner = None;
     e.parent_rooms = vec![];
+    // A fresh id/name/uid payload can't carry the source's signature — drop it
+    // so the next save signs the copy's own canonical payload (B32).
+    e.signature = None;
+    e.signing_key = None;
     // Entrants + tests are copied; entrant state is reset for the fresh event.
     em.pre_create.set(Some(src.id.clone()));
     switch_to_draft(model, e);
@@ -1067,7 +1071,9 @@ async fn publish_execute(model: crate::Model, plan: PublishPlan) {
             em.publish_status.set(Some("Published".into()));
             em.editing.set(false);
             em.edit_event.set(None);
-            crate::sync::join_current_event(model);
+            // Full connect (identity, LoggedIn, sync loop) — join-only would
+            // leave the app looking offline until a refresh.
+            crate::sync::connect_after_publish(model, &hs);
         }
         (Err(e), true) => {
             em.publish_status.set(Some(format!(
@@ -1075,7 +1081,7 @@ async fn publish_execute(model: crate::Model, plan: PublishPlan) {
             )));
             em.editing.set(false);
             em.edit_event.set(None);
-            crate::sync::join_current_event(model);
+            crate::sync::connect_after_publish(model, &hs);
         }
         (Err(e), false) => {
             em.publish_status.set(Some(format!(

@@ -509,6 +509,102 @@ chips and TBA chip are disabled until it finishes or is voided, and the
 selected-car box turns amber (`.kt-selected-car.is-on-course`) to signal the
 locked/running state.
 
+### B30. Join via QR — "Invalid stream token" sync loop
+**Files:** `src/services/matrix.rs` (`new_client`, `start_sync`),
+`src/khana/event.rs` (`homeserver_store_key`), `src/sync.rs` (`sync_error_for`)
+**Severity:** High
+**Detail:** After publishing to a local homeserver and opening the QR link on
+another device, the joining client logged `400 / M_UNKNOWN Invalid stream
+token` in a tight loop forever. matrix-sdk keeps the sync `since` token
+**per store, not per homeserver**; `new_client` gave every homeserver the same
+IndexedDB store (`khanatime_sync`), so once any homeserver had been synced on
+that origin (e.g. an earlier matrix.org SSO), the next client — joining
+localhost — read that server's token and sent it to the wrong homeserver,
+which rejected it and the loop retried the same token.
+**Fix:**
+- Each homeserver gets its own IndexedDB store (`homeserver_store_key`, based
+  on the canonical URL) so sync tokens never cross homeservers. Existing
+  `khanatime_sync` data is orphaned (re-login once; `kt_accounts` sessions in
+  localStorage restore in one tap).
+- `start_sync` now takes an error callback: on `Invalid stream token` it clears
+  the stored token (so a re-login does a fresh full sync), surfaces
+  `ConnState::Error` ("Re-login to resume") and stops the loop instead of
+  spamming.
+
+### B31. Publish — createRoom 400 "Room alias already taken" + 502 directory lookups
+**File:** `src/services/matrix.rs` (`server_name`, `alias`, `create_or_join_space`)
+**Severity:** High
+**Detail:** Publishing to the local Synapse failed with `POST /createRoom →
+400` and the alias pre-check (`GET /directory/room/…`) returned **502**. The
+homeserver URL was `http://localhost:8008`, so `server_name()` returned
+`localhost:8008` and every alias was built as `#…:localhost:8008`. But the
+Synapse server name is `localhost` (the domain of user ids) — `#…:localhost:8008`
+is a *remote* alias, so directory lookups 502 (federation) and, on re-publish
+of an already-published alias, Synapse 1.158 returns **400 `M_ROOM_IN_USE`
+"Room alias already taken"** (its createRoom handler raises 400, not 409). The
+create-or-join fallback then can't resolve the existing room because it queries
+the wrong alias form, so the raw 400 surfaces. The same bug would break
+matrix.org aliases (`matrix-client.matrix.org` ≠ `matrix.org`).
+**Fix:** `server_name()` now takes the domain of the authenticated user id
+(`@mat:localhost` → `localhost`), falling back to the homeserver host minus
+`:port`. Aliases become `#…:localhost` (and `#…:matrix.org`), directory
+lookups are local, and the alias-taken fallback re-joins the existing room
+(same event id) or reports the clear "alias in use by a different event"
+error.
+
+### ~~B32. Publish then refresh — event replays empty (draft), setup manifest rejected~~ ✅ DONE
+**Files:** `src/app.rs` (`enqueue_setup`), `src/khana/event.rs` (`setup_body`),
+`src/khana/page/event.rs` (`copy_as_new`)
+**Severity:** High
+**Detail:** After a successful publish, a refresh left the event as an
+empty-named **draft** that wouldn't open. The published setup manifest was
+persisted to the local log/pending, but **rejected at replay**: the manifest
+carried a *stale signature*. `enqueue_setup`/`setup_body` only signed when
+`signature.is_none()`, and the in-memory event already carried a signature
+from an earlier replay/echo (or from `copy_as_new` cloning a published event
+without clearing the source's signature). `publish_execute` then mutated the
+event (`status → Published`, `space_id`/`timing_id`) and the manifest was
+built with the old signature over the pre-publish payload — so
+`verdict_with` returned `Invalid`, `merge_setup` was skipped, and the event
+replayed as `EventInfo::default()`.
+**Fix:** `setup_body` and `enqueue_setup` now **always re-sign** over the
+current payload (the signing key is stable, so this is cheap); `copy_as_new`
+clears `signature`/`signing_key` on the clone. `enqueue_setup` now delegates
+to `setup_body` instead of duplicating the sign+serialise logic.
+
+### B33. `promote` leaves `origin=""` — confirmed entries never relay to a second room
+**File:** `src/log.rs` (`promote`)
+**Severity:** Low (latent, multi-transport)
+**Detail:** `promote` moves a pending message into the durable log with
+`mid`/`pending` set but `origin` left empty. `relay_to_room`
+(`src/sync.rs:285`) skips entries with empty origin, so a message promoted
+from the outbox after a successful send is never relayed to a second
+homeserver/room even when it's not yet confirmed there. Confirmed-in-room
+tracking relies only on the mid/content-id, not the origin.
+
+### B34. `enqueue_setup`'s internal flush can target the previously-joined room
+**File:** `src/app.rs` (`enqueue_setup`), `src/sync.rs` (`flush_pending_wasm`)
+**Severity:** Low (latent)
+**Detail:** `enqueue_setup` calls `flush_pending` immediately, before
+`publish_execute` calls `join_current_event` to switch to the new event's
+timing room. If `matrix::room()` still holds a previously-joined room, the new
+event's setup manifest is sent to the **old** room. Nothing is lost locally
+(`promote` still records it), but the old room receives the manifest.
+
+### ~~B35. After publish, app looks offline (no comms) until a refresh~~ ✅ DONE
+**Files:** `src/khana/page/event.rs` (`publish_execute`), `src/sync.rs`
+(`connect_after_publish`, `restore_and_connect`)
+**Severity:** Medium
+**Detail:** After a successful publish the Chat window showed no comms and
+nothing connected until an F5. `publish_execute` ended with
+`join_current_event`, which only re-joins the room — it never starts the sync
+loop or sets `ConnState::LoggedIn`. A refresh worked because `resume_on_load`
+runs the full `restore_and_connect` (identity + `LoggedIn` + sync loop).
+**Fix:** publish now ends with `connect_after_publish(model, hs)`, which
+restores the stored session for the publish homeserver and runs the same full
+connect as F5 (`restore_and_connect`); it falls back to a room-only re-join if
+no session is stored.
+
 ---
 
 ## Priority Suggestion

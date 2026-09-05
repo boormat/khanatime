@@ -57,7 +57,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::timing_event::TimingEvent;
 
-const STORE_NAME: &str = "khanatime_sync";
 const DEVICE_NAME: &str = "khanatime-wasm";
 
 /// A message that arrived over the sync loop.
@@ -784,7 +783,10 @@ pub async fn new_client(homeserver: &str) -> Result<Client, String> {
     let label = url.to_string();
     Client::builder()
         .homeserver_url(url)
-        .indexeddb_store(STORE_NAME, None)
+        // Per-homeserver store: the sync token lives per store, so sharing one
+        // store across servers leaks a token into the wrong one (400 Invalid
+        // stream token).  Key by homeserver (canonical) to isolate them.
+        .indexeddb_store(&crate::event::homeserver_store_key(homeserver), None)
         .handle_refresh_tokens()
         .build()
         .await
@@ -1015,20 +1017,25 @@ pub async fn logout(client: &Client) -> Result<(), String> {
 // ----- per-event spaces (publish) -----
 
 /// Server name of the homeserver, used for `via` and room aliases.
-fn server_name(client: &Client) -> OwnedServerName {
-    let host = client
-        .homeserver()
-        .host_str()
-        .map(|h| h.split(':').next().unwrap_or(h).to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "localhost".to_string());
-    host.parse::<OwnedServerName>()
-        .unwrap_or_else(|_| "localhost".parse().expect("static server name"))
+///
+/// The server name is the domain part of the authenticated user's id
+/// (`@mat:localhost` → `localhost`, `@user:matrix.org` → `matrix.org`).  The
+/// homeserver API URL is NOT a reliable source — it carries host:port
+/// (`http://localhost:8008`) or a well-known endpoint
+/// (`https://matrix-client.matrix.org`), neither of which is the server name,
+/// so aliases built from it are treated as remote by the server (502 directory
+/// lookups, "Room alias already taken" createRoom 400s).  Publish only runs
+/// with a signed-in account, so this errors rather than guessing.
+fn server_name(client: &Client) -> Result<OwnedServerName, String> {
+    client
+        .user_id()
+        .map(|u| u.server_name().to_owned())
+        .ok_or_else(|| "No signed-in account — sign in to publish.".to_string())
 }
 
 /// Build the room alias `#<localpart>:<server>` for this homeserver.
 fn alias(client: &Client, localpart: &str) -> Result<OwnedRoomAliasId, String> {
-    format!("#{localpart}:{}", server_name(client))
+    format!("#{localpart}:{}", server_name(client)?)
         .parse()
         .map_err(|e: ruma::IdParseError| e.to_string())
 }
@@ -1212,7 +1219,7 @@ pub async fn finalize_rooms(
     let _ = timing.send_state_event(history_content).await;
 
     // Link space <-> timing room.
-    let via = vec![server_name(client)];
+    let via = vec![server_name(client)?];
     space
         .send_state_event_for_key(timing.room_id(), SpaceChildEventContent::new(via.clone()))
         .await
@@ -1516,9 +1523,14 @@ pub async fn backfill_room_history(
 // ----- receive -----
 
 /// Spawn the long-polling sync loop, pushing incoming messages into [sink].
-pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>) {
+/// `on_error` is called for errors that should surface to the user (e.g. a
+/// stale sync token) instead of being silently retried forever.
+pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>, on_error: Rc<dyn Fn(String)>) {
     wasm_bindgen_futures::spawn_local(async move {
         let settings = SyncSettings::new().timeout(Duration::from_secs(30));
+        // sync_stream borrows `client` for the stream's lifetime, so a clone
+        // is kept for the store access in the error path.
+        let store_client = client.clone();
         let mut stream = Box::pin(client.sync_stream(settings).await);
         while let Some(res) = stream.next().await {
             match res {
@@ -1531,7 +1543,26 @@ pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>) {
                         }
                     }
                 }
-                Err(e) => khanatime::log!("matrix sync error: {e}"),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("Invalid stream token") {
+                        // The stored sync token is stale (cross-homeserver
+                        // reuse or a server reset).  Clear it so a re-login
+                        // does a fresh full sync, surface a clear error and
+                        // stop spamming the loop.
+                        let _ = store_client
+                            .state_store()
+                            .remove_kv_data(matrix_sdk::store::StateStoreDataKey::SyncToken)
+                            .await;
+                        on_error(
+                            "Sync stalled — the sync token was invalidated. Re-login to resume."
+                                .to_string(),
+                        );
+                        khanatime::log!("matrix sync error (token invalidated, stopping): {msg}");
+                        break;
+                    }
+                    khanatime::log!("matrix sync error: {msg}");
+                }
             }
         }
     });
