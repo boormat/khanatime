@@ -1738,6 +1738,18 @@ pub fn pending_for_car(runs: &[RunRecord], test: u8, car: &str) -> bool {
     pending_starts(runs, test).iter().any(|r| r.car == car)
 }
 
+/// Completed attempts for a car in a test: non-voided finishes plus DNS
+/// no-shows.  A car has "done" a test when all its attempts are accounted for
+/// — as real finishes or DNS starts (multiple DNS allowed).
+pub fn car_attempts_done(runs: &[RunRecord], test: u8, car: &str) -> usize {
+    runs.iter()
+        .filter(|r| r.test == test && r.car == car && !r.voided)
+        .filter(|r| {
+            r.r#type == RUN_FINISH || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
+        })
+        .count()
+}
+
 /// Elapsed time between a start and its finish, in deciseconds.
 pub fn elapsed_ds(start_ts: i64, finish_ts: i64) -> u16 {
     let diff = finish_ts - start_ts;
@@ -2081,6 +2093,53 @@ mod tests {
         assert!(!add_run(&mut runs, run("start", 1, "7", 100)));
         assert!(add_run(&mut runs, run("start", 1, "7", 200)));
         assert_eq!(runs.len(), 2);
+    }
+
+    #[test]
+    fn car_attempts_done_counts_finishes_and_dns() {
+        // One finish = one attempt; two finishes = two attempts.
+        let runs = vec![
+            run("finish", 1, "7", 100),
+            run("finish", 1, "7", 200),
+            run("finish", 1, "8", 100),
+        ];
+        assert_eq!(car_attempts_done(&runs, 1, "7"), 2);
+        assert_eq!(car_attempts_done(&runs, 1, "8"), 1);
+        assert_eq!(car_attempts_done(&runs, 1, "9"), 0);
+        assert_eq!(car_attempts_done(&runs, 2, "7"), 0);
+    }
+
+    #[test]
+    fn car_attempts_done_counts_multiple_dns() {
+        // DNS starts fill skipped attempts (a 2-run test can be 1 finish + 1
+        // DNS, or 2 DNS, and still be "done").
+        let mut runs = vec![
+            run("start", 1, "7", 100),
+            run("finish", 1, "7", 200),
+            run("start", 1, "8", 100),
+            run("start", 1, "8", 110),
+        ];
+        runs[0].status = Some("dns".into());
+        runs[2].status = Some("dns".into());
+        runs[3].status = Some("dns".into());
+        // A clean start is NOT an attempt — only a dns start counts.
+        runs.push(run("start", 1, "9", 100));
+        assert_eq!(car_attempts_done(&runs, 1, "7"), 2);
+        assert_eq!(car_attempts_done(&runs, 1, "8"), 2);
+        assert_eq!(car_attempts_done(&runs, 1, "9"), 0);
+    }
+
+    #[test]
+    fn car_attempts_done_excludes_voided() {
+        let mut runs = vec![
+            run("finish", 1, "7", 100),
+            run("finish", 1, "7", 200),
+            run("start", 1, "7", 300),
+        ];
+        runs[0].voided = true;
+        runs[2].status = Some("dns".into());
+        runs[2].voided = true;
+        assert_eq!(car_attempts_done(&runs, 1, "7"), 1);
     }
 
     #[test]

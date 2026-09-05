@@ -1,9 +1,7 @@
-use std::collections::{HashMap, HashSet};
-
 use sycamore::prelude::*;
 
 use crate::app::ConnState;
-use crate::event::{EventInfo, KTime, RunRecord, ScoreData, RUN_FINISH};
+use crate::event::{EventInfo, RunRecord};
 
 // Home / dashboard: sign-in, event picker, quick actions and a live summary of
 // event status.  With no event selected it shows just the picker / sign-in bits.
@@ -177,21 +175,11 @@ fn view_identity_status(_model: crate::Model) -> View {
     view! {}
 }
 
-/// Current event: name + role + status (+ Close).  Same box in both states.
+/// Current event: name + role + status (+ Close), plus a per-test progress tag
+/// row with the outstanding cars for nearly-done tests.  Same box in both states.
 fn view_current_event(model: crate::Model) -> View {
-    let (id, name, status) = model.khana.event.with(|e| {
-        if e.is_null() {
-            (String::new(), String::new(), String::new())
-        } else {
-            let name = if e.name.is_empty() {
-                "Untitled event".to_string()
-            } else {
-                e.name.clone()
-            };
-            (e.id.clone(), name, e.status.to_string())
-        }
-    });
-    if id.is_empty() {
+    let event = model.khana.event.get_clone();
+    if event.is_null() {
         return view! {
             div(class="box") {
                 h2(class="title is-5") { "Current event" }
@@ -201,10 +189,61 @@ fn view_current_event(model: crate::Model) -> View {
             }
         };
     }
+    let name = if event.name.is_empty() {
+        "Untitled event".to_string()
+    } else {
+        event.name.clone()
+    };
+    let status = event.status.to_string();
     let role_tag = match model.role.get() {
         crate::app::Role::Organiser => "Organiser",
         crate::app::Role::Official => "Official",
     };
+    // Per-test progress tags + outstanding cars.
+    let runs = model.khana.runs.get_clone();
+    let statuses = stage_status(&event, &runs);
+    let stage_tags: Vec<View> = statuses
+        .iter()
+        .map(|s| {
+            let label = if s.name.is_empty() {
+                format!("Test {} · {}%", s.num, s.pct)
+            } else {
+                format!("Test {} {} · {}%", s.num, s.name, s.pct)
+            };
+            let cls = if s.pct >= 100 {
+                "is-dark"
+            } else if s.pct > 0 {
+                "is-success"
+            } else {
+                "is-light"
+            };
+            view! { span(class=format!("tag {cls}")) { (label) } }
+        })
+        .collect();
+    let has_stage_tags = !stage_tags.is_empty();
+    let stage_tags_view: View = stage_tags.into();
+    let mut outstanding_rows: Vec<View> = Vec::new();
+    for s in &statuses {
+        if s.pct > 0 && s.pct < 100 && !s.outstanding.is_empty() && s.outstanding.len() <= 5 {
+            let label = if s.name.is_empty() {
+                format!("Test {}", s.num)
+            } else {
+                format!("Test {} {}", s.num, s.name)
+            };
+            let chips: Vec<View> = s
+                .outstanding
+                .iter()
+                .map(|c| crate::view::car_tag(c))
+                .collect();
+            outstanding_rows.push(view! {
+                div(class="mt-1") {
+                    span(class="is-size-7 has-text-grey") { (format!("{label} outstanding:")) }
+                    div(class="tags mt-1") { (chips) }
+                }
+            });
+        }
+    }
+    let outstanding_view: View = outstanding_rows.into();
     view! {
         div(class="box") {
             h2(class="title is-5") { "Current event" }
@@ -224,8 +263,64 @@ fn view_current_event(model: crate::Model) -> View {
                     }
                 }
             }
+            (if !has_stage_tags {
+                view! {}
+            } else {
+                view! { div(class="tags mt-2") { (stage_tags_view) } }
+            })
+            (outstanding_view)
         }
     }
+}
+
+/// Per-test status for the Home block: % of active cars done + the still-to-go
+/// cars.  Uses the same attempt rule as `stage_progress` (`car_attempts_done`).
+struct StageStatus {
+    num: u8,
+    name: String,
+    pct: u8,
+    outstanding: Vec<String>,
+}
+
+fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
+    use crate::event::cmp_car_number;
+    let active_cars: Vec<&str> = event
+        .entries
+        .iter()
+        .filter(|e| !e.car.is_empty())
+        .map(|e| e.car.as_str())
+        .collect();
+    event
+        .stages
+        .iter()
+        .map(|st| {
+            let done: Vec<&str> = active_cars
+                .iter()
+                .copied()
+                .filter(|car| {
+                    crate::event::car_attempts_done(runs, st.num, car) >= st.runs_total as usize
+                })
+                .collect();
+            let mut outstanding: Vec<String> = active_cars
+                .iter()
+                .copied()
+                .filter(|car| !done.contains(car))
+                .map(str::to_string)
+                .collect();
+            outstanding.sort_by(|a, b| cmp_car_number(a, b));
+            let pct = if active_cars.is_empty() {
+                0
+            } else {
+                (done.len() * 100 / active_cars.len()).min(100) as u8
+            };
+            StageStatus {
+                num: st.num,
+                name: st.name.clone(),
+                pct,
+                outstanding,
+            }
+        })
+        .collect()
 }
 
 /// Saved events on this device — always visible, the event switcher.
@@ -511,41 +606,24 @@ struct StageProgress {
     total_runs: usize,
 }
 
-/// (total, active competitors, withdrawn, draft, reserve) entry counts.
+/// (total entries, active competitors — entries with an assigned car).
 fn entry_counts(event: &EventInfo) -> (usize, usize) {
     let total = event.entries.len();
-    (total, total)
+    let active = event.entries.iter().filter(|e| !e.car.is_empty()).count();
+    (total, active)
 }
 
-/// Per-stage progress for active entries:
-/// - completed: has a real (non-withdrawn) recorded time
-/// - scored_runs: finished at least `runs_scored` runs
-/// - total_runs: finished all `runs_total` runs
-fn stage_progress(
-    event: &EventInfo,
-    scores: &[ScoreData],
-    runs: &[RunRecord],
-) -> Vec<StageProgress> {
-    let active_cars: HashSet<&str> = event.entries.iter().map(|e| e.car.as_str()).collect();
-
-    let mut completed: HashMap<u8, usize> = HashMap::new();
-    for s in scores {
-        if matches!(s.time, KTime::Time(_)) && active_cars.contains(s.car.as_str()) {
-            *completed.entry(s.stage).or_insert(0) += 1;
-        }
-    }
-
-    // Distinct finished runs per (stage, car).
-    let mut runs_done: HashMap<(u8, String), HashSet<String>> = HashMap::new();
-    for r in runs {
-        if r.r#type != RUN_FINISH || r.voided {
-            continue;
-        }
-        runs_done
-            .entry((r.test, r.car.clone()))
-            .or_default()
-            .insert(r.uid.clone());
-    }
+/// Per-stage progress for active entries (entries with an assigned car):
+/// - completed: has at least one accounted attempt (a finish, or a DNS no-show)
+/// - scored_runs: at least `runs_scored` attempts done
+/// - total_runs: at least `runs_total` attempts done
+fn stage_progress(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageProgress> {
+    let active_cars: Vec<&str> = event
+        .entries
+        .iter()
+        .filter(|e| !e.car.is_empty())
+        .map(|e| e.car.as_str())
+        .collect();
 
     event
         .stages
@@ -555,17 +633,14 @@ fn stage_progress(
                 active_cars
                     .iter()
                     .filter(|car| {
-                        runs_done
-                            .get(&(st.num, (*car).to_string()))
-                            .map_or(0, HashSet::len)
-                            >= min as usize
+                        crate::event::car_attempts_done(runs, st.num, car) >= min as usize
                     })
                     .count()
             };
             StageProgress {
                 num: st.num,
                 name: st.name.clone(),
-                completed: completed.get(&st.num).copied().unwrap_or(0),
+                completed: done(1),
                 scored_runs: done(st.runs_scored),
                 total_runs: done(st.runs_total),
             }
@@ -580,11 +655,10 @@ pub fn view_status_summary(model: crate::Model) -> View {
     if event.is_null() {
         return view! {};
     }
-    let scores = model.khana.scores.get_clone();
     let runs = model.khana.runs.get_clone();
 
     let (total, active) = entry_counts(&event);
-    let stages = stage_progress(&event, &scores, &runs);
+    let stages = stage_progress(&event, &runs);
     let unassigned = event.entries.iter().filter(|e| e.car.is_empty()).count();
     // Pre-compute owned shared-car info (groups borrows event.entries which
     // goes out of scope before the view! macro, which needs 'static data).
@@ -688,7 +762,7 @@ pub fn view_status_summary(model: crate::Model) -> View {
                 tbody { (rows) }
             }
             p(class="help") {
-                "Completed = recorded a time for the test. Scored = finished at least the scored-run count. Total = finished all runs."
+                "Completed = has a recorded result for the test (time or DNS/DNF). Scored = at least the scored-run count of attempts done. Total = all runs done (finishes + DNS)."
             }
         }
     }
@@ -751,7 +825,7 @@ mod tests {
         let counts = super::entry_counts(&ev);
         assert_eq!(counts, (4, 4));
 
-        let p = super::stage_progress(&ev, &sample_scores(), &sample_runs());
+        let p = super::stage_progress(&ev, &sample_runs());
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].completed, 2);
         assert_eq!(p[1].completed, 1);
@@ -759,5 +833,65 @@ mod tests {
         assert_eq!(p[0].total_runs, 1); // only Alice has 2 runs (runs_total=2)
         assert_eq!(p[1].scored_runs, 1); // only Alice ran stage 2
         assert_eq!(p[1].total_runs, 1);
+    }
+
+    #[test]
+    fn stage_status_pct_and_outstanding() {
+        use crate::event::{Stage, TimingStyle};
+        let stage = |num: u8, runs_total: u8| Stage {
+            num,
+            name: format!("Test {num}"),
+            runs_total,
+            runs_scored: 1,
+            timing: TimingStyle::Stopwatch,
+        };
+        let mut ev = EventInfo {
+            name: "Demo".into(),
+            stages: vec![stage(1, 1), stage(2, 2), stage(3, 1)],
+            ..Default::default()
+        };
+        for n in ["1", "2", "3", "4"] {
+            ev.entries.push(crate::event::Entry::new(n, "R"));
+        }
+        let finish = |t: u8, car: &str, uid: &str, ts: i64| RunRecord {
+            uid: uid.into(),
+            r#type: crate::event::RUN_FINISH.into(),
+            test: t,
+            car: car.into(),
+            ts,
+            ..Default::default()
+        };
+        let dns = |t: u8, car: &str, uid: &str, ts: i64| RunRecord {
+            uid: uid.into(),
+            r#type: crate::event::RUN_START.into(),
+            test: t,
+            car: car.into(),
+            ts,
+            status: Some("dns".into()),
+            ..Default::default()
+        };
+        // Stage 1 (runs_total=1): cars 1-3 finished → 75%, outstanding 4.
+        // Stage 2 (runs_total=2): car1 two finishes (done), car2 finish + dns
+        // (done), car3/4 nothing → 50%, outstanding 3,4.
+        // Stage 3: nothing → 0% not started (no outstanding row).
+        let runs = vec![
+            finish(1, "1", "f11", 1),
+            finish(1, "2", "f12", 2),
+            finish(1, "3", "f13", 3),
+            finish(2, "1", "f21a", 4),
+            finish(2, "1", "f21b", 5),
+            finish(2, "2", "f22", 6),
+            dns(2, "2", "d22", 7),
+        ];
+        let s = super::stage_status(&ev, &runs);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0].pct, 75);
+        assert_eq!(s[0].outstanding, vec!["4"]);
+        assert_eq!(s[1].pct, 50);
+        assert_eq!(s[1].outstanding, vec!["3", "4"]);
+        assert_eq!(s[2].pct, 0);
+        // Not started: every car is outstanding in the data; the render only
+        // shows the row for running tests (0 < pct < 100).
+        assert_eq!(s[2].outstanding, vec!["1", "2", "3", "4"]);
     }
 }
