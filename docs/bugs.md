@@ -353,6 +353,65 @@ on the time field; restore the car-tag → picker-modal trigger and make
 `apply_car` amend a confirmed finish (new car) while using the live record car.
 `clear_after_confirm` clears the selection after a confirmed provisional.
 
+### B15. Edit event → remove a driver → Close → Open → event doesn't open
+**Files:** `src/khana/page/event.rs` (`Msg::DeleteEntry`, `save_batch`/confirm),
+`src/app.rs` (`OpenSaved`), `src/khana/event.rs` (`load_event`)
+**Severity:** High
+**Detail:** Edit the event, remove a driver (entry), Save, **Close Event**, then
+**Open** it from the Saved list — nothing happens; the event doesn't open (Home
+stays "No event open"). `DeleteEntry` removes from the staged `edit_event`; the
+suspect is the save/confirm → `enqueue_setup` → `load_event` (replay) path or the
+published-`Join` branch of `OpenSaved`.
+
+### ~~B16. Demo opens as Organiser, but refresh drops to Official~~ ✅ DONE
+**File:** `src/app.rs` — `Model::init` / `refresh_role`
+**Severity:** Medium
+**Detail:** Open the demo (or any loaded event) → role shows **Organiser**. A page
+refresh → **Official**. `refresh_role` was only called on `Msg::SetEvent`,
+`switch_to_draft`, and identity changes — not at init — so the role signal stayed
+at its default `Official` after a refresh.
+**Fix:** call `refresh_role(m)` at the end of `Model::init` (event + identity are
+set there), so the demo and any session-loaded event get the right role on refresh.
+
+### B17. Deleting a published event with pending results is too easy
+**Files:** `src/page/home.rs` — `view_delete_modal`; `src/app.rs` `DeleteEvent`
+**Severity:** High
+**Detail:** The Saved-events delete modal is generic ("Its data is removed from
+this device only.") even for a **published** event with an unsent outbox
+(`pending`) and recorded results — a serious loss. Needs a strong warning for
+published events with a pending backlog/results, plus a second confirmation step
+(e.g. type-to-confirm).
+
+### B18. Stage/test naming — standardise to T1 / "T1: name"
+**Files:** app-wide (`home.rs` per-test tags, `timing.rs` stage list + header,
+results, event config)
+**Severity:** Low (consistency)
+**Detail:** Stages render as "Test 1", "Test 1 · 80%", etc. Standardise: compact
+views show **T1**; where a name is shown use **T1: Dog Trial**; a Stage/Test chip
+is just **T1**. (Home tags already use `T{n}`.)
+
+### B19. Timekeeper view needs a compact stage picker with per-test status
+**File:** `src/khana/page/timekeeper.rs`
+**Severity:** Medium
+**Detail:** The Timekeeper (manual entry) view changes stage only via the
+"stage N" command-line; there's no visual stage picker. Add a compact stage
+picker list at the top with the same per-test status/% colours as the Home page.
+
+### B20. Timing page car chips — colour-code by runs left
+**File:** `src/khana/page/stopwatch.rs` (`view_car_chips`)
+**Severity:** Medium
+**Detail:** Car chips are all the same colour. Colour-code them by how many runs
+a car has left: **green** needs to run, **red** done (or too many runs), **blue**
+done the minimum (`runs_scored`). Use the shared `car_attempts_done` so DNS
+counts.
+
+### B21. Timing page TBA "?" layout
+**File:** `src/khana/page/stopwatch.rs` (`view_car_chips`)
+**Severity:** Low
+**Detail:** The TBA row wastes space with a "TBA" label tag. Drop the "TBA" tag;
+make "?" a normal car chip (car icon, like the others) at the **start** of the
+row of cars that have done all their runs.
+
 ---
 
 ## Priority Suggestion

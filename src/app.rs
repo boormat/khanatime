@@ -341,6 +341,9 @@ impl Model {
         }
         // Restore stopwatch session (car selection + uncommitted stop → pending)
         crate::khana::page::stopwatch::restore_session(m);
+        // Derive the role for the event loaded from the session (B16) — the
+        // demo must still show as Organiser after a page refresh.
+        refresh_role(m);
         refresh_feed(m);
         m
     }

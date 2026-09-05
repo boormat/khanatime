@@ -175,8 +175,9 @@ fn view_identity_status(_model: crate::Model) -> View {
     view! {}
 }
 
-/// Current event: name + role + status (+ Close), plus a per-test progress tag
-/// row with the outstanding cars for nearly-done tests.  Same box in both states.
+/// Current event: name + role + status (+ Close), with per-test FIA status
+/// tags and, for running tests, the on-course + outstanding car chips beside
+/// the tag.  Same box in both states.
 fn view_current_event(model: crate::Model) -> View {
     let event = model.khana.event.get_clone();
     if event.is_null() {
@@ -199,54 +200,54 @@ fn view_current_event(model: crate::Model) -> View {
         crate::app::Role::Organiser => "Organiser",
         crate::app::Role::Official => "Official",
     };
-    // Per-test progress tags + outstanding cars.
+    // Per-test progress tags (FIA colours) + on-course/outstanding car chips.
     let runs = model.khana.runs.get_clone();
     let statuses = stage_status(&event, &runs);
-    let stage_tags: Vec<View> = statuses
-        .iter()
-        .map(|s| {
-            let label = if s.name.is_empty() {
-                format!("Test {} · {}%", s.num, s.pct)
-            } else {
-                format!("Test {} {} · {}%", s.num, s.name, s.pct)
-            };
-            let cls = if s.pct >= 100 {
-                "is-info" // Blue = Completed (FIA)
-            } else if s.pct > 0 {
-                "is-warning" // Orange = Running (FIA)
-            } else {
-                "is-white" // No colour = To run (FIA)
-            };
-            view! { span(class=format!("tag {cls}")) { (label) } }
-        })
-        .collect();
-    let has_stage_tags = !stage_tags.is_empty();
-    let stage_tags_view: View = stage_tags.into();
-    let mut outstanding_rows: Vec<View> = Vec::new();
+    let mut top_tags: Vec<View> = Vec::new();
+    let mut running_rows: Vec<View> = Vec::new();
     for s in &statuses {
-        if s.pct > 0 && s.pct < 100 && !s.outstanding.is_empty() && s.outstanding.len() <= 5 {
-            let label = if s.name.is_empty() {
-                format!("Test {}", s.num)
-            } else {
-                format!("Test {} {}", s.num, s.name)
-            };
-            let chips: Vec<View> = s
-                .outstanding
-                .iter()
-                .map(|c| crate::view::car_tag(c))
-                .collect();
-            outstanding_rows.push(view! {
-                div(class="mt-1") {
-                    span(class="is-size-7 has-text-grey") { (format!("{label} outstanding:")) }
-                    div(class="tags mt-1") { (chips) }
+        let running = !s.cancelled && (s.pct > 0 || !s.active.is_empty());
+        let label = if s.name.is_empty() {
+            format!("T{}", s.num)
+        } else {
+            format!("T{}: {}", s.num, s.name)
+        };
+        if running {
+            let mut chips: Vec<View> = Vec::new();
+            for car in &s.active {
+                chips.push(car_chip(car.clone(), "is-dark"));
+            }
+            for car in &s.outstanding {
+                chips.push(car_chip(car.clone(), "is-white"));
+            }
+            let chips_view: View = chips.into();
+            let pct_label = format!("{} · {}%", label, s.pct);
+            running_rows.push(view! {
+                div(class="level is-mobile mt-1") {
+                    div(class="level-left") {
+                        span(class="tag is-warning") { (pct_label) }
+                    }
+                    div(class="level-right") {
+                        div(class="tags") { (chips_view) }
+                    }
                 }
             });
+        } else {
+            let cls = if s.cancelled {
+                "is-danger"
+            } else if s.pct >= 100 {
+                "is-info"
+            } else {
+                "is-white"
+            };
+            top_tags.push(view! { span(class=format!("tag {cls}")) { (label) } });
         }
     }
-    let outstanding_view: View = outstanding_rows.into();
+    let has_top_tags = !top_tags.is_empty();
+    let top_tags_view: View = top_tags.into();
+    let running_rows_view: View = running_rows.into();
     view! {
         div(class="box") {
-            h2(class="title is-5") { "Current event" }
             div(class="level is-mobile") {
                 div(class="level-left") {
                     span(class="has-text-weight-semibold") { (name) }
@@ -263,22 +264,32 @@ fn view_current_event(model: crate::Model) -> View {
                     }
                 }
             }
-            (if !has_stage_tags {
+            (if !has_top_tags {
                 view! {}
             } else {
-                view! { div(class="tags mt-2") { (stage_tags_view) } }
+                view! { div(class="tags mt-2") { (top_tags_view) } }
             })
-            (outstanding_view)
+            (running_rows_view)
         }
     }
 }
 
-/// Per-test status for the Home block: % of active cars done + the still-to-go
-/// cars.  Uses the same attempt rule as `stage_progress` (`car_attempts_done`).
+/// A small car chip (icon + number) with the given tag colour.
+fn car_chip(car: String, cls: &'static str) -> View {
+    view! {
+        span(class=format!("tag {cls} kt-car-tag")) { i(class="fa fa-car") { " " } (car) }
+    }
+}
+
+/// Per-test status for the Home block: % of active cars done, cancelled flag,
+/// cars on course now, and the still-to-go cars.  Uses the same attempt rule as
+/// `stage_progress` (`car_attempts_done`).
 struct StageStatus {
     num: u8,
     name: String,
     pct: u8,
+    cancelled: bool,
+    active: Vec<String>,
     outstanding: Vec<String>,
 }
 
@@ -294,6 +305,14 @@ fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
         .stages
         .iter()
         .map(|st| {
+            let cancelled = st.runs_total == 0;
+            // Cars on course right now (a pending start, no finish yet).
+            let mut active: Vec<String> = crate::event::pending_starts(runs, st.num)
+                .iter()
+                .map(|r| r.car.clone())
+                .collect();
+            active.sort_by(|a, b| cmp_car_number(a, b));
+            active.dedup();
             let done: Vec<&str> = active_cars
                 .iter()
                 .copied()
@@ -308,7 +327,7 @@ fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
                 .map(str::to_string)
                 .collect();
             outstanding.sort_by(|a, b| cmp_car_number(a, b));
-            let pct = if active_cars.is_empty() {
+            let pct = if cancelled || active_cars.is_empty() {
                 0
             } else {
                 (done.len() * 100 / active_cars.len()).min(100) as u8
@@ -317,6 +336,8 @@ fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
                 num: st.num,
                 name: st.name.clone(),
                 pct,
+                cancelled,
+                active,
                 outstanding,
             }
         })
@@ -329,8 +350,6 @@ fn view_saved_events(model: crate::Model) -> View {
     let _ = sm.refresh.get();
     let mut ids: Vec<String> = crate::event::list_events().into_iter().collect();
     ids.sort();
-    let recent = crate::event::session_recent_event();
-    let current_id = model.khana.event.with(|e| e.id.clone());
     let mut rows: Vec<View> = Vec::new();
     for id in ids {
         let e = crate::event::load_event(&id);
@@ -344,16 +363,19 @@ fn view_saved_events(model: crate::Model) -> View {
         } else {
             None
         };
-        let is_recent = id == recent;
-        let is_current = id == current_id;
+        // Unsent outbox count, shown for published events.
+        let pending = if e.is_published() {
+            crate::log::load_pending(&id).len()
+        } else {
+            0
+        };
         rows.push(view_event_row(
             model,
             id,
             name,
             hs_tag,
             Some(e.status.to_string()),
-            is_recent,
-            is_current,
+            pending,
         ));
     }
     let body = if rows.is_empty() {
@@ -472,24 +494,22 @@ fn view_event_row(
     name: String,
     hs_tag: Option<String>,
     status: Option<String>,
-    is_recent: bool,
-    is_current: bool,
+    pending: usize,
 ) -> View {
     let sm = model.screens.home;
     let open_id = id.clone();
     let del_id = id.clone();
     let mut tags: Vec<View> = vec![];
-    if is_current {
-        tags.push(view! { span(class="tag is-link") { "Current" } });
-    }
-    if is_recent {
-        tags.push(view! { span(class="tag is-success is-light") { "Recent" } });
-    }
     if let Some(hs) = hs_tag {
         tags.push(view! { span(class="tag is-link is-light") { (hs) } });
     }
     if let Some(s) = status {
         tags.push(view! { span(class="tag is-light") { (s) } });
+    }
+    if pending > 0 {
+        tags.push(
+            view! { span(class="tag is-warning is-light") { (format!("{pending} pending")) } },
+        );
     }
     view! {
         div(class="field is-grouped is-grouped-multiline mb-2") {
@@ -893,5 +913,43 @@ mod tests {
         // Not started: every car is outstanding in the data; the render only
         // shows the row for running tests (0 < pct < 100).
         assert_eq!(s[2].outstanding, vec!["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn stage_status_cancelled_and_active() {
+        use crate::event::{Stage, TimingStyle};
+        let stage = |num: u8, runs_total: u8| Stage {
+            num,
+            name: format!("Test {num}"),
+            runs_total,
+            runs_scored: 1,
+            timing: TimingStyle::Stopwatch,
+        };
+        let mut ev = EventInfo {
+            name: "Demo".into(),
+            stages: vec![stage(1, 0), stage(2, 1)],
+            ..Default::default()
+        };
+        for n in ["1", "2"] {
+            ev.entries.push(crate::event::Entry::new(n, "R"));
+        }
+        // Stage 1: runs_total = 0 → cancelled.
+        // Stage 2: car 1 has a pending start (on course, no finish) — not an
+        // attempt yet, so pct 0, but it appears in `active`.
+        let runs = vec![RunRecord {
+            uid: "s1".into(),
+            r#type: crate::event::RUN_START.into(),
+            test: 2,
+            car: "1".into(),
+            ts: 1,
+            ..Default::default()
+        }];
+        let s = super::stage_status(&ev, &runs);
+        assert!(s[0].cancelled);
+        assert_eq!(s[0].pct, 0);
+        assert!(!s[1].cancelled);
+        assert_eq!(s[1].pct, 0);
+        assert_eq!(s[1].active, vec!["1"]);
+        assert_eq!(s[1].outstanding, vec!["1", "2"]);
     }
 }
