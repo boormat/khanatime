@@ -213,23 +213,24 @@ fn view_current_event(model: crate::Model) -> View {
             format!("T{}: {}", s.num, s.name)
         };
         if running {
+            // On-course chips always show; the pending (cars-left) chips only
+            // show when they'd fit beside them — active + pending < 5.
+            let show_pending = s.active.len() + s.outstanding.len() < 5;
             let mut chips: Vec<View> = Vec::new();
             for car in &s.active {
-                chips.push(car_chip(car.clone(), "is-dark"));
+                chips.push(car_chip(car.clone(), "is-warning"));
             }
-            for car in &s.outstanding {
-                chips.push(car_chip(car.clone(), "is-white"));
+            if show_pending {
+                for car in &s.outstanding {
+                    chips.push(crate::view::car_tag(car));
+                }
             }
             let chips_view: View = chips.into();
             let pct_label = format!("{} · {}%", label, s.pct);
             running_rows.push(view! {
-                div(class="level is-mobile mt-1") {
-                    div(class="level-left") {
-                        span(class="tag is-warning") { (pct_label) }
-                    }
-                    div(class="level-right") {
-                        div(class="tags") { (chips_view) }
-                    }
+                div(class="is-flex is-align-items-center is-flex-wrap-wrap mt-1", style="gap: 0.5rem;") {
+                    span(class="tag is-warning") { (pct_label) }
+                    div(class="is-flex is-flex-wrap-wrap", style="gap: 0.25rem;") { (chips_view) }
                 }
             });
         } else {
@@ -324,6 +325,8 @@ fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
                 .iter()
                 .copied()
                 .filter(|car| !done.contains(car))
+                // A car on course now isn't "pending" too.
+                .filter(|car| !active.iter().any(|a| a == car))
                 .map(str::to_string)
                 .collect();
             outstanding.sort_by(|a, b| cmp_car_number(a, b));
@@ -950,6 +953,7 @@ mod tests {
         assert!(!s[1].cancelled);
         assert_eq!(s[1].pct, 0);
         assert_eq!(s[1].active, vec!["1"]);
-        assert_eq!(s[1].outstanding, vec!["1", "2"]);
+        // On-course car 1 isn't duplicated in outstanding.
+        assert_eq!(s[1].outstanding, vec!["2"]);
     }
 }
