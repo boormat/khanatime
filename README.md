@@ -96,11 +96,7 @@ CI: `test.yml` runs `./scripts/check.sh` on push/PR.
    GitHub Release (+ zip for LAN copy).
 
 **Preview** (`main`): `preview.yml` → `https://boormat.github.io/khanatime/main/`
-(`dev-<sha>`), plus `/main/<sha>/` redirect. Until the first tagged `/v*`
-exists, preview also refreshes the root demo URL
-`https://boormat.github.io/khanatime/` so existing bookmarks keep working.
-After a stable release, root stays on latest tag; use `/main/` for prerelease.
-Never put preview URLs in real-event invite QRs.
+with `app_version=dev-<sha>`. Never use preview URLs in event invite QRs.
 
 See `docs/plan/release-ci.md`. Actions: https://github.com/boormat/khanatime/actions
 

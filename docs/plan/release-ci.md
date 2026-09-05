@@ -30,19 +30,10 @@ No retagging the same `vX.Y.Z`. Hotfix = new patch.
 |---------|---------|-----|---------------|
 | Stable | tag `vX.Y.Z` | `/khanatime/vX.Y.Z/` | `X.Y.Z` |
 | Latest stable | after tag | `/khanatime/` | newest tag |
-| Preview | push `main` / dispatch | `/khanatime/main/` (+ `/main/<sha>/` redirect) | `dev-<sha>` |
-| Demo URL (pre-tag) | same preview job | `/khanatime/` | `dev-<sha>` |
+| Preview | push `main` / dispatch | `/khanatime/main/` | `dev-<sha>` |
 | Local | `serve.sh` | localhost | `dev-<sha>` or Cargo |
 
-**Existing demo URL:** Until the first `/vX.Y.Z/` slot exists, `preview.yml`
-also rebuilds **site root** with `--public-url /khanatime/` so
-`https://boormat.github.io/khanatime/` keeps working (same bits as `/main/`).
-After any stable `/v*` is published, preview **stops** touching root (root
-stays latest stable); prerelease testers use `/main/` or `/main/<sha>/`
-(redirect → `/main/`).
-
-Invite QRs for real events use the **pinned** `/vX.Y.Z/` URL only — never
-floating `/` or `/main/`.
+Invite QRs use the **pinned** `/vX.Y.Z/` URL only — never floating `/` or `/main/`.
 
 ## `releases.json`
 
@@ -54,10 +45,9 @@ before publish/create on an older build.
 
 - `test.yml` — PR/push → `check.sh`
 - `release.yml` — tag `v*` → version assert + check + versioned Pages + Release
-- `preview.yml` — `main` → `/khanatime/main/` (+ sha redirect); also refreshes
-  root **only while no `/v*` stables exist** (keeps the shared demo URL alive)
+- `preview.yml` — `main` → `/khanatime/main/` only (does not overwrite `/v*`)
 - `deploy.yml` — retired as main-overwrite; superseded by release/preview
 
-Pages site is assembled cumulatively (existing `gh-pages` tree + new slots)
-then uploaded via `deploy-pages`, and the tree is pushed back to `gh-pages`
-for the next run.
+Pages site is assembled cumulatively (existing `gh-pages` tree + new `vX.Y.Z/`
++ root latest) then uploaded via `deploy-pages`, and the tree is pushed back to
+`gh-pages` for the next run.
