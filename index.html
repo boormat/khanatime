@@ -1,56 +1,33 @@
 <!DOCTYPE html>
-<html>
-
-<head profile="http://www.w3.org/2005/10/profile">
-    <meta charset="utf-8" />
-    <title>Khana Timing</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <link rel="stylesheet" href="/khanatime/app-d85a9cc142d81276.css" integrity="sha384-sD8xTzQnKfn+sK8/BFR/6bdeyfotza42DGg1YKaAlIG8I5g009yOwVfNsJLwvRx1"/>
-
-    
-    
-    
-    
-    <link rel="icon" type="image/x-icon" href="favicon.ico">
-    <!-- <link data-trunk rel="copy-file" href="public/service_worker.js"> -->
-    
-
-    <link rel="manifest" href="./manifest.json">
-    <base href="/khanatime/" />
-
-    <!-- QR scanning: jsQR fallback for browsers without BarcodeDetector (Brave, Firefox) -->
-    <script src="/khanatime/jsqr.min-27110b4a32dd4b69.js" integrity="sha384-b5Ya4Bq3qCyz39m2ISh+4DxjAIljdeFwK/BsXLuj9gugaNwAcj/ia15fxNZL9Nlx"></script>
-    <script src="/khanatime/qr-shim-c8e448a36297c758.js" integrity="sha384-3IUxH6K52cTMm2dobKgOA2KfsWPgUdIOVgj5JsDUlilZgHRPS/MOowTWtqKTnuEi"></script>
-    <!-- 
-    <script>
-        // register ServiceWorker
-        window.onload = () => {
-            'use strict';
-
-            if ('serviceWorker' in navigator) {
-                navigator.serviceWorker
-                    .register('./service_worker.js');
-            }
-        }
-    </script> -->
-
-<link rel="modulepreload" href="/khanatime/khanatime-b8d80288a58b12b6.js" crossorigin="anonymous" integrity="sha384-KdUfVtLG2oep0gKEi960NUxN2V6GXKJQ+tq0ZH2hLA3elKJegzNmYm1wAXKkIj/d"><link rel="preload" href="/khanatime/khanatime-b8d80288a58b12b6_bg.wasm" crossorigin="anonymous" integrity="sha384-lvKNRoeQk/B6uQHD/VgPM6vHENV6Hp4F/zptIuuu96bDDrmNS+q1JghGCzQsyzcu" as="fetch" type="application/wasm"></head>
-
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Khanatime — releases</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
+    h1 { font-size: 1.5rem; }
+    .lead { margin: 1.25rem 0; }
+    .button { display: inline-block; background: #3273dc; color: #fff; text-decoration: none;
+               padding: 0.5rem 1rem; border-radius: 4px; font-weight: 600; }
+    .notes { color: #555; font-size: 0.9rem; }
+    code { font-size: 0.9em; }
+    footer { margin-top: 2rem; color: #666; font-size: 0.85rem; }
+  </style>
+</head>
 <body>
-    <div id="app">
-    </div>
-
-<script type="module">
-import init, * as bindings from '/khanatime/khanatime-b8d80288a58b12b6.js';
-const wasm = await init({ module_or_path: '/khanatime/khanatime-b8d80288a58b12b6_bg.wasm' });
-
-
-window.wasmBindings = bindings;
-
-
-dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
-
-</script></body>
-
+  <h1>Khanatime</h1>
+  <p>Pick a <strong>pinned</strong> build for event invite QRs
+     (<code>/vX.Y.Z/</code>). Do not use this catalog URL or <code>/main/</code>
+     as a publish invite base.</p>
+  
+  <h2>Stable releases</h2>
+  <ul>
+    <li><em>No tagged releases published yet.</em></li>
+  </ul>
+  <h2>Prerelease</h2><ul><li><a href="main/"><strong>main</strong></a> (tip of <code>main</code>; Help shows <code>dev-&lt;sha&gt;</code>)</li></ul>
+  <footer>
+    Machine-readable: <a href="releases.json">releases.json</a>
+  </footer>
+</body>
 </html>
