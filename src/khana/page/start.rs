@@ -1,6 +1,6 @@
 use sycamore::prelude::*;
 
-use crate::event::{RunRecord, RUN_START};
+use crate::event::{RunRecord, RUN_FINISH, RUN_START};
 use crate::khana::page::pad;
 
 // Big-button start timing: pick a car, press START.  Records a `start` run
@@ -85,7 +85,9 @@ fn start_car(model: crate::Model) {
     sm.comment.set(String::new());
 }
 
-/// Mark a car as a no-show for the test (a `dns` start + NOSHO score).
+/// Mark a car as a no-show for the test (a `dns` finish + NOSHO score).
+/// A DNS is a car "finishing" by choosing not to compete, so it's a finish
+/// record (status `dns`) — a start only records that a car entered the stage.
 fn mark_dns(model: crate::Model) {
     let sm = model.screens.start;
     let car = sm.car.get_clone().trim().to_string();
@@ -96,7 +98,7 @@ fn mark_dns(model: crate::Model) {
     let test = sm.test.get();
     let record_run = RunRecord {
         uid: String::new(), // stamped at enqueue
-        r#type: RUN_START.to_string(),
+        r#type: RUN_FINISH.to_string(),
         test,
         car: car.clone(),
         ts: js_sys::Date::now() as i64,

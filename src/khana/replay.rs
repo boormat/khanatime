@@ -53,9 +53,6 @@ pub fn replay(log: &[LogMsg], pending: &[LogMsg]) -> (EventInfo, Vec<ScoreData>,
 pub(crate) fn scores_from_runs(runs: &[RunRecord]) -> Vec<ScoreData> {
     let mut scores: Vec<ScoreData> = vec![];
     for r in runs.iter().filter(|r| !r.voided) {
-        if r.r#type == crate::event::RUN_START && r.status.as_deref() == Some("dns") {
-            crate::event::upsert_ktime(&mut scores, r.test, &r.car, crate::event::KTime::NOSHO);
-        }
         if r.r#type == crate::event::RUN_FINISH {
             let kt = crate::event::finish_to_ktime(r);
             crate::event::upsert_ktime(&mut scores, r.test, &r.car, kt);
@@ -527,7 +524,9 @@ mod tests {
     }
 
     #[test]
-    fn dns_start_scores_nosho() {
+    fn dns_start_ignored() {
+        // DNS is a finish, not a start: a start record (even one tagged dns)
+        // never creates a score — only finishes do.
         let ev = base_event();
         let log = vec![
             room(100, setup_body(&ev)),
@@ -540,15 +539,15 @@ mod tests {
                 signed_obs_te_status("start", "ev-uid-demo", "s2", None, 1, "7", 205, None, "dns"),
             ),
         ];
-        let (_, scores, _) = replay(&log, &[]);
-        assert_eq!(scores.len(), 1);
-        assert_eq!(scores[0].time, KTime::NOSHO);
+        let (_, scores, runs) = replay(&log, &[]);
+        assert!(scores.is_empty(), "starts must never score");
+        assert_eq!(runs.len(), 2);
     }
 
     #[test]
     fn manual_dns_finish_scores_nosho() {
         // B8: a DNS recorded through the manual edit path is a finish with
-        // status "dns" and must score NOSHO (mirrors the DNS-start case).
+        // status "dns" and must score NOSHO (DNS is a finish, not a start).
         let ev = base_event();
         let log = vec![
             room(100, setup_body(&ev)),

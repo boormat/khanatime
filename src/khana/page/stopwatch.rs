@@ -120,7 +120,6 @@ fn finish_refs_used(runs: &[RunRecord]) -> std::collections::HashSet<String> {
 
 /// Auto-attach all start+stop events for the same (test, car) that are:
 /// - not voided
-/// - not DNS
 /// - not already referenced by another finish's refs
 ///
 /// Returns UIDs sorted by timestamp (oldest first).
@@ -131,7 +130,6 @@ fn auto_attach(runs: &[RunRecord], test: u8, car: &str) -> Vec<String> {
         .filter(|r| r.test == test && r.car == car)
         .filter(|r| r.r#type == RUN_START || r.r#type == RUN_STOP)
         .filter(|r| !r.voided)
-        .filter(|r| r.status.as_deref() != Some("dns"))
         .filter(|r| !used.contains(&r.uid))
         .map(|r| (r.ts, r.uid.clone()))
         .collect();

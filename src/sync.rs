@@ -1314,12 +1314,6 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
             crate::event::add_run(runs, run);
         });
     }
-    if te.r#type == crate::event::RUN_START && te.status.as_deref() == Some("dns") {
-        // A no-show start scores NOSHO so the results cell reads "DNS".
-        model.khana.scores.update(|s| {
-            crate::event::upsert_ktime(s, te.test, &te.car, crate::event::KTime::NOSHO);
-        });
-    }
     if te.r#type == crate::event::RUN_FINISH {
         // Full KTime: keeps DNF/FTS/WD/NOSHO and penalty flags intact.
         let run = crate::event::record_from_timing(&te);

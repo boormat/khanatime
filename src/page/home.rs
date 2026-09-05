@@ -1,7 +1,7 @@
 use sycamore::prelude::*;
 
 use crate::app::ConnState;
-use crate::event::{EventInfo, RunRecord};
+use crate::event::{EventInfo, RunRecord, RUN_START};
 
 // Home / dashboard: sign-in, event picker, quick actions and a live summary of
 // event status.  With no event selected it shows just the picker / sign-in bits.
@@ -206,7 +206,7 @@ fn view_current_event(model: crate::Model) -> View {
     let mut top_tags: Vec<View> = Vec::new();
     let mut running_rows: Vec<View> = Vec::new();
     for s in &statuses {
-        let running = !s.cancelled && (s.pct > 0 || !s.active.is_empty());
+        let running = !s.cancelled && s.started && !s.complete;
         let label = if s.name.is_empty() {
             format!("T{}", s.num)
         } else {
@@ -226,20 +226,21 @@ fn view_current_event(model: crate::Model) -> View {
                 }
             }
             let chips_view: View = chips.into();
-            let pct_label = format!("{} · {}%", label, s.pct);
             running_rows.push(view! {
                 div(class="is-flex is-align-items-center is-flex-wrap-wrap mt-1", style="gap: 0.5rem;") {
-                    span(class="tag is-warning") { (pct_label) }
+                    span(class="tag is-warning") { (label) }
                     div(class="is-flex is-flex-wrap-wrap", style="gap: 0.25rem;") { (chips_view) }
                 }
             });
         } else {
             let cls = if s.cancelled {
-                "is-danger"
-            } else if s.pct >= 100 {
+                // Cancelled: same blue as completed, but struck out.
+                "is-info kt-struck"
+            } else if s.complete {
                 "is-info"
             } else {
-                "is-white"
+                // To run: grey (white tags vanish on white).
+                "is-light"
             };
             top_tags.push(view! { span(class=format!("tag {cls}")) { (label) } });
         }
@@ -282,13 +283,15 @@ fn car_chip(car: String, cls: &'static str) -> View {
     }
 }
 
-/// Per-test status for the Home block: % of active cars done, cancelled flag,
-/// cars on course now, and the still-to-go cars.  Uses the same attempt rule as
-/// `stage_progress` (`car_attempts_done`).
+/// Per-test status for the Home block: whether any car has started (a start
+/// record — a car entered the stage), whether every active car is done
+/// (`car_attempts_done` >= total), the cancelled flag, cars on course now, and
+/// the still-to-go cars.  Uses the same attempt rule as `stage_progress`.
 struct StageStatus {
     num: u8,
     name: String,
-    pct: u8,
+    started: bool,
+    complete: bool,
     cancelled: bool,
     active: Vec<String>,
     outstanding: Vec<String>,
@@ -307,6 +310,11 @@ fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
         .iter()
         .map(|st| {
             let cancelled = st.runs_total == 0;
+            // Started once any car has a (non-voided) start — a start only
+            // means the car entered the stage.
+            let started = runs
+                .iter()
+                .any(|r| !r.voided && r.r#type == RUN_START && r.test == st.num);
             // Cars on course right now (a pending start, no finish yet).
             let mut active: Vec<String> = crate::event::pending_starts(runs, st.num)
                 .iter()
@@ -330,15 +338,12 @@ fn stage_status(event: &EventInfo, runs: &[RunRecord]) -> Vec<StageStatus> {
                 .map(str::to_string)
                 .collect();
             outstanding.sort_by(|a, b| cmp_car_number(a, b));
-            let pct = if cancelled || active_cars.is_empty() {
-                0
-            } else {
-                (done.len() * 100 / active_cars.len()).min(100) as u8
-            };
+            let complete = !cancelled && !active_cars.is_empty() && done.len() == active_cars.len();
             StageStatus {
                 num: st.num,
                 name: st.name.clone(),
-                pct,
+                started,
+                complete,
                 cancelled,
                 active,
                 outstanding,
@@ -859,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn stage_status_pct_and_outstanding() {
+    fn stage_status_states_and_outstanding() {
         use crate::event::{Stage, TimingStyle};
         let stage = |num: u8, runs_total: u8| Stage {
             num,
@@ -870,12 +875,20 @@ mod tests {
         };
         let mut ev = EventInfo {
             name: "Demo".into(),
-            stages: vec![stage(1, 1), stage(2, 2), stage(3, 1)],
+            stages: vec![stage(1, 1), stage(2, 2), stage(3, 1), stage(4, 1)],
             ..Default::default()
         };
         for n in ["1", "2", "3", "4"] {
             ev.entries.push(crate::event::Entry::new(n, "R"));
         }
+        let start = |t: u8, car: &str, uid: &str, ts: i64| RunRecord {
+            uid: uid.into(),
+            r#type: crate::event::RUN_START.into(),
+            test: t,
+            car: car.into(),
+            ts,
+            ..Default::default()
+        };
         let finish = |t: u8, car: &str, uid: &str, ts: i64| RunRecord {
             uid: uid.into(),
             r#type: crate::event::RUN_FINISH.into(),
@@ -884,38 +897,50 @@ mod tests {
             ts,
             ..Default::default()
         };
-        let dns = |t: u8, car: &str, uid: &str, ts: i64| RunRecord {
+        let dns_finish = |t: u8, car: &str, uid: &str, ts: i64| RunRecord {
             uid: uid.into(),
-            r#type: crate::event::RUN_START.into(),
+            r#type: crate::event::RUN_FINISH.into(),
             test: t,
             car: car.into(),
             ts,
             status: Some("dns".into()),
             ..Default::default()
         };
-        // Stage 1 (runs_total=1): cars 1-3 finished → 75%, outstanding 4.
-        // Stage 2 (runs_total=2): car1 two finishes (done), car2 finish + dns
-        // (done), car3/4 nothing → 50%, outstanding 3,4.
-        // Stage 3: nothing → 0% not started (no outstanding row).
+        // Stage 1 (runs_total=1): cars 1-3 started & finished → started, not
+        // complete, car 4 outstanding.
+        // Stage 2 (runs_total=2): car1 two finishes (done), car2 finish + DNS
+        // (done) — the bug case: cars have started & run but nobody's left →
+        // still running (not complete), cars 3/4 outstanding.
+        // Stage 3: nothing → not started (to run).
+        // Stage 4 (runs_total=1): every car finished → complete, no chips.
         let runs = vec![
-            finish(1, "1", "f11", 1),
-            finish(1, "2", "f12", 2),
-            finish(1, "3", "f13", 3),
-            finish(2, "1", "f21a", 4),
-            finish(2, "1", "f21b", 5),
-            finish(2, "2", "f22", 6),
-            dns(2, "2", "d22", 7),
+            start(1, "1", "s11", 1),
+            finish(1, "1", "f11", 2),
+            finish(1, "2", "f12", 3),
+            finish(1, "3", "f13", 4),
+            start(2, "1", "s21a", 5),
+            finish(2, "1", "f21a", 6),
+            start(2, "1", "s21b", 7),
+            finish(2, "1", "f21b", 8),
+            start(2, "2", "s22", 9),
+            finish(2, "2", "f22", 10),
+            dns_finish(2, "2", "d22", 11),
+            start(4, "1", "s41", 12),
+            finish(4, "1", "f41", 13),
+            finish(4, "2", "f42", 14),
+            finish(4, "3", "f43", 15),
+            finish(4, "4", "f44", 16),
         ];
         let s = super::stage_status(&ev, &runs);
-        assert_eq!(s.len(), 3);
-        assert_eq!(s[0].pct, 75);
+        assert_eq!(s.len(), 4);
+        assert!(s[0].started && !s[0].complete);
         assert_eq!(s[0].outstanding, vec!["4"]);
-        assert_eq!(s[1].pct, 50);
+        assert!(s[1].started && !s[1].complete);
         assert_eq!(s[1].outstanding, vec!["3", "4"]);
-        assert_eq!(s[2].pct, 0);
-        // Not started: every car is outstanding in the data; the render only
-        // shows the row for running tests (0 < pct < 100).
+        assert!(!s[2].started && !s[2].complete);
         assert_eq!(s[2].outstanding, vec!["1", "2", "3", "4"]);
+        assert!(s[3].started && s[3].complete);
+        assert!(s[3].outstanding.is_empty());
     }
 
     #[test]
@@ -938,7 +963,7 @@ mod tests {
         }
         // Stage 1: runs_total = 0 → cancelled.
         // Stage 2: car 1 has a pending start (on course, no finish) — not an
-        // attempt yet, so pct 0, but it appears in `active`.
+        // attempt yet, but the stage has started and car 1 is `active`.
         let runs = vec![RunRecord {
             uid: "s1".into(),
             r#type: crate::event::RUN_START.into(),
@@ -949,9 +974,8 @@ mod tests {
         }];
         let s = super::stage_status(&ev, &runs);
         assert!(s[0].cancelled);
-        assert_eq!(s[0].pct, 0);
         assert!(!s[1].cancelled);
-        assert_eq!(s[1].pct, 0);
+        assert!(s[1].started && !s[1].complete);
         assert_eq!(s[1].active, vec!["1"]);
         // On-course car 1 isn't duplicated in outstanding.
         assert_eq!(s[1].outstanding, vec!["2"]);

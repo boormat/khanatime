@@ -885,7 +885,7 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 /// for display but `sum` stays None.  A 0-of-0 stage (total = 0) is completed
 /// by every entrant with a total time of zero — any runs recorded are
 /// display-only (struck out).  DNF/FTS/WD finishes and a declared DNS (a
-/// `start` marked `dns`, no finish) are completed attempts; a DNS scores the
+/// `finish` marked `dns`, no time) are completed attempts; a DNS scores the
 /// no-time `base + 100`.  Returns the aggregate score together with every real
 /// run (in run order, counted runs flagged).  None when the car has no attempts
 /// in the test.
@@ -909,22 +909,12 @@ fn stage_result(
         relevant.sort_by_key(|r| r.ts);
         let all: Vec<RunScore> = relevant
             .iter()
-            .filter(|r| {
-                r.r#type == RUN_FINISH
-                    || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
-            })
-            .map(|r| {
-                let (time, score) = if r.r#type == RUN_FINISH {
-                    (finish_to_ktime(r), run_net_score(r, base_time))
-                } else {
-                    (KTime::NOSHO, base_time as u32 + 100)
-                };
-                RunScore {
-                    ts: r.ts,
-                    time,
-                    score,
-                    counted: false,
-                }
+            .filter(|r| r.r#type == RUN_FINISH)
+            .map(|r| RunScore {
+                ts: r.ts,
+                time: finish_to_ktime(r),
+                score: run_net_score(r, base_time),
+                counted: false,
             })
             .collect();
         return Some(StageScore {
@@ -939,21 +929,12 @@ fn stage_result(
 
     let mut all: Vec<RunScore> = relevant
         .iter()
-        .filter(|r| {
-            r.r#type == RUN_FINISH || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
-        })
-        .map(|r| {
-            let (time, score) = if r.r#type == RUN_FINISH {
-                (finish_to_ktime(r), run_net_score(r, base_time))
-            } else {
-                (KTime::NOSHO, base_time as u32 + 100)
-            };
-            RunScore {
-                ts: r.ts,
-                time,
-                score,
-                counted: false,
-            }
+        .filter(|r| r.r#type == RUN_FINISH)
+        .map(|r| RunScore {
+            ts: r.ts,
+            time: finish_to_ktime(r),
+            score: run_net_score(r, base_time),
+            counted: false,
         })
         .collect();
     all.sort_by_key(|r| r.ts);
@@ -1721,7 +1702,6 @@ pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
     let mut out: Vec<&RunRecord> = runs
         .iter()
         .filter(|r| r.r#type == RUN_START && r.test == test)
-        .filter(|r| r.status.as_deref() != Some("dns"))
         .filter(|r| !r.voided)
         .filter(|r| {
             !runs
@@ -1738,15 +1718,14 @@ pub fn pending_for_car(runs: &[RunRecord], test: u8, car: &str) -> bool {
     pending_starts(runs, test).iter().any(|r| r.car == car)
 }
 
-/// Completed attempts for a car in a test: non-voided finishes plus DNS
-/// no-shows.  A car has "done" a test when all its attempts are accounted for
-/// — as real finishes or DNS starts (multiple DNS allowed).
+/// Completed attempts for a car in a test: non-voided finishes.
+/// A DNS is a finish (status `dns`) — the car chose not to compete — so it
+/// counts as an attempt here too (multiple DNS allowed).  A car has "done" a
+/// test when all its attempts are accounted for.
 pub fn car_attempts_done(runs: &[RunRecord], test: u8, car: &str) -> usize {
     runs.iter()
         .filter(|r| r.test == test && r.car == car && !r.voided)
-        .filter(|r| {
-            r.r#type == RUN_FINISH || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
-        })
+        .filter(|r| r.r#type == RUN_FINISH)
         .count()
 }
 
@@ -2111,18 +2090,18 @@ mod tests {
 
     #[test]
     fn car_attempts_done_counts_multiple_dns() {
-        // DNS starts fill skipped attempts (a 2-run test can be 1 finish + 1
+        // DNS finishes fill skipped attempts (a 2-run test can be 1 finish + 1
         // DNS, or 2 DNS, and still be "done").
         let mut runs = vec![
-            run("start", 1, "7", 100),
+            run("finish", 1, "7", 100),
             run("finish", 1, "7", 200),
-            run("start", 1, "8", 100),
-            run("start", 1, "8", 110),
+            run("finish", 1, "8", 100),
+            run("finish", 1, "8", 110),
         ];
         runs[0].status = Some("dns".into());
         runs[2].status = Some("dns".into());
         runs[3].status = Some("dns".into());
-        // A clean start is NOT an attempt — only a dns start counts.
+        // A clean start is NOT an attempt.
         runs.push(run("start", 1, "9", 100));
         assert_eq!(car_attempts_done(&runs, 1, "7"), 2);
         assert_eq!(car_attempts_done(&runs, 1, "8"), 2);
@@ -2137,13 +2116,12 @@ mod tests {
             run("start", 1, "7", 300),
         ];
         runs[0].voided = true;
-        runs[2].status = Some("dns".into());
         runs[2].voided = true;
         assert_eq!(car_attempts_done(&runs, 1, "7"), 1);
     }
 
     #[test]
-    fn pending_starts_hides_finished_and_dns() {
+    fn pending_starts_hides_finished_and_voided() {
         let mut runs = vec![
             run("start", 1, "7", 100),
             run("start", 1, "8", 200),
@@ -2152,9 +2130,9 @@ mod tests {
         ];
         // Finish for car 8 references start uid "uid-start-200"
         runs[3].refs = vec!["uid-start-200".into()];
-        let mut dns = run("start", 1, "9", 300);
-        dns.status = Some("dns".into());
-        runs[2] = dns;
+        let mut gone = run("start", 1, "9", 300);
+        gone.voided = true;
+        runs[2] = gone;
         let pending = pending_starts(&runs, 1);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].car, "7");
@@ -2766,17 +2744,17 @@ mod tests {
         let ss = stage_result(&stage, &[finish(1, 450), dnf], 1, "7", 0).unwrap();
         assert_eq!(ss.sum, Some(500)); // 450 + DNF(50)
 
-        // A declared DNS (start marked dns, no finish) is a completed attempt
+        // A declared DNS (finish marked dns, no time) is a completed attempt
         // scoring the no-time: clean + DNS is enough for best-2-of-3.
-        let dns_start = RunRecord {
-            r#type: "start".into(),
+        let dns_finish = RunRecord {
+            r#type: "finish".into(),
             test: 1,
             car: "7".into(),
             ts: 2,
             status: Some("dns".into()),
             ..Default::default()
         };
-        let ss = stage_result(&stage, &[finish(1, 450), dns_start], 1, "7", 0).unwrap();
+        let ss = stage_result(&stage, &[finish(1, 450), dns_finish], 1, "7", 0).unwrap();
         assert_eq!(ss.sum, Some(550)); // 450 + DNS(100)
 
         // No runs at all stays blank (None).
@@ -2811,10 +2789,10 @@ mod tests {
             stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).and_then(|ss| ss.sum),
             Some(450)
         );
-        // Declared DNS (start marked dns, no finish) on a 1:1 stage: a real
+        // Declared DNS (finish marked dns, no time) on a 1:1 stage: a real
         // recorded attempt scoring the no-time base + 100.
         let dnss = vec![RunRecord {
-            r#type: "start".into(),
+            r#type: "finish".into(),
             test: 1,
             car: "9".into(),
             ts: 1,
