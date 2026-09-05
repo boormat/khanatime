@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+
+<head profile="http://www.w3.org/2005/10/profile">
+    <meta charset="utf-8" />
+    <title>Khana Timing</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <link rel="stylesheet" href="/khanatime/main/app-d85a9cc142d81276.css" integrity="sha384-sD8xTzQnKfn+sK8/BFR/6bdeyfotza42DGg1YKaAlIG8I5g009yOwVfNsJLwvRx1"/>
+
+    
+    
+    
+    
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <!-- <link data-trunk rel="copy-file" href="public/service_worker.js"> -->
+    
+
+    <link rel="manifest" href="./manifest.json">
+    <base href="/khanatime/main/" />
+
+    <!-- QR scanning: jsQR fallback for browsers without BarcodeDetector (Brave, Firefox) -->
+    <script src="/khanatime/main/jsqr.min-27110b4a32dd4b69.js" integrity="sha384-b5Ya4Bq3qCyz39m2ISh+4DxjAIljdeFwK/BsXLuj9gugaNwAcj/ia15fxNZL9Nlx"></script>
+    <script src="/khanatime/main/qr-shim-c8e448a36297c758.js" integrity="sha384-3IUxH6K52cTMm2dobKgOA2KfsWPgUdIOVgj5JsDUlilZgHRPS/MOowTWtqKTnuEi"></script>
+    <!-- 
+    <script>
+        // register ServiceWorker
+        window.onload = () => {
+            'use strict';
+
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker
+                    .register('./service_worker.js');
+            }
+        }
+    </script> -->
+
+<link rel="modulepreload" href="/khanatime/main/khanatime-e06bf8876ccd0206.js" crossorigin="anonymous" integrity="sha384-KdUfVtLG2oep0gKEi960NUxN2V6GXKJQ+tq0ZH2hLA3elKJegzNmYm1wAXKkIj/d"><link rel="preload" href="/khanatime/main/khanatime-e06bf8876ccd0206_bg.wasm" crossorigin="anonymous" integrity="sha384-QFxxD/sU4kQAax5dc7McWPupGxOHK/pjHEpDtGLtqsbjD6m6xvUt4GQrpBr1obeC" as="fetch" type="application/wasm"></head>
+
+<body>
+    <div id="app">
+    </div>
+
+<script type="module">
+import init, * as bindings from '/khanatime/main/khanatime-e06bf8876ccd0206.js';
+const wasm = await init({ module_or_path: '/khanatime/main/khanatime-e06bf8876ccd0206_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script></body>
+
+</html>

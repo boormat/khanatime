@@ -1,0 +1,16 @@
+{
+    "name": "Khana Time Web App",
+    "short_name": "KhanaTime",
+    "icons": [
+        {
+            "src": "./icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ],
+    "lang": "en-US",
+    "start_url": "./index.html",
+    "display": "standalone",
+    "background_color": "white",
+    "theme_color": "white"
+}
