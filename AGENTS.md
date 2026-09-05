@@ -29,7 +29,8 @@ cargo fmt
 # 1. Bump Cargo.toml version + CHANGELOG.md on main
 # 2. git tag vX.Y.Z && git push origin vX.Y.Z   # must match Cargo.toml
 # 3. release.yml → /khanatime/vX.Y.Z/ + releases.json + GitHub Release
-# Preview from main: preview.yml → /khanatime/main/ (dev-<sha>)
+# Preview from main: preview.yml → /khanatime/main/ (dev-<sha>);
+# also refreshes root demo URL until first /v* stable exists
 
 
 # Test layers

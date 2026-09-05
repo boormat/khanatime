@@ -1,5 +1,9 @@
-# Bleeding-edge preview from main → /khanatime/main/ with app_version=dev-<sha>.
-# Does not overwrite /v* stable slots or become the invite QR base.
+# Preview from main with app_version=dev-<sha>.
+#
+# Before any tagged /vX.Y.Z/ exists: also refresh site root so the existing
+# demo URL https://boormat.github.io/khanatime/ keeps working (same build).
+# After a stable release exists: only update /main/ (+ /main/<sha>/ redirect);
+# leave root + /v* alone (root stays "latest stable").
 name: preview
 
 on:
@@ -13,7 +17,6 @@ permissions:
   id-token: write
 
 concurrency:
-  # Share with release so preview/release don't clobber Pages mid-upload.
   group: pages
   cancel-in-progress: false
 
@@ -44,13 +47,7 @@ jobs:
         env:
           KHANATIME_APP_VERSION: dev-${{ env.SHA }}
 
-      - name: Build preview WASM
-        run: |
-          set -euo pipefail
-          export KHANATIME_APP_VERSION="dev-${SHA}"
-          trunk build --release --public-url /khanatime/main/
-
-      - name: Assemble site (update /main only)
+      - name: Assemble site from gh-pages (preserve /v*)
         run: |
           set -euo pipefail
           mkdir -p site
@@ -58,9 +55,47 @@ jobs:
           if git rev-parse --verify gh-pages >/dev/null 2>&1; then
             git archive gh-pages | tar -x -C site
           fi
+          # Detect prior stable slots
+          if compgen -G 'site/v*' > /dev/null; then
+            echo "UPDATE_ROOT=false" >> "$GITHUB_ENV"
+            echo "Stable /v* present — preview will not overwrite site root"
+          else
+            echo "UPDATE_ROOT=true" >> "$GITHUB_ENV"
+            echo "No /v* yet — preview will refresh site root (demo URL)"
+          fi
+
+      - name: Build preview at /khanatime/main/
+        run: |
+          set -euo pipefail
+          export KHANATIME_APP_VERSION="dev-${SHA}"
+          trunk build --release --public-url /khanatime/main/
           rm -rf site/main
           mkdir -p site/main
           cp -a dist/. site/main/
+
+      - name: Build preview at site root (demo URL) when no stables
+        if: env.UPDATE_ROOT == 'true'
+        run: |
+          set -euo pipefail
+          export KHANATIME_APP_VERSION="dev-${SHA}"
+          # Fresh build — public-url is baked into the wasm/html.
+          trunk build --release --public-url /khanatime/
+          # Replace root app files but keep site/main and any other dirs.
+          find site -mindepth 1 -maxdepth 1 ! -name 'main' ! -name 'v*' ! -name 'releases.json' -exec rm -rf {} +
+          cp -a dist/. site/
+
+      - name: SHA bookmark redirect /main/<sha>/ → /main/
+        run: |
+          set -euo pipefail
+          mkdir -p "site/main/${SHA}"
+          cat > "site/main/${SHA}/index.html" <<EOF
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <title>Khanatime preview ${SHA}</title>
+          <meta http-equiv="refresh" content="0; url=/khanatime/main/">
+          <link rel="canonical" href="/khanatime/main/">
+          <p>Preview <code>dev-${SHA}</code> — <a href="/khanatime/main/">continue</a>.</p>
+          EOF
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
