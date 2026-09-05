@@ -1,0 +1,13 @@
+{
+  "latest": "0.2.1",
+  "releases": [
+    {
+      "version": "0.2.1",
+      "url": "https://boormat.github.io/khanatime/v0.2.1/",
+      "released_at": "2026-09-05",
+      "channel": "stable",
+      "notes": "Stale refresh grant recovery (B36) + SSO-aware account Login.",
+      "notes_url": "https://github.com/boormat/khanatime/releases/tag/v0.2.1"
+    }
+  ]
+}

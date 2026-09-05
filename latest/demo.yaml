@@ -1,0 +1,17 @@
+---
+name: Dog Body Khana
+times:
+- car: "1"
+  time: 99.99  # which one used? time in seconds OR the text code, DNS etc.
+  flags: 0 # how many flags hit. 5 sec each.
+  # raw_times:
+  #   - name: auto
+  #     value: 99.99  # elec clock.  Optional 
+  #   - name: offical1
+  #     value: 22.2 # average of the 2 (official regs)
+  #   - name: officalJoe 
+  #     value: 99.5 #e OR  code.  Not both.
+  # flags: 1
+  # code:  # DNF, WD, DNS, OK
+  # score:  # optional... adjusted after
+
