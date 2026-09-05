@@ -87,19 +87,22 @@ Notes for devs:
 
 CI: `test.yml` runs `./scripts/check.sh` on push/PR.
 
+**Pages source (required):** Settings → Pages → **Deploy from a branch** →
+**`gh-pages`** / **(root)**. Do not use “GitHub Actions” as the source.
+
 **Stable release** (immutable URL for invite QRs):
 
 1. Bump `version` in `Cargo.toml` and add notes to `CHANGELOG.md` on `main`.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z` (tag **must** match Cargo.toml).
-3. `release.yml` publishes:
+3. `release.yml` updates the **`gh-pages`** branch with:
    - app at `https://boormat.github.io/khanatime/vX.Y.Z/`
    - alias `…/latest/`
-   - **catalog index** at `https://boormat.github.io/khanatime/` (lists versions)
+   - **catalog index** at `https://boormat.github.io/khanatime/`
    - `releases.json` + GitHub Release (+ zip for LAN copy)
-4. Re-open the event on that `/vX.Y.Z/` build and re-share the invite QR.
+4. Verify those URLs live, then re-open the event on `/vX.Y.Z/` and re-share the invite QR.
 
 **Preview** (`main`): `preview.yml` → `…/khanatime/main/` (`dev-<sha>`),
-refreshes the catalog index, leaves `/v*` alone. Never use catalog/`/main/`/
+refreshes the catalog, leaves `/v*` alone. Never use catalog/`/main/`/
 `/latest/` in real-event invite QRs — only `/vX.Y.Z/`.
 
 See `docs/plan/release-ci.md`. Actions: https://github.com/boormat/khanatime/actions
