@@ -25,6 +25,19 @@ pub fn view() -> View {
                     item in the menu.
                     "
                 }
+                div(class="box mt-5") {
+                    h2(class="title is-5") { "Stage status colours (FIA rally results)" }
+                    p(class="help") {
+                        "The per-test tag on Home shows how much of a test is done, using the FIA stage-status colours:"
+                    }
+                    div(class="mt-2") {
+                        div(class="tags has-addons") { span(class="tag is-info") { "Blue" } span(class="tag") { "Completed" } }
+                        div(class="tags has-addons") { span(class="tag is-warning") { "Orange" } span(class="tag") { "Running" } }
+                        div(class="tags has-addons") { span(class="tag is-white") { "No colour" } span(class="tag") { "To run" } }
+                        div(class="tags has-addons") { span(class="tag is-light") { "Grey" } span(class="tag") { "Interrupted (not used yet)" } }
+                        div(class="tags has-addons") { span(class="tag is-danger") { "Red" } span(class="tag") { "Cancelled (not used yet)" } }
+                    }
+                }
             }
         }
     }

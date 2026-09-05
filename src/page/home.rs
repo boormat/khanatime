@@ -211,11 +211,11 @@ fn view_current_event(model: crate::Model) -> View {
                 format!("Test {} {} · {}%", s.num, s.name, s.pct)
             };
             let cls = if s.pct >= 100 {
-                "is-dark"
+                "is-info" // Blue = Completed (FIA)
             } else if s.pct > 0 {
-                "is-success"
+                "is-warning" // Orange = Running (FIA)
             } else {
-                "is-light"
+                "is-white" // No colour = To run (FIA)
             };
             view! { span(class=format!("tag {cls}")) { (label) } }
         })
