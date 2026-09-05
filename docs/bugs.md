@@ -412,6 +412,62 @@ counts.
 make "?" a normal car chip (car icon, like the others) at the **start** of the
 row of cars that have done all their runs.
 
+### B22. "Sign in or create" modal — homeserver dropdown alignment
+**File:** `src/page/accounts.rs` (`view_create_modal`, homeserver `<select>` at
+line 533-538)
+**Severity:** Low (UI)
+**Detail:** The homeserver picker in the create/sign-in modal is a `<select>`
+dropdown with poor alignment. Replace with selectable homeserver **tag/button**
+pickers (consistent with the other tag pickers in the app).
+
+### B23. SSO sign-in from #accounts redirects to Home
+**File:** `src/sync.rs` (`sso_complete` / `add_homeserver` end with
+`Show(Screen::Home)`)
+**Severity:** Medium
+**Detail:** Signing in via SSO while on the Accounts page bounces you to Home.
+`CreateAccount` (app.rs) stays on Accounts — the redirect is the SSO/login path,
+which should return to Accounts (or the originating screen), not Home.
+
+### B24. SSO accounts not associated with matrix.org
+**File:** `src/services/matrix.rs` (`resolved_homeserver_url`, `save_session`),
+`src/sync.rs` (`sso_complete`)
+**Severity:** Medium
+**Detail:** `new_client("https://matrix.org")` resolves to
+`matrix-client.matrix.org` (matrix.rs:674) and SSO saves the session keyed by
+`client.homeserver()` (sync.rs:1129), while the homeserver config entry is
+`https://matrix.org` — so SSO accounts don't associate with the matrix.org
+entry (exact-string match). Non-SSO (local synapse) accounts match fine.
+**Fix:** normalise the homeserver key on save (map the resolved endpoint →
+canonical URL) so SSO accounts land under `https://matrix.org`.
+
+### B25. Creating an account should also create a Contact
+**File:** `src/app.rs` (`Msg::CreateAccount`)
+**Severity:** Medium
+**Detail:** Creating an account doesn't add the user to contacts. Add a separate
+Contact on account create; deleting the account must **not** remove the contact.
+
+### B26. Destructive deletes need a deliberate gesture + confirm
+**Files:** app-wide (homeserver/account/saved-event delete buttons)
+**Severity:** Medium
+**Detail:** Delete actions fire on a stray click. Prefer a deliberate gesture +
+a confirm step: click-and-hold on mobile (feasible on WASM via pointer events),
+and on desktop right-click / hold / explicit X button — then confirm.
+
+### B27. Signing-key display → compact tag + share modal
+**File:** `src/page/accounts.rs` (`view_signing_key`)
+**Severity:** Low
+**Detail:** Collapse the signing-key card to a small tag near the bottom of the
+page with a **share** button that opens a modal (QR / copy URI / other) — the
+general share pattern, to save space.
+
+### B28. Add-homeserver quick-pick buttons
+**File:** `src/page/accounts.rs` (`view_add_hs_modal`)
+**Severity:** Low
+**Detail:** Offer one-tap buttons for common local homeservers
+(`localhost:8008`, `boomtime.local:8008`). Synapse's default client port is
+**8008**; when deployed for real, 8008 is the standard (commonly behind a
+reverse proxy).
+
 ---
 
 ## Priority Suggestion
