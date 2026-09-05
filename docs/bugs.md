@@ -468,9 +468,9 @@ general share pattern, to save space.
 **8008**; when deployed for real, 8008 is the standard (commonly behind a
 reverse proxy).
 
-### B29. #timing — staged car replaceable after it has started
-**File:** `src/khana/page/stopwatch.rs` (`start_car`, `view_action_buttons`,
-`view_car_chips`, the car input)
+### ~~B29. #timing — staged car replaceable after it has started~~ ✅ DONE
+**File:** `src/khana/page/stopwatch.rs` (`view_action_buttons`,
+`view_car_chips`), `styles/app.scss`
 **Severity:** Medium
 **Detail:** After pressing Start the car stays staged in the selected-car box
 (`sm.car` is never cleared), but it can still be replaced — type another car
@@ -479,11 +479,10 @@ number, tap a car chip, or reopen the picker. The box is no longer
 the staged car, so the user can stage a *different* car while the first is
 still out on the course. Confusing: the running car vanishes from the box, and
 Stop on the staged car errors ("not on course") or a second Start can be sent.
-**Fix options:**
-- Lock the staged car once it has a pending start (no input/chip/picker
-  change until it finishes or is voided).
-- Visually mark the locked/on-course state — colour the selected-car box
-  amber/yellow (e.g. `is-warning`) instead of the neutral box.
+**Fix:** once the staged car has a pending start it is locked in — the car
+chips and TBA chip are disabled until it finishes or is voided, and the
+selected-car box turns amber (`.kt-selected-car.is-on-course`) to signal the
+locked/running state.
 
 ---
 

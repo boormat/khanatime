@@ -578,8 +578,10 @@ fn view_action_buttons(model: crate::Model) -> View {
                     let run_number = finished + 1;
                     let at_max = remaining == 0;
                     let run_label = format!("{}/{}", run_number, runs_total);
-                    let cls = if has_provisional || is_on_course {
-                        "box kt-selected-car"
+                    // On course: the staged car is locked in (can't be
+                    // replaced) and the box is amber to signal that.
+                    let cls = if is_on_course {
+                        "box kt-selected-car is-on-course"
                     } else {
                         "box kt-selected-car is-clickable"
                     };
@@ -752,6 +754,11 @@ fn view_car_chips(model: crate::Model) -> View {
                 let entries = model.khana.event.with(|e| e.entries.clone());
                 let test = sm.test.get();
                 let (runs_remaining, _unknown_remaining) = compute_runs_remaining(model, test);
+                // B29: once the staged car has started it's locked in — no
+                // chip can replace it until it finishes (or is voided).
+                let staged = sm.car.get_clone().trim().to_string();
+                let locked = !staged.is_empty()
+                    && pending_for_car(&model.khana.runs.get_clone(), test, &staged);
 
                 struct CarInfo { car: String, remaining: u8 }
                 let mut cars: Vec<CarInfo> = entries
@@ -784,9 +791,12 @@ fn view_car_chips(model: crate::Model) -> View {
                         view! {
                             button(
                                 class="button is-light is-small",
+                                disabled=locked,
                                 on:click=move |_| {
-                                    sm.car.set(car_set.clone());
-                                    save_car(&car_set);
+                                    if !locked {
+                                        sm.car.set(car_set.clone());
+                                        save_car(&car_set);
+                                    }
                                 },
                             ) {
                                 (crate::view::car_tag(&car_display))
@@ -807,9 +817,12 @@ fn view_car_chips(model: crate::Model) -> View {
                         span(class="tag is-small is-light kt-runs-separator") { "TBA" }
                         button(
                             class="button is-warning is-small",
+                            disabled=locked,
                             on:click=move |_| {
-                                sm.car.set("?".to_string());
-                                save_car("?");
+                                if !locked {
+                                    sm.car.set("?".to_string());
+                                    save_car("?");
+                                }
                             },
                         ) {
                             span(class="kt-car-tag has-text-weight-semibold") { "?" }
