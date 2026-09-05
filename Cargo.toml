@@ -36,6 +36,7 @@ web-sys = { version = "0.3", features = [
     "MediaStreamConstraints",
     "MediaStreamTrack",
     "HtmlVideoElement",
+    "Response",
 ] }
 wasm-bindgen-futures = "0.4"
 gloo-timers = "0.3"

@@ -201,6 +201,11 @@ pub struct EventInfo {
     /// Base64 Ed25519 signature of the canonical event payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+
+    /// App release this event was created/published with (`X.Y.Z`). Invite QRs
+    /// use the pinned Pages path for this version. Empty on legacy events.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app_version: String,
 }
 
 /// How a scanned invite should authenticate on its homeserver.
@@ -444,6 +449,7 @@ impl Default for EventInfo {
             parent_rooms: vec![],
             signing_key: None,
             signature: None,
+            app_version: String::new(),
         }
     }
 }
@@ -459,6 +465,24 @@ impl EventInfo {
         if self.uid.is_empty() {
             self.uid = crate::ids::gen_short_id();
         }
+    }
+
+    /// Stamp `app_version` from the running build when unset (draft create /
+    /// first publish freeze). Does not overwrite an existing pin.
+    pub fn ensure_app_version(&mut self) {
+        if self.app_version.is_empty() {
+            self.app_version = khanatime::APP_VERSION.to_string();
+        }
+    }
+
+    /// Pages base URL for invite QRs from this event's pin (or running build).
+    pub fn invite_app_base(&self) -> String {
+        let v = if self.app_version.is_empty() {
+            khanatime::APP_VERSION
+        } else {
+            self.app_version.as_str()
+        };
+        khanatime::version::pinned_app_base(v)
     }
 
     /// True for the local training event.  Demo events are never published and
@@ -1628,6 +1652,7 @@ pub fn demo_event() -> EventInfo {
         }
     }
     ev.ensure_uid();
+    ev.ensure_app_version();
     ev
 }
 

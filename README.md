@@ -85,9 +85,20 @@ Notes for devs:
 
 ## Testing and Deploy
 
-Currently manual triggered release build in github workers.
-https://github.com/boormat/khanatime/actions
-Run the deploy workflow to update  https://boormat.github.io/khanatime/
+CI: `test.yml` runs `./scripts/check.sh` on push/PR.
+
+**Stable release** (immutable URL for invite QRs):
+
+1. Bump `version` in `Cargo.toml` and add notes to `CHANGELOG.md` on `main`.
+2. `git tag vX.Y.Z && git push origin vX.Y.Z` (tag **must** match Cargo.toml).
+3. `release.yml` builds, publishes `https://boormat.github.io/khanatime/vX.Y.Z/`,
+   updates latest at `/khanatime/`, writes `releases.json`, and creates a
+   GitHub Release (+ zip for LAN copy).
+
+**Preview** (`main`): `preview.yml` → `https://boormat.github.io/khanatime/main/`
+with `app_version=dev-<sha>`. Never use preview URLs in event invite QRs.
+
+See `docs/plan/release-ci.md`. Actions: https://github.com/boormat/khanatime/actions
 
 When testing locally with trunk and chrome, the WebWorkers seem to mess
 up when the reload comes from trunk, and you get a blank screen.

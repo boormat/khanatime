@@ -11,6 +11,8 @@ mod services;
 pub mod signing;
 mod sync;
 
+pub use khanatime::APP_VERSION;
+
 pub use app::{ConnState, Model, Msg, Screen};
 
 // Re-export moved modules so existing `crate::event::*` and similar paths

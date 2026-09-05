@@ -1,0 +1,81 @@
+# Bleeding-edge preview from main → /khanatime/main/ with app_version=dev-<sha>.
+# Does not overwrite /v* stable slots or become the invite QR base.
+name: preview
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  # Share with release so preview/release don't clobber Pages mid-upload.
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/trunk-action@v0.5.1
+        with:
+          version: "v0.21.14"
+
+      - name: Short SHA
+        run: echo "SHA=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+
+      - name: Check
+        run: ./scripts/check.sh
+        env:
+          KHANATIME_APP_VERSION: dev-${{ env.SHA }}
+
+      - name: Build preview WASM
+        run: |
+          set -euo pipefail
+          export KHANATIME_APP_VERSION="dev-${SHA}"
+          trunk build --release --public-url /khanatime/main/
+
+      - name: Assemble site (update /main only)
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          git fetch origin gh-pages:gh-pages 2>/dev/null || true
+          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
+            git archive gh-pages | tar -x -C site
+          fi
+          rm -rf site/main
+          mkdir -p site/main
+          cp -a dist/. site/main/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Persist tree on gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: false
+          keep_files: false

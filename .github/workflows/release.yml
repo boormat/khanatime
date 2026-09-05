@@ -1,0 +1,120 @@
+# Tagged stable release: bump Cargo.toml on main, then
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+# Tag must match package.version or this workflow fails.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Assert tag matches Cargo.toml version
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          CARGO_VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=$TAG cargo=$CARGO_VER"
+          if [ "$VERSION" != "$CARGO_VER" ]; then
+            echo "::error::Tag v$VERSION does not match Cargo.toml version $CARGO_VER — bump Cargo.toml on main, then retag."
+            exit 1
+          fi
+          # Reject pre-release-looking tags here (rc/beta use preview channel).
+          if echo "$VERSION" | grep -Eq '[-+]'; then
+            echo "::error::Stable tags must be X.Y.Z only"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - uses: swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/trunk-action@v0.5.1
+        with:
+          version: "v0.21.14"
+
+      - name: Check
+        run: ./scripts/check.sh
+        env:
+          KHANATIME_APP_VERSION: ${{ env.VERSION }}
+
+      - name: Build release WASM
+        run: |
+          set -euo pipefail
+          export KHANATIME_APP_VERSION="$VERSION"
+          trunk build --release --public-url "/khanatime/v${VERSION}/"
+
+      - name: Assemble cumulative Pages tree
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          git fetch origin gh-pages:gh-pages 2>/dev/null || true
+          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
+            git archive gh-pages | tar -x -C site
+          fi
+          rm -rf "site/v${VERSION}"
+          mkdir -p "site/v${VERSION}"
+          cp -a dist/. "site/v${VERSION}/"
+          # Latest stable at site root (invite QRs must still use /vX.Y.Z/).
+          find site -mindepth 1 -maxdepth 1 ! -name 'v*' ! -name 'main' ! -name 'releases.json' -exec rm -rf {} +
+          cp -a dist/. site/
+          python3 scripts/ci_update_releases_json.py "$VERSION" site/releases.json
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Persist tree on gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: false
+          keep_files: false
+          # Full tree is in ./site already (includes historical v*).
+
+      - name: Zip dist for LAN / USB
+        run: |
+          (cd dist && zip -r "../khanatime-v${VERSION}.zip" .)
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: khanatime-v${{ env.VERSION }}.zip
+          body: |
+            Stable **v${{ env.VERSION }}**
+
+            - App: https://boormat.github.io/khanatime/v${{ env.VERSION }}/
+            - Latest pointer: https://boormat.github.io/khanatime/
+            - Manifest: https://boormat.github.io/khanatime/releases.json
+
+            Invite QRs for events must use the **/v${{ env.VERSION }}/** URL (not floating latest).
+
+            See `CHANGELOG.md` for notes.
+          fail_on_unmatched_files: true

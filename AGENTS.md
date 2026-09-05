@@ -25,6 +25,13 @@ trunk build --release
 # Format
 cargo fmt
 
+# Release (see docs/plan/release-ci.md)
+# 1. Bump Cargo.toml version + CHANGELOG.md on main
+# 2. git tag vX.Y.Z && git push origin vX.Y.Z   # must match Cargo.toml
+# 3. release.yml → /khanatime/vX.Y.Z/ + releases.json + GitHub Release
+# Preview from main: preview.yml → /khanatime/main/ (dev-<sha>)
+
+
 # Test layers
 # - `cargo test` (native): pure logic in event.rs/batch.rs/replay.rs/qr.rs/log.rs
 # - `./scripts/wasm-test.sh` (cargo test --target wasm32-unknown-unknown): the

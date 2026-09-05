@@ -55,6 +55,9 @@ pub(crate) struct PublishPlan {
     /// Detailed steps in execution order, each becomes a checkbox.
     steps: Vec<PlanStep>,
     errors: Vec<String>,
+    /// When `releases.json` shows a newer stable than this build — confirm
+    /// before publishing on the older version (non-demo).
+    version_warning: Option<String>,
 }
 
 /// Live progress version of a plan step (has a `done` flag for ticking off).
@@ -158,6 +161,8 @@ pub struct Model {
     pub(crate) publish_plan: Signal<Option<PublishPlan>>,
     /// Live progress steps while publishing.
     pub(crate) publish_steps: Signal<Vec<PublishStep>>,
+    /// Organiser confirmed publishing on an older-than-latest build.
+    pub accept_older_version: Signal<bool>,
 }
 
 pub fn init() -> Model {
@@ -186,6 +191,7 @@ pub fn init() -> Model {
         show_publish_confirm: create_signal(false),
         publish_plan: create_signal(None),
         publish_steps: create_signal(vec![]),
+        accept_older_version: create_signal(false),
     }
 }
 
@@ -300,6 +306,7 @@ pub fn update(model: crate::Model, msg: Msg) {
             em.show_publish_confirm.set(true);
             em.publish_plan.set(None);
             em.publish_steps.set(vec![]);
+            em.accept_older_version.set(false);
             #[cfg(target_arch = "wasm32")]
             {
                 let m = model;
@@ -314,6 +321,9 @@ pub fn update(model: crate::Model, msg: Msg) {
             let Some(plan) = em.publish_plan.get_clone() else {
                 return;
             };
+            if plan.version_warning.is_some() && !em.accept_older_version.get() {
+                return;
+            }
             // Build the live step list from the plan.
             let steps: Vec<PublishStep> = plan
                 .steps
@@ -659,6 +669,7 @@ fn create_draft(model: crate::Model) {
     // A fresh event starts with a single test; the organiser adds more.
     e.stages = vec![crate::event::Stage::for_test(1)];
     e.ensure_uid();
+    e.ensure_app_version();
     // The creator is the default owner + key official — an event always has a
     // user (create is gated on having an identity).
     let creator = crate::khana::helpers::current_official(model);
@@ -715,6 +726,9 @@ fn copy_as_new(model: crate::Model) {
     // so the next save signs the copy's own canonical payload (B32).
     e.signature = None;
     e.signing_key = None;
+    // New draft gets the running build's pin (not the source event's).
+    e.app_version.clear();
+    e.ensure_app_version();
     // Entrants + tests are copied; entrant state is reset for the fresh event.
     em.pre_create.set(Some(src.id.clone()));
     switch_to_draft(model, e);
@@ -971,6 +985,26 @@ async fn compute_publish_plan(model: crate::Model) -> PublishPlan {
         });
     }
 
+    let version_warning = if event.is_demo() {
+        None
+    } else if let Some(manifest) = khanatime::version::fetch_releases_manifest().await {
+        khanatime::version::update_available(crate::APP_VERSION, &manifest).map(
+            |(latest, notes)| {
+                format!(
+                    "You are on {} but {} is the latest stable.\n{}\n\n\
+                 Major/minor bumps must not be used mid-event; patches may be.\n\
+                 Confirm to publish on this build anyway (invite QRs will pin {}).",
+                    crate::APP_VERSION,
+                    latest,
+                    notes,
+                    crate::APP_VERSION
+                )
+            },
+        )
+    } else {
+        None
+    };
+
     PublishPlan {
         event_name: event.name.clone(),
         slug,
@@ -980,6 +1014,7 @@ async fn compute_publish_plan(model: crate::Model) -> PublishPlan {
         timing,
         steps,
         errors: vec![],
+        version_warning,
     }
 }
 
@@ -995,6 +1030,9 @@ async fn publish_execute(model: crate::Model, plan: PublishPlan) {
             .set(Some("Save the event first (needs a name)".to_string()));
         return;
     }
+    // Freeze the running build into the event pin before rooms/setup go out.
+    event.ensure_app_version();
+    model.khana.event.set(event.clone());
     em.publish_status.set(Some("Publishing...".into()));
 
     let hs = plan.homeserver.clone();
@@ -1179,11 +1217,27 @@ fn invite_view_data(event: &crate::event::EventInfo) -> Option<(String, String, 
         admin_user: None,
         admin_pass: None,
     };
+    // Prefer the event's pinned release URL so QRs survive floating /main deploys.
+    // Fall back to this page's origin when running a non-stable (dev) build.
     let app_base = {
-        let window = web_sys::window()?;
-        let origin = window.location().origin().ok()?;
-        let path = window.location().pathname().ok()?;
-        format!("{origin}{path}")
+        let pinned = event.invite_app_base();
+        if khanatime::version::is_stable_semver(if event.app_version.is_empty() {
+            crate::APP_VERSION
+        } else {
+            event.app_version.as_str()
+        }) {
+            pinned
+        } else {
+            let window = web_sys::window()?;
+            let origin = window.location().origin().ok()?;
+            let path = window.location().pathname().ok()?;
+            let local = format!("{origin}{path}");
+            if local.ends_with('/') {
+                local
+            } else {
+                format!("{local}/")
+            }
+        }
     };
     let url = invite.url(&app_base);
     let svg = crate::services::qr::qr_svg(&url, 320).unwrap_or_default();
@@ -1436,14 +1490,40 @@ fn view_publish_confirm_modal(model: crate::Model) -> View {
             for sv in step_views {
                 parts.push(sv);
             }
+            if let Some(ref warn) = plan.version_warning {
+                let w = warn.clone();
+                parts.push(view! {
+                    div(class="notification is-warning is-light mt-3") {
+                        p(class="has-text-weight-semibold") { "Newer Khanatime release available" }
+                        pre(class="is-family-monospace is-size-7") { (w) }
+                        label(class="checkbox mt-2") {
+                            input(
+                                r#type="checkbox",
+                                prop:checked=move || em.accept_older_version.get(),
+                                on:change=move |_| {
+                                    let cur = em.accept_older_version.get();
+                                    em.accept_older_version.set(!cur);
+                                },
+                            )
+                            " Publish on this version anyway"
+                        }
+                    }
+                });
+            }
+            let needs_accept = plan.version_warning.is_some();
+            let publish_disabled = move || needs_accept && !em.accept_older_version.get();
 
             (
                 "Confirm publish",
                 view! { (parts) },
                 view! {
-                    button(class="button is-link", on:click=move |_| {
-                        crate::update(model, crate::Msg::EventMsg(Msg::PublishExecute));
-                    }) { "Publish" }
+                    button(
+                        class="button is-link",
+                        disabled=publish_disabled,
+                        on:click=move |_| {
+                            crate::update(model, crate::Msg::EventMsg(Msg::PublishExecute));
+                        },
+                    ) { "Publish" }
                     button(class="button", on:click=move |_| {
                         crate::update(model, crate::Msg::EventMsg(Msg::PublishCancel));
                     }) { "Cancel" }

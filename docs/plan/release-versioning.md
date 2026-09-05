@@ -23,6 +23,19 @@ Two version axes (do not conflate):
 An older app must refuse newer schema; a newer app may migrate or refuse an
 event pinned to an incompatible release (warn loudly either way).
 
+**CI / Pages / update UX:** `docs/plan/release-ci.md`.
+
+### Semver vs a live event
+
+| Part | Meaning | Change during a live event? |
+|------|---------|------------------------------|
+| **major** | Breaking changes, major reorgs | **Never** |
+| **minor** | New features, screen changes, wire-format changes | **Never** |
+| **patch** | Hotfix for a problem being experienced | **Yes** — see release-ci |
+
+Patch upgrades mid-event are opt-in (open `/vX.Y.Z+1/`, optionally bump the
+event pin + re-issue QR). Major/minor bumps wait for a new event.
+
 ---
 
 ## App release model

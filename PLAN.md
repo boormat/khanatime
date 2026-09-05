@@ -13,6 +13,7 @@
 - `docs/plan/car-numbers.md` — car numbers, entry identity, shared cars
 - `docs/plan/record-versioning.md` — schema versioning for storage + Matrix wire format (first official release)
 - `docs/plan/release-versioning.md` — **app release pin**: event locked to `/vX.Y.Z/` URL; QR + `app_version` on messages/localStorage
+- `docs/plan/release-ci.md` — tag→Pages CI, `releases.json`, update prompts; major/minor never mid-event, patch may
 - `docs/plan/room-security.md` — timing-room lockdowns (invite-only write; QR levels 1–3; spectators read-only)
 - `docs/plan/ui-e2e.md` — **Playwright E2E** for click-flow / presentation / state regressions (pre-release)
 - `docs/plan/qr-join.md` — QR join links: scan-to-join bootstrap (URL → connect + adopt published event)
@@ -436,17 +437,20 @@ Organiser locks the event to a **tagged WASM build**; invite URLs open that
 build, not floating Pages. Detail: `docs/plan/release-versioning.md` +
 `docs/plan/record-versioning.md`.
 
-- [ ] Versioned host paths: `…/khanatime/vX.Y.Z/` (immutable); floating
+- [x] Versioned host paths: `…/khanatime/vX.Y.Z/` (immutable); floating
       `…/khanatime/` is latest/demo only — **never** in event invite QRs
-- [ ] Bake `app_version` into the build (`X.Y.Z` vs `dev+hash`)
-- [ ] Event pin: store `app_version` on publish / freeze; setup manifest carries it
-- [ ] Invite QR base URL = pinned release path + existing join query
+      (`release.yml` + `docs/plan/release-ci.md`)
+- [x] Bake `app_version` into the build (`X.Y.Z` vs `dev-<sha>` via `build.rs`)
+- [x] Event pin: store `app_version` on publish / freeze; setup manifest carries it
+- [x] Invite QR base URL = pinned release path + existing join query
       (`homeserver/event/sid/tid/reg`)
 - [ ] Adopt/resume: hard banner if running build ≠ event pin (published events)
 - [ ] Schema version on wire + localStorage envelopes; reject `version > current`
 - [ ] Carry `app_version` on outbound messages and localStorage for support
-- [ ] Deploy workflow publishes `/vX.Y.Z/` + optional latest; `check.sh` gates it
-- [ ] About shows running `app_version`
+- [x] Deploy workflow publishes `/vX.Y.Z/` + optional latest; `check.sh` gates it
+      (tag `release.yml`; `preview.yml` → `/main/`; main overwrite retired)
+- [x] Help shows running `app_version` + `releases.json` update banner
+- [x] Publish confirm when a newer stable exists (intentional older pin)
 
 #### 3b. Timing-room security (must)
 
