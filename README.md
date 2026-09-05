@@ -91,12 +91,16 @@ CI: `test.yml` runs `./scripts/check.sh` on push/PR.
 
 1. Bump `version` in `Cargo.toml` and add notes to `CHANGELOG.md` on `main`.
 2. `git tag vX.Y.Z && git push origin vX.Y.Z` (tag **must** match Cargo.toml).
-3. `release.yml` builds, publishes `https://boormat.github.io/khanatime/vX.Y.Z/`,
-   updates latest at `/khanatime/`, writes `releases.json`, and creates a
-   GitHub Release (+ zip for LAN copy).
+3. `release.yml` publishes:
+   - app at `https://boormat.github.io/khanatime/vX.Y.Z/`
+   - alias `…/latest/`
+   - **catalog index** at `https://boormat.github.io/khanatime/` (lists versions)
+   - `releases.json` + GitHub Release (+ zip for LAN copy)
+4. Re-open the event on that `/vX.Y.Z/` build and re-share the invite QR.
 
-**Preview** (`main`): `preview.yml` → `https://boormat.github.io/khanatime/main/`
-with `app_version=dev-<sha>`. Never use preview URLs in event invite QRs.
+**Preview** (`main`): `preview.yml` → `…/khanatime/main/` (`dev-<sha>`),
+refreshes the catalog index, leaves `/v*` alone. Never use catalog/`/main/`/
+`/latest/` in real-event invite QRs — only `/vX.Y.Z/`.
 
 See `docs/plan/release-ci.md`. Actions: https://github.com/boormat/khanatime/actions
 

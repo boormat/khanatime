@@ -20,7 +20,9 @@ operational so a timekeeper can decide whether to open `/v0.2.1/`.
 2. Bump `Cargo.toml` version + `CHANGELOG.md` entry on `main`.
 3. Tag matching Cargo: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 4. `release.yml`: assert tag == Cargo.toml → check → build → publish
-   `/khanatime/vX.Y.Z/` + update latest root + `releases.json` + GitHub Release.
+   `/khanatime/vX.Y.Z/` + `/latest/` + root **catalog** + `releases.json` +
+   GitHub Release.
+5. Regenerate the event invite QR from that pinned `/vX.Y.Z/` URL.
 
 No retagging the same `vX.Y.Z`. Hotfix = new patch.
 
@@ -28,26 +30,30 @@ No retagging the same `vX.Y.Z`. Hotfix = new patch.
 
 | Channel | Trigger | URL | `app_version` |
 |---------|---------|-----|---------------|
+| **Catalog** | every Pages deploy | `/khanatime/` | n/a (HTML index) |
 | Stable | tag `vX.Y.Z` | `/khanatime/vX.Y.Z/` | `X.Y.Z` |
-| Latest stable | after tag | `/khanatime/` | newest tag |
-| Preview | push `main` / dispatch | `/khanatime/main/` | `dev-<sha>` |
+| Latest alias | after tag | `/khanatime/latest/` | newest tag |
+| Preview | push `main` / dispatch | `/khanatime/main/` (+ `/main/<sha>/` redirect) | `dev-<sha>` |
 | Local | `serve.sh` | localhost | `dev-<sha>` or Cargo |
 
-Invite QRs use the **pinned** `/vX.Y.Z/` URL only — never floating `/` or `/main/`.
+The **root URL is a version list**, not the WASM app. Invite QRs for real
+events use **`/vX.Y.Z/` only** — never the catalog, `/latest/`, or `/main/`.
 
 ## `releases.json`
 
 Published at `https://boormat.github.io/khanatime/releases.json` on each
 stable release. The app fetches it to prompt about newer versions and to warn
-before publish/create on an older build.
+before publish/create on an older build. The catalog index also reads it for
+notes.
 
 ## Workflows
 
 - `test.yml` — PR/push → `check.sh`
-- `release.yml` — tag `v*` → version assert + check + versioned Pages + Release
-- `preview.yml` — `main` → `/khanatime/main/` only (does not overwrite `/v*`)
+- `release.yml` — tag `v*` → `/vX.Y.Z/` + `/latest/` + catalog index + Release
+- `preview.yml` — `main` → `/khanatime/main/` only; refreshes catalog index;
+  does not overwrite `/v*` or `/latest/`
 - `deploy.yml` — retired as main-overwrite; superseded by release/preview
 
-Pages site is assembled cumulatively (existing `gh-pages` tree + new `vX.Y.Z/`
-+ root latest) then uploaded via `deploy-pages`, and the tree is pushed back to
-`gh-pages` for the next run.
+Pages site is assembled cumulatively (existing `gh-pages` tree + new slots)
+then uploaded via `deploy-pages`, and the tree is pushed back to `gh-pages`
+for the next run.

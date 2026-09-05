@@ -56,14 +56,14 @@ pub fn is_stable_semver(version: &str) -> bool {
 }
 
 /// Pages base URL for an event pin / invite QR.
-/// Stable → `…/vX.Y.Z/`; otherwise fall back to latest stable root.
+/// Stable → `…/vX.Y.Z/`; otherwise `/latest/` (root is the version catalog).
 pub fn pinned_app_base(version: &str) -> String {
     if let Some(v) = SemVer::parse(version) {
         if is_stable_semver(version) {
             return format!("{PAGES_ORIGIN}/v{v}/");
         }
     }
-    format!("{PAGES_ORIGIN}/")
+    format!("{PAGES_ORIGIN}/latest/")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,7 +186,7 @@ mod tests {
         );
         assert_eq!(
             pinned_app_base("dev-deadbee"),
-            "https://boormat.github.io/khanatime/"
+            "https://boormat.github.io/khanatime/latest/"
         );
     }
 

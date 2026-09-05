@@ -75,10 +75,14 @@ jobs:
           rm -rf "site/v${VERSION}"
           mkdir -p "site/v${VERSION}"
           cp -a dist/. "site/v${VERSION}/"
-          # Latest stable at site root (invite QRs must still use /vX.Y.Z/).
-          find site -mindepth 1 -maxdepth 1 ! -name 'v*' ! -name 'main' ! -name 'releases.json' -exec rm -rf {} +
-          cp -a dist/. site/
+          # Convenience alias of newest stable (invite QRs still use /vX.Y.Z/).
+          rm -rf site/latest
+          mkdir -p site/latest
+          cp -a dist/. site/latest/
           python3 scripts/ci_update_releases_json.py "$VERSION" site/releases.json
+          # Root = version catalog (not the WASM app).
+          find site -mindepth 1 -maxdepth 1 -type f ! -name 'releases.json' -delete
+          python3 scripts/ci_write_pages_index.py site
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
@@ -111,10 +115,12 @@ jobs:
             Stable **v${{ env.VERSION }}**
 
             - App: https://boormat.github.io/khanatime/v${{ env.VERSION }}/
-            - Latest pointer: https://boormat.github.io/khanatime/
+            - Catalog: https://boormat.github.io/khanatime/
+            - Latest alias: https://boormat.github.io/khanatime/latest/
             - Manifest: https://boormat.github.io/khanatime/releases.json
 
-            Invite QRs for events must use the **/v${{ env.VERSION }}/** URL (not floating latest).
+            Invite QRs for events must use the **/v${{ env.VERSION }}/** URL
+            (not the catalog index, /latest/, or /main/).
 
             See `CHANGELOG.md` for notes.
           fail_on_unmatched_files: true

@@ -1,5 +1,6 @@
 # Bleeding-edge preview from main → /khanatime/main/ with app_version=dev-<sha>.
-# Does not overwrite /v* stable slots or become the invite QR base.
+# Does not overwrite /v* or replace the root catalog index with the WASM app.
+# Regenerates site/index.html so /main/ appears in the version list.
 name: preview
 
 on:
@@ -13,7 +14,6 @@ permissions:
   id-token: write
 
 concurrency:
-  # Share with release so preview/release don't clobber Pages mid-upload.
   group: pages
   cancel-in-progress: false
 
@@ -50,7 +50,7 @@ jobs:
           export KHANATIME_APP_VERSION="dev-${SHA}"
           trunk build --release --public-url /khanatime/main/
 
-      - name: Assemble site (update /main only)
+      - name: Assemble site (update /main + catalog index)
         run: |
           set -euo pipefail
           mkdir -p site
@@ -61,6 +61,18 @@ jobs:
           rm -rf site/main
           mkdir -p site/main
           cp -a dist/. site/main/
+          mkdir -p "site/main/${SHA}"
+          cat > "site/main/${SHA}/index.html" <<EOF
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <title>Khanatime preview ${SHA}</title>
+          <meta http-equiv="refresh" content="0; url=/khanatime/main/">
+          <link rel="canonical" href="/khanatime/main/">
+          <p>Preview <code>dev-${SHA}</code> — <a href="/khanatime/main/">continue</a>.</p>
+          EOF
+          # Root is the version catalog, not the WASM app.
+          find site -mindepth 1 -maxdepth 1 -type f ! -name 'releases.json' -delete
+          python3 scripts/ci_write_pages_index.py site
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
