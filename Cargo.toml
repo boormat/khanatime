@@ -1,6 +1,6 @@
 [package]
 name = "khanatime"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Mathew Boorman <mathew.boorman@gmail.com>"]
 license = "AGPL-3.0"
@@ -36,6 +36,7 @@ web-sys = { version = "0.3", features = [
     "MediaStreamConstraints",
     "MediaStreamTrack",
     "HtmlVideoElement",
+    "Response",
 ] }
 wasm-bindgen-futures = "0.4"
 gloo-timers = "0.3"

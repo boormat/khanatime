@@ -203,8 +203,143 @@ pub fn view(model: crate::Model) -> View {
                 None => view! {},
             })
             (crate::khana::helpers::view_handoff(model))
+            (view_join_by_url(model))
+            (view_phone_sync(model))
         }
     }
+}
+
+/// Paste a join link to go straight to an event, read it from the clipboard,
+/// or scan its invite QR code.
+fn view_join_by_url(model: crate::Model) -> View {
+    let sm = model.screens.home;
+    view! {
+        div(class="box") {
+            h2(class="title is-5") {
+                "Join an event"
+                span(class="tag is-light is-pulled-right") { "Invite link" }
+            }
+            p(class="help") {
+                "Paste an invite link to go straight to an event, or scan its QR code."
+            }
+            div(class="field has-addons") {
+                div(class="control is-expanded") {
+                    input(
+                        class="input",
+                        placeholder="Paste an invite link…",
+                        bind:value=sm.join_url,
+                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                            if ev.key_code() == 13 {
+                                crate::update(model, crate::Msg::JoinUrl);
+                            }
+                        },
+                    )
+                }
+                div(class="control") {
+                    button(
+                        class="button is-link",
+                        disabled=sm.busy.get(),
+                        on:click=move |_| crate::update(model, crate::Msg::JoinUrl),
+                    ) {
+                        "Join"
+                    }
+                }
+            }
+            div(class="field is-grouped") {
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        disabled=sm.busy.get(),
+                        on:click=move |_| copy_from_clipboard(model),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-clipboard") }
+                        span { "Paste from clipboard" }
+                    }
+                }
+                div(class="control") {
+                    button(
+                        class="button is-small is-light",
+                        disabled=sm.busy.get(),
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
+                    ) {
+                        span(class="icon is-small") { i(class="fa fa-qrcode") }
+                        span { "Scan invite QR" }
+                    }
+                }
+            }
+            (move || {
+                let msg = sm.join_msg.get_clone();
+                if msg.is_empty() {
+                    view! {}
+                } else {
+                    view! { p(class="help is-danger") { (msg) } }
+                }
+            })
+        }
+    }
+}
+
+/// Import an event from another phone as a QR parcel (no network).
+fn view_phone_sync(model: crate::Model) -> View {
+    view! {
+        div(class="box") {
+            h2(class="title is-5") {
+                "Phone sync"
+                span(class="tag is-light is-pulled-right") { "QR parcel" }
+            }
+            p(class="help") {
+                "Import an event carried from another phone by scanning its QR parcel — no network needed."
+            }
+            div(class="field") {
+                div(class="control") {
+                    button(
+                        class="button is-warning",
+                        on:click=move |_| crate::update(model, crate::Msg::ScanStart),
+                    ) {
+                        span(class="icon") { i(class="fa fa-camera") }
+                        span { "Phone sync (QR)" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Read the clipboard into the join-link field (handy on phones).
+#[cfg(target_arch = "wasm32")]
+fn copy_from_clipboard(model: crate::Model) {
+    let sm = model.screens.home;
+    let Some(clip) = web_sys::window().map(|w| w.navigator().clipboard()) else {
+        sm.join_msg
+            .set("Clipboard is unavailable in this browser.".into());
+        return;
+    };
+    let promise = clip.read_text();
+    wasm_bindgen_futures::spawn_local(async move {
+        match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(v) => {
+                let text = v.as_string().unwrap_or_default();
+                if text.is_empty() {
+                    sm.join_msg.set("Clipboard is empty.".into());
+                } else {
+                    sm.join_url.set(text);
+                    sm.join_msg.set(String::new());
+                }
+            }
+            Err(_) => sm
+                .join_msg
+                .set("Couldn't read the clipboard — paste manually.".into()),
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_from_clipboard(model: crate::Model) {
+    model
+        .screens
+        .home
+        .join_msg
+        .set("Clipboard is not available.".into());
 }
 
 fn view_confirm_modal(model: crate::Model, parsed: ParsedQr) -> View {

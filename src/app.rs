@@ -13,7 +13,6 @@ use sycamore::prelude::*;
 pub enum Screen {
     #[default]
     Home,
-    Events,
     Accounts,
     Qr,
     Help,
@@ -30,7 +29,6 @@ impl Screen {
     pub fn name(self) -> &'static str {
         match self {
             Screen::Home => "home",
-            Screen::Events => "events",
             Screen::Accounts => "accounts",
             Screen::Qr => "qr",
             Screen::Help => "help",
@@ -46,7 +44,6 @@ impl Screen {
     pub fn from_name(name: &str) -> Option<Screen> {
         Some(match name {
             "home" => Screen::Home,
-            "events" => Screen::Events,
             "accounts" => Screen::Accounts,
             "qr" => Screen::Qr,
             "help" => Screen::Help,
@@ -149,6 +146,10 @@ pub struct SyncState {
     /// Username/password entered in the tieback modal.
     pub tieback_user: Signal<String>,
     pub tieback_pass: Signal<String>,
+    /// The screen a login (SSO or password) should return to once it completes
+    /// — set at the dispatch site, since Home's and Accounts' login buttons
+    /// share the same sync path (B23).
+    pub return_to: Signal<Screen>,
     /// The animated QR sequence is paused on its current frame.
     pub parcel_qr_paused: Signal<bool>,
 }
@@ -158,7 +159,6 @@ pub struct SyncState {
 #[derive(Clone, Copy)]
 pub struct Screens {
     pub home: page::home::Model,
-    pub events: page::events::Model,
     pub accounts: page::accounts::Model,
     pub qr: page::qr::Model,
     pub setup: crate::khana::page::event::Model,
@@ -195,7 +195,6 @@ pub enum Msg {
     StopwatchMsg(crate::khana::page::stopwatch::Msg),
     TimingMsg(crate::khana::page::timing::Msg),
     EventMsg(crate::khana::page::event::Msg),
-    EventsMsg(page::events::Msg),
     ResultMsg(crate::khana::page::results::Msg),
     /// Export the current event's log as a QR parcel.
     ExportParcel,
@@ -223,8 +222,6 @@ pub enum Msg {
     JoinUrl,
     /// Create and open the local demo event.
     LoadDemo,
-    /// Reset the demo event to its pristine template and open it.
-    ResetDemo,
     /// Open an event saved on this device.
     OpenSaved(String),
     /// Delete a saved event from local storage (confirm is the caller's job).
@@ -262,6 +259,10 @@ impl Model {
         // Migrate old kt_sync_sessions into the new homeservers/accounts model.
         #[cfg(target_arch = "wasm32")]
         crate::services::matrix::migrate_session_storage();
+        // Fold any pre-fix matrix-client.matrix.org entries back under
+        // https://matrix.org (B24), so old SSO accounts associate.
+        #[cfg(target_arch = "wasm32")]
+        crate::services::matrix::normalize_homeserver_storage();
 
         let session_key = crate::event::session_event_name();
         // No real event selected yet: start with NO current event (empty id +
@@ -323,6 +324,7 @@ impl Model {
                 tieback: create_signal(None),
                 tieback_user: create_signal(String::new()),
                 tieback_pass: create_signal(String::new()),
+                return_to: create_signal(Screen::Home),
                 scan_active: create_signal(false),
                 scan_preview: create_signal(None),
                 scan_status: create_signal(String::new()),
@@ -330,7 +332,6 @@ impl Model {
             },
             screens: Screens {
                 home: page::home::init(),
-                events: page::events::init(),
                 accounts: page::accounts::init(),
                 qr: page::qr::init(),
                 setup: crate::khana::page::event::init(),
@@ -349,6 +350,9 @@ impl Model {
         }
         // Restore stopwatch session (car selection + uncommitted stop → pending)
         crate::khana::page::stopwatch::restore_session(m);
+        // Derive the role for the event loaded from the session (B16) — the
+        // demo must still show as Organiser after a page refresh.
+        refresh_role(m);
         refresh_feed(m);
         m
     }
@@ -370,19 +374,6 @@ pub fn update(model: Model, msg: Msg) {
 
         Msg::LoadDemo => {
             crate::event::ensure_demo();
-            crate::update(
-                model,
-                Msg::SetEvent(crate::event::DEMO_EVENT_ID.to_string()),
-            );
-            crate::update(model, Msg::Show(Screen::Home));
-        }
-        Msg::ResetDemo => {
-            crate::event::reset_demo();
-            model
-                .screens
-                .home
-                .refresh
-                .set(model.screens.home.refresh.get() + 1);
             crate::update(
                 model,
                 Msg::SetEvent(crate::event::DEMO_EVENT_ID.to_string()),
@@ -480,7 +471,6 @@ pub fn update(model: Model, msg: Msg) {
         Msg::StopwatchMsg(msg) => crate::khana::page::stopwatch::update(model, msg),
         Msg::TimingMsg(msg) => crate::khana::page::timing::update(model, msg),
         Msg::EventMsg(msg) => crate::khana::page::event::update(model, msg),
-        Msg::EventsMsg(msg) => page::events::update(model, msg),
         Msg::ResultMsg(msg) => crate::khana::page::results::update(model, msg),
         Msg::Conn(msg) => crate::sync::update(model, msg),
         Msg::ExportParcel => crate::sync::export_parcel(model),
@@ -689,7 +679,7 @@ pub fn update(model: Model, msg: Msg) {
                             .find(|a| a.homeserver == hs && a.user_id == user_id)
                         {
                             a.account_type = acc_type;
-                            a.description = description;
+                            a.description = description.clone();
                             crate::services::matrix::save_account(a);
                         }
                         Ok::<_, String>(user_id)
@@ -697,6 +687,18 @@ pub fn update(model: Model, msg: Msg) {
                     .await;
                     match res {
                         Ok(user_id) => {
+                            // B25: an account doubles as a contact (no
+                            // credentials), so the owner can be shared/added
+                            // without re-entering their details.
+                            crate::services::matrix::save_contact(
+                                &crate::services::matrix::Contact {
+                                    user_id: user_id.clone(),
+                                    name: username,
+                                    description,
+                                    phone: None,
+                                    signing_key: None,
+                                },
+                            );
                             sm.feedback
                                 .set(format!("Created {}. Use Login to sign in.", user_id));
                             sm.refresh.update(|v| v.wrapping_add(1));
@@ -1044,21 +1046,10 @@ pub fn enqueue_setup(model: Model) {
     if id.is_empty() {
         return;
     }
-    let mut ev = model.khana.event.get_clone();
-    // Sign at save — the event's signing fields are populated here, not at
-    // publish time, so setup manifests are always signed.
-    if ev.signature.is_none() {
-        // Generate an in-memory key if storage is blocked so signing never fails.
-        let keys = crate::signing::DeviceKeys::load_or_generate();
-        let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
-        ev.signature = Some(sig);
-        ev.signing_key = Some(key);
-    }
-    let body = format!(
-        "{}{}",
-        crate::timing_event::TimingEvent::SETUP_PREFIX,
-        serde_json::to_string(&ev).unwrap()
-    );
+    let ev = model.khana.event.get_clone();
+    // `setup_body` always signs the CURRENT payload — a carried-over signature
+    // (replay/echo) won't match once the event has been mutated (B32).
+    let body = crate::event::setup_body(&ev);
     let sender = model.sync.identity.get_clone();
     // Setup is last-writer-wins: replace any superseded setup in the outbox so
     // a draft's Save Local history never gets flushed into the room on publish.
@@ -1099,14 +1090,13 @@ fn view_content(model: Model) -> View {
                     div(class="notification is-warning is-light mt-4") {
                         p { "No event loaded." }
                         a(class="has-text-link", on:click=move |_| {
-                            crate::update(model, crate::Msg::Show(crate::Screen::Events));
+                            crate::update(model, crate::Msg::Show(crate::Screen::Home));
                         }) { "Pick an event" }
                     }
                 }
             } else {
                 match screen {
                     Screen::Home => page::home::view(model),
-                    Screen::Events => page::events::view(model),
                     Screen::Accounts => page::accounts::view(model),
                     Screen::Qr => page::qr::view(model),
                     Screen::Help => page::help::view(),
@@ -1220,7 +1210,6 @@ fn view_navbar(model: Model) -> View {
         (Screen::Timing, "fa fa-stopwatch", "Time"),
         (Screen::Results, "fa fa-trophy", "Results"),
         (Screen::Chat, "fa fa-comments", "Chat"),
-        (Screen::Events, "fa fa-folder-open", "Events"),
         (Screen::Event, "fa fa-screwdriver-wrench", "Config"),
         (Screen::Timekeeper, "fa fa-stopwatch-20", "Manual"),
         (Screen::Accounts, "fa fa-user-gear", "Accounts"),
@@ -1245,7 +1234,6 @@ fn view_navbar(model: Model) -> View {
             Screen::Timing,
             Screen::Results,
             Screen::Chat,
-            Screen::Events,
             Screen::Event,
             Screen::Timekeeper,
             Screen::Accounts,
@@ -1258,7 +1246,6 @@ fn view_navbar(model: Model) -> View {
             Screen::Timing,
             Screen::Results,
             Screen::Chat,
-            Screen::Events,
             Screen::Timekeeper,
             Screen::Qr,
             Screen::Help,
@@ -1267,13 +1254,7 @@ fn view_navbar(model: Model) -> View {
     };
     // No event open: only the welcome/login hub + public screens.
     let visible_screens = if !has_event {
-        &[
-            Screen::Home,
-            Screen::Events,
-            Screen::Qr,
-            Screen::Help,
-            Screen::KhanaRules,
-        ][..]
+        &[Screen::Home, Screen::Qr, Screen::Help, Screen::KhanaRules][..]
     } else {
         role_screens
     };
@@ -1366,7 +1347,6 @@ mod tests {
     fn screen_name_round_trips() {
         let all = [
             Screen::Home,
-            Screen::Events,
             Screen::Help,
             Screen::KhanaRules,
             Screen::Results,
@@ -1381,6 +1361,7 @@ mod tests {
             assert_eq!(Screen::from_name(screen.name()), Some(screen));
         }
         assert_eq!(Screen::from_name("bogus"), None);
+        assert_eq!(Screen::from_name("events"), None);
         assert_eq!(Screen::from_name("entries"), None);
         assert_eq!(Screen::from_name("start"), None);
     }

@@ -1,0 +1,146 @@
+# Tagged stable release: bump Cargo.toml on main, then
+#   git tag vX.Y.Z && git push origin vX.Y.Z
+# Tag must match package.version or this workflow fails.
+#
+# Publishes ONLY to the gh-pages branch (cumulative tree). Repo Settings →
+# Pages → Source must be "Deploy from a branch" → gh-pages / (root).
+# Do not use actions/deploy-pages — dual publish left live site stuck on an
+# older Actions artifact while gh-pages already had the release.
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.2.1); leave empty when run on a tag ref"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve ref
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            REF="${{ inputs.tag }}"
+          else
+            REF="${GITHUB_REF}"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Assert tag matches Cargo.toml version
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          TAG="${TAG#refs/tags/}"
+          VERSION="${TAG#v}"
+          CARGO_VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "tag=$TAG cargo=$CARGO_VER"
+          if [ "$VERSION" != "$CARGO_VER" ]; then
+            echo "::error::Tag v$VERSION does not match Cargo.toml version $CARGO_VER — bump Cargo.toml on main, then retag."
+            exit 1
+          fi
+          if echo "$VERSION" | grep -Eq '[-+]'; then
+            echo "::error::Stable tags must be X.Y.Z only"
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - uses: swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/trunk-action@v0.5.1
+        with:
+          version: "v0.21.14"
+
+      - name: Check
+        run: ./scripts/check.sh
+        env:
+          KHANATIME_APP_VERSION: ${{ env.VERSION }}
+
+      - name: Build release WASM
+        run: |
+          set -euo pipefail
+          export KHANATIME_APP_VERSION="$VERSION"
+          trunk build --release --public-url "/khanatime/v${VERSION}/"
+
+      - name: Assemble cumulative Pages tree
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          git fetch origin gh-pages:gh-pages 2>/dev/null || true
+          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
+            git archive gh-pages | tar -x -C site
+          fi
+          rm -rf "site/v${VERSION}"
+          mkdir -p "site/v${VERSION}"
+          cp -a dist/. "site/v${VERSION}/"
+          rm -rf site/latest
+          mkdir -p site/latest
+          cp -a dist/. site/latest/
+          python3 scripts/ci_update_releases_json.py "$VERSION" site/releases.json
+          find site -mindepth 1 -maxdepth 1 -type f ! -name 'releases.json' -delete
+          python3 scripts/ci_write_pages_index.py site
+          test -d "site/v${VERSION}"
+          test -f site/releases.json
+          grep -q "\"version\": \"${VERSION}\"" site/releases.json
+          grep -q "v${VERSION}" site/index.html
+          ls -la site "site/v${VERSION}" | head -40
+
+      - name: Publish to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: false
+          keep_files: false
+          full_commit_message: "pages: release v${{ env.VERSION }}"
+
+      - name: Zip dist for LAN / USB
+        run: |
+          (cd dist && zip -r "../khanatime-v${VERSION}.zip" .)
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: khanatime-v${{ env.VERSION }}.zip
+          body: |
+            Stable **v${{ env.VERSION }}**
+
+            - App: https://boormat.github.io/khanatime/v${{ env.VERSION }}/
+            - Catalog: https://boormat.github.io/khanatime/
+            - Latest alias: https://boormat.github.io/khanatime/latest/
+            - Manifest: https://boormat.github.io/khanatime/releases.json
+
+            Invite QRs for events must use the **/v${{ env.VERSION }}/** URL
+            (not the catalog index, /latest/, or /main/).
+
+            Repo Pages source must be **branch `gh-pages`** (not GitHub Actions).
+
+            See `CHANGELOG.md` for notes.
+          fail_on_unmatched_files: true
+          allow_updates: true

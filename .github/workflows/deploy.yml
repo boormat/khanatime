@@ -1,59 +1,26 @@
+# Retired: main no longer overwrites the floating Pages root on every push.
+# Use:
+#   - release.yml  — tag vX.Y.Z → immutable /khanatime/vX.Y.Z/ + latest
+#   - preview.yml  — main → /khanatime/main/ (dev-<sha>)
+# See docs/plan/release-ci.md.
 name: deploy
 
 on:
-  push:
-    branches: ["main"]
-
   workflow_dispatch:
+    inputs:
+      reason:
+        description: "Prefer release.yml / preview.yml; only use this for emergencies"
+        required: false
+        default: "emergency"
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
 
 jobs:
-  check:
-    name: Check
+  notice:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: swatinem/rust-cache@v2
-      - run: ./scripts/check.sh
-
-  deploy:
-    needs: check
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-      - name: Rust Setup
-        uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-      - run: rustup target add wasm32-unknown-unknown
-      - name: Install trunk (prebuilt binary)
-        uses: jetli/trunk-action@v0.5.1
-        with:
-          version: "v0.21.14"
-      - name: Build
-        # Absolute path — the site root on Pages is /khanatime/ (repo is
-        # boormat.github.io/khanatime). A bare "khanatime" (no leading slash)
-        # makes trunk emit a relative <base href> + bare module specifiers,
-        # doubling the path to /khanatime/khanatime/... and breaking load.
-        run: trunk build --release --public-url /khanatime/
-        working-directory: ./
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: './dist'
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - run: |
+          echo "deploy.yml no longer publishes from main."
+          echo "Tag a release (release.yml) or use preview.yml for /main/."
+          echo "Reason: ${{ inputs.reason }}"

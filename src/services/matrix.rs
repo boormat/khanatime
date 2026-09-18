@@ -32,7 +32,6 @@ use ruma::{
     api::{
         client::{
             account::register::{self, RegistrationKind},
-            directory::get_public_rooms_filtered,
             message::get_message_events,
             room::{
                 create_room::{
@@ -58,7 +57,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::timing_event::TimingEvent;
 
-const STORE_NAME: &str = "khanatime_sync";
 const DEVICE_NAME: &str = "khanatime-wasm";
 
 /// A message that arrived over the sync loop.
@@ -228,6 +226,10 @@ pub fn save_session_with_password(client: &Client, homeserver: &str, password: &
 }
 
 fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>) {
+    // Store under the canonical URL: a resolved matrix.org client reports
+    // matrix-client.matrix.org, but the account must live under the user's
+    // `https://matrix.org` config so it associates (B24).
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let Some(session) = client.session() else {
         return;
     };
@@ -261,9 +263,17 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
         .iter()
         .find(|h| h.url == homeserver)
         .map(|h| h.reg)
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            // No config yet: matrix.org always needs SSO, anything else is
+            // treated as an open-registration server.
+            if crate::event::is_matrix_org_homeserver(&homeserver) {
+                crate::event::RegistrationMode::Sso
+            } else {
+                crate::event::RegistrationMode::Open
+            }
+        });
     // Ensure a homeserver entry exists.
-    ensure_homeserver(homeserver, reg);
+    ensure_homeserver(&homeserver, reg);
     let mut accounts = read_accounts();
     // Mark only this account active; deactivate others on the same homeserver.
     for a in accounts.iter_mut() {
@@ -278,6 +288,18 @@ fn save_session_inner(client: &Client, homeserver: &str, password: Option<&str>)
         existing.kind = kind;
         existing.active = true;
     } else {
+        // B25: a new account doubles as a contact (no credentials) so the
+        // owner can be shared/added without re-entering their details.  Only
+        // on genuine creation — existing-account updates skip this, so a
+        // user-edited contact isn't clobbered on re-login.  (CreateAccount's
+        // explicit save_contact enriches it with name/description afterwards.)
+        save_contact(&Contact {
+            user_id: user_id.clone(),
+            name: String::new(),
+            description: String::new(),
+            phone: None,
+            signing_key: None,
+        });
         accounts.push(Account {
             homeserver: homeserver.to_string(),
             user_id,
@@ -297,24 +319,13 @@ pub fn load_sessions() -> Vec<Account> {
 
 /// The active (or first) account for a specific homeserver, if any.
 pub fn load_session_for(homeserver: &str) -> Option<Account> {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let accounts = read_accounts();
     accounts
         .iter()
         .find(|a| a.homeserver == homeserver && a.active)
         .cloned()
         .or_else(|| accounts.into_iter().find(|a| a.homeserver == homeserver))
-}
-
-/// True when `homeserver` belongs to matrix.org.  Its session is stored as the
-/// resolved endpoint (matrix-client.matrix.org), so match by host.  Delegates
-/// to the shared pure helper (single source of truth, see `event.rs`).
-pub fn is_matrix_org(homeserver: &str) -> bool {
-    crate::event::is_matrix_org_homeserver(homeserver)
-}
-
-/// True when a stored account belongs to matrix.org.
-pub fn has_matrix_org_session() -> bool {
-    read_accounts().iter().any(|a| is_matrix_org(&a.homeserver))
 }
 
 /// The currently-active homeserver (most recently used), if any.
@@ -327,18 +338,20 @@ pub fn active_hs() -> Option<String> {
 
 /// Set the registration mode recorded for a homeserver.
 pub fn set_session_reg(homeserver: &str, reg: crate::event::RegistrationMode) {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let mut homeservers = read_homeservers();
     if let Some(h) = homeservers.iter_mut().find(|h| h.url == homeserver) {
         h.reg = reg;
         write_homeservers(&homeservers);
     } else {
         // Create a homeserver entry if none exists yet.
-        ensure_homeserver(homeserver, reg);
+        ensure_homeserver(&homeserver, reg);
     }
 }
 
 /// Remove all accounts for `homeserver`.
 pub fn remove_session(homeserver: &str) {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
     let accounts = read_accounts();
     let filtered: Vec<_> = accounts
         .into_iter()
@@ -366,6 +379,20 @@ pub fn deactivate_session() {
     clear_session();
 }
 
+/// Deactivate the session for a specific `user_id` on `homeserver` (B36): the
+/// stored credentials stay listed (with its Login button), but the session
+/// stops being resumed automatically once its tokens are known to be dead.
+pub fn deactivate_session_for(homeserver: &str, user_id: &str) {
+    let homeserver = crate::event::canonical_homeserver(homeserver);
+    let mut accounts = read_accounts();
+    for a in accounts.iter_mut() {
+        if a.homeserver == homeserver && a.user_id == user_id {
+            a.active = false;
+        }
+    }
+    write_accounts(&accounts);
+}
+
 // ----- homeserver / account / contact persistence -----
 
 fn read_homeservers() -> Vec<HomeserverConfig> {
@@ -388,16 +415,19 @@ pub fn load_homeservers() -> Vec<HomeserverConfig> {
 }
 
 pub fn save_homeserver(hs: &HomeserverConfig) {
+    let mut entry = hs.clone();
+    entry.url = crate::event::canonical_homeserver(&hs.url);
     let mut list = read_homeservers();
-    if let Some(existing) = list.iter_mut().find(|h| h.url == hs.url) {
-        *existing = hs.clone();
+    if let Some(existing) = list.iter_mut().find(|h| h.url == entry.url) {
+        *existing = entry;
     } else {
-        list.push(hs.clone());
+        list.push(entry);
     }
     write_homeservers(&list);
 }
 
 pub fn remove_homeserver(url: &str) {
+    let url = crate::event::canonical_homeserver(url);
     let list = read_homeservers();
     let filtered: Vec<_> = list.into_iter().filter(|h| h.url != url).collect();
     write_homeservers(&filtered);
@@ -406,16 +436,17 @@ pub fn remove_homeserver(url: &str) {
 /// Ensure a `HomeserverConfig` exists for `url`.  Creates a minimal entry with
 /// the given registration mode if none exists yet.
 fn ensure_homeserver(url: &str, reg: crate::event::RegistrationMode) {
+    let url = crate::event::canonical_homeserver(url);
     let mut list = read_homeservers();
     if list.iter().any(|h| h.url == url) {
         return;
     }
     list.push(HomeserverConfig {
-        url: url.to_string(),
-        name: crate::page::home::hs_host_port(url),
+        url: url.clone(),
+        name: crate::page::home::hs_host_port(&url),
         description: String::new(),
         reg,
-        element_link: crate::event::element_link_default(url),
+        element_link: crate::event::element_link_default(&url),
     });
     write_homeservers(&list);
 }
@@ -440,14 +471,16 @@ pub fn load_accounts() -> Vec<Account> {
 }
 
 pub fn save_account(account: &Account) {
+    let mut entry = account.clone();
+    entry.homeserver = crate::event::canonical_homeserver(&account.homeserver);
     let mut list = read_accounts();
     if let Some(existing) = list
         .iter_mut()
-        .find(|a| a.homeserver == account.homeserver && a.user_id == account.user_id)
+        .find(|a| a.homeserver == entry.homeserver && a.user_id == entry.user_id)
     {
-        *existing = account.clone();
+        *existing = entry;
     } else {
-        list.push(account.clone());
+        list.push(entry);
     }
     write_accounts(&list);
 }
@@ -472,7 +505,6 @@ pub fn load_contacts() -> Vec<Contact> {
     read_contacts()
 }
 
-#[allow(dead_code)]
 pub fn save_contact(contact: &Contact) {
     let mut list = read_contacts();
     if let Some(existing) = list.iter_mut().find(|c| c.user_id == contact.user_id) {
@@ -564,6 +596,75 @@ pub fn migrate_session_storage() {
     // Remove legacy keys — they are now fully superseded.
     let _ = st.remove_item("kt_sync_sessions");
     let _ = st.remove_item("kt_sync_active");
+}
+
+/// Fold re-keyed endpoints into their canonical homeserver URL and drop
+/// duplicates.  matrix.org sessions created before the B24 canonical-key fix
+/// are stored under the resolved endpoint (`matrix-client.matrix.org`); this
+/// maps them back so they associate with the `https://matrix.org` config.
+/// Prefers user-configured (already canonical) entries over re-keyed ones.
+pub(crate) fn normalize_homeservers(list: Vec<HomeserverConfig>) -> Vec<HomeserverConfig> {
+    let mut out: Vec<HomeserverConfig> = Vec::new();
+    // First pass: keep the user-configured entries (already canonical).
+    for hs in &list {
+        if hs.url == crate::event::canonical_homeserver(&hs.url)
+            && !out.iter().any(|o| o.url == hs.url)
+        {
+            out.push(hs.clone());
+        }
+    }
+    // Second pass: re-key any remaining (resolved-endpoint) entries.
+    for hs in list {
+        let canonical = crate::event::canonical_homeserver(&hs.url);
+        if !out.iter().any(|o| o.url == canonical) {
+            let mut entry = hs;
+            entry.url = canonical;
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Same as [`normalize_homeservers`] for accounts: re-key the homeserver field
+/// and dedupe by `(homeserver, user_id)`, preferring the active account and
+/// the already-canonical entry (the fresh SSO write) over a re-keyed one.
+pub(crate) fn normalize_accounts(list: Vec<Account>) -> Vec<Account> {
+    let mut out: Vec<Account> = Vec::new();
+    for a in list {
+        let canonical = crate::event::canonical_homeserver(&a.homeserver);
+        if let Some(existing) = out
+            .iter_mut()
+            .find(|o| o.homeserver == canonical && o.user_id == a.user_id)
+        {
+            // Prefer active over inactive, then the already-canonical write.
+            if (a.active && !existing.active)
+                || (a.active == existing.active && a.homeserver == canonical)
+            {
+                *existing = a;
+            }
+        } else {
+            let mut entry = a;
+            entry.homeserver = canonical;
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Re-key any stored homeservers/accounts that live under the resolved
+/// matrix.org endpoint, so pre-fix SSO data associates with the `https://
+/// matrix.org` config (and can actually be forgotten).  Idempotent: after the
+/// first run the data is already canonical.  Called once at startup.
+pub fn normalize_homeserver_storage() {
+    let homeservers = read_homeservers();
+    let normalized = normalize_homeservers(homeservers);
+    if normalized != read_homeservers() {
+        write_homeservers(&normalized);
+    }
+    // `Account` isn't PartialEq (credential kinds); re-keying is idempotent so
+    // writing every run is harmless.
+    let accounts = read_accounts();
+    write_accounts(&normalize_accounts(accounts));
 }
 
 // ----- OAuth / OIDC SSO (passwordless matrix.org accounts) -----
@@ -696,7 +797,10 @@ pub async fn new_client(homeserver: &str) -> Result<Client, String> {
     let label = url.to_string();
     Client::builder()
         .homeserver_url(url)
-        .indexeddb_store(STORE_NAME, None)
+        // Per-homeserver store: the sync token lives per store, so sharing one
+        // store across servers leaks a token into the wrong one (400 Invalid
+        // stream token).  Key by homeserver (canonical) to isolate them.
+        .indexeddb_store(&crate::event::homeserver_store_key(homeserver), None)
         .handle_refresh_tokens()
         .build()
         .await
@@ -834,6 +938,37 @@ async fn try_login(
         .map(|_| ())
 }
 
+/// True when a connect/sync error means the stored refresh grant is dead
+/// (expired, rotated away, or revoked server-side).  matrix-sdk surfaces these
+/// as the server's `invalid_grant` JSON error (`provided access grant is
+/// invalid, expired or revoked`) wrapped in a refresh-token failure.
+pub fn is_invalid_grant(e: &str) -> bool {
+    let e = e.to_lowercase();
+    [
+        "invalid_grant",
+        "access grant is invalid",
+        "expired or revoked",
+    ]
+    .iter()
+    .any(|needle| e.contains(needle))
+}
+
+/// Recover a stored password-login session whose refresh grant has died: log
+/// back in with the stored password, which mints a fresh grant.  Only works for
+/// `StoredAuth::Matrix` accounts that saved a password (open-registration
+/// servers); SSO/OAuth sessions have no password and must re-run SSO.
+pub async fn recover_with_stored_password(client: &Client, stored: &Account) -> Result<(), String> {
+    let password = match &stored.kind {
+        StoredAuth::Matrix { password, .. } if !password.is_empty() => password.clone(),
+        _ => return Err("no stored password — SSO sign-in required".to_string()),
+    };
+    let username = crate::event::user_id_localpart(&stored.user_id);
+    try_login(client, &username, &password)
+        .await
+        .map(|_| ())
+        .map_err(|e| describe_login_failure(&e, &username))
+}
+
 /// The Matrix error code of a client-server API error, if it is one.
 fn error_kind(e: &matrix_sdk::Error) -> Option<&ErrorKind> {
     match e {
@@ -927,20 +1062,25 @@ pub async fn logout(client: &Client) -> Result<(), String> {
 // ----- per-event spaces (publish) -----
 
 /// Server name of the homeserver, used for `via` and room aliases.
-fn server_name(client: &Client) -> OwnedServerName {
-    let host = client
-        .homeserver()
-        .host_str()
-        .map(|h| h.split(':').next().unwrap_or(h).to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "localhost".to_string());
-    host.parse::<OwnedServerName>()
-        .unwrap_or_else(|_| "localhost".parse().expect("static server name"))
+///
+/// The server name is the domain part of the authenticated user's id
+/// (`@mat:localhost` → `localhost`, `@user:matrix.org` → `matrix.org`).  The
+/// homeserver API URL is NOT a reliable source — it carries host:port
+/// (`http://localhost:8008`) or a well-known endpoint
+/// (`https://matrix-client.matrix.org`), neither of which is the server name,
+/// so aliases built from it are treated as remote by the server (502 directory
+/// lookups, "Room alias already taken" createRoom 400s).  Publish only runs
+/// with a signed-in account, so this errors rather than guessing.
+fn server_name(client: &Client) -> Result<OwnedServerName, String> {
+    client
+        .user_id()
+        .map(|u| u.server_name().to_owned())
+        .ok_or_else(|| "No signed-in account — sign in to publish.".to_string())
 }
 
 /// Build the room alias `#<localpart>:<server>` for this homeserver.
 fn alias(client: &Client, localpart: &str) -> Result<OwnedRoomAliasId, String> {
-    format!("#{localpart}:{}", server_name(client))
+    format!("#{localpart}:{}", server_name(client)?)
         .parse()
         .map_err(|e: ruma::IdParseError| e.to_string())
 }
@@ -1124,7 +1264,7 @@ pub async fn finalize_rooms(
     let _ = timing.send_state_event(history_content).await;
 
     // Link space <-> timing room.
-    let via = vec![server_name(client)];
+    let via = vec![server_name(client)?];
     space
         .send_state_event_for_key(timing.room_id(), SpaceChildEventContent::new(via.clone()))
         .await
@@ -1184,7 +1324,11 @@ pub async fn finalize_rooms(
 /// manual Home login) — SSO-only servers error with a clear message.
 pub async fn ensure_client_for(homeserver: &str) -> Result<Client, String> {
     if let Some(c) = client() {
-        if c.homeserver().as_str() == homeserver {
+        // The resolved client reports `https://matrix-client.matrix.org/`; the
+        // config URL is `https://matrix.org` — compare canonically (B24).
+        if crate::event::canonical_homeserver(c.homeserver().as_str())
+            == crate::event::canonical_homeserver(homeserver)
+        {
             return Ok(c);
         }
     }
@@ -1239,56 +1383,6 @@ pub async fn ensure_client_for(homeserver: &str) -> Result<Client, String> {
     }
     set_client(Some(c.clone()));
     Ok(c)
-}
-
-/// A published event found via the room-directory search.
-#[derive(Debug, Clone)]
-pub struct EventSearchResult {
-    pub name: String,
-    pub alias: String,
-    pub room_id: String,
-}
-
-/// Search the homeserver's public room directory for published khanatime event
-/// spaces (rooms with an `io.kt.event`-style alias or a `kt-` alias).
-pub async fn search_events(client: &Client, term: &str) -> Result<Vec<EventSearchResult>, String> {
-    let mut request = get_public_rooms_filtered::v3::Request::new();
-    request.limit = Some(uint!(20));
-    let mut filter = ruma::directory::Filter::default();
-    filter.generic_search_term = Some(term.to_string());
-    request.filter = filter;
-    let response = client.send(request).await.map_err(|e| e.to_string())?;
-    let out = response
-        .chunk
-        .into_iter()
-        .filter(|c| c.room_type == Some(RoomType::Space))
-        .filter(|c| {
-            let alias = c
-                .canonical_alias
-                .as_ref()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
-            alias.starts_with("#kt-")
-                || c.name
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_lowercase()
-                    .contains("khanatime")
-        })
-        .map(|c| {
-            let alias = c
-                .canonical_alias
-                .as_ref()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
-            EventSearchResult {
-                name: c.name.unwrap_or_default(),
-                alias,
-                room_id: c.room_id.to_string(),
-            }
-        })
-        .collect();
-    Ok(out)
 }
 
 /// Join an event space by **room id** (no alias) and build the
@@ -1474,9 +1568,33 @@ pub async fn backfill_room_history(
 // ----- receive -----
 
 /// Spawn the long-polling sync loop, pushing incoming messages into [sink].
-pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>) {
+/// `on_error` is called for errors that should surface to the user (e.g. a
+/// stale sync token) instead of being silently retried forever.
+pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>, on_error: Rc<dyn Fn(String)>) {
+    // Keep the stored session tokens in sync with matrix-sdk's auto-refreshes
+    // (B36): refresh tokens rotate on every refresh, so the localStorage
+    // account must be re-saved whenever they change, or a later connect
+    // restores the revoked grant and fails with `invalid_grant`.
+    let persist_client = client.clone();
+    let persist_hs = client.homeserver().to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut rx = persist_client.subscribe_to_session_changes();
+        loop {
+            if rx.recv().await.is_err() {
+                // Capacity-1 channel: a lagged refresh is reported as an error.
+                // `persist_client` keeps the sender alive, so errors only mean
+                // missed intermediate updates — the next change (or a later
+                // connect's save_session) captures the latest tokens anyway.
+                continue;
+            }
+            save_session(&persist_client, &persist_hs);
+        }
+    });
     wasm_bindgen_futures::spawn_local(async move {
         let settings = SyncSettings::new().timeout(Duration::from_secs(30));
+        // sync_stream borrows `client` for the stream's lifetime, so a clone
+        // is kept for the store access in the error path.
+        let store_client = client.clone();
         let mut stream = Box::pin(client.sync_stream(settings).await);
         while let Some(res) = stream.next().await {
             match res {
@@ -1489,7 +1607,37 @@ pub fn start_sync(client: Client, sink: Rc<dyn Fn(IncomingMessage)>) {
                         }
                     }
                 }
-                Err(e) => khanatime::log!("matrix sync error: {e}"),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("Invalid stream token") {
+                        // The stored sync token is stale (cross-homeserver
+                        // reuse or a server reset).  Clear it so a re-login
+                        // does a fresh full sync, surface a clear error and
+                        // stop spamming the loop.
+                        let _ = store_client
+                            .state_store()
+                            .remove_kv_data(matrix_sdk::store::StateStoreDataKey::SyncToken)
+                            .await;
+                        on_error(
+                            "Sync stalled — the sync token was invalidated. Re-login to resume."
+                                .to_string(),
+                        );
+                        khanatime::log!("matrix sync error (token invalidated, stopping): {msg}");
+                        break;
+                    }
+                    if is_invalid_grant(&msg) {
+                        // The refresh grant died mid-session (expired, rotated
+                        // away or revoked server-side).  Stop retrying and
+                        // point the user at a fresh sign-in.
+                        on_error(
+                            "Your session expired or was revoked — sign in again to resume."
+                                .to_string(),
+                        );
+                        khanatime::log!("matrix sync error (invalid grant, stopping): {msg}");
+                        break;
+                    }
+                    khanatime::log!("matrix sync error: {msg}");
+                }
             }
         }
     });
@@ -1557,5 +1705,106 @@ mod wasm_tests {
         // Clearing removes it.
         store_app_identity("");
         assert_eq!(load_app_identity(), "");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hs(url: &str) -> HomeserverConfig {
+        HomeserverConfig {
+            url: url.into(),
+            name: crate::page::home::hs_host_port(url),
+            description: String::new(),
+            reg: crate::event::RegistrationMode::Sso,
+            element_link: crate::event::element_link_default(url),
+        }
+    }
+
+    fn acct(homeserver: &str, user: &str, active: bool) -> Account {
+        Account {
+            homeserver: homeserver.into(),
+            user_id: format!("@{user}:matrix.org"),
+            description: String::new(),
+            account_type: AccountType::Personal,
+            kind: StoredAuth::Matrix {
+                device_id: "D".into(),
+                access_token: "T".into(),
+                refresh_token: None,
+                password: String::new(),
+            },
+            active,
+        }
+    }
+
+    #[test]
+    fn normalize_homeservers_folds_resolved_endpoint() {
+        // User-configured matrix.org config is kept; the stale resolved-endpoint
+        // entry (whatever order) is dropped.
+        let list = vec![
+            hs("https://matrix-client.matrix.org"),
+            hs("https://matrix.org"),
+        ];
+        let out = normalize_homeservers(list);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "https://matrix.org");
+        assert_eq!(out[0].name, "matrix.org");
+
+        // Only a resolved-endpoint entry: re-key it.
+        let out = normalize_homeservers(vec![hs("https://matrix-client.matrix.org")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "https://matrix.org");
+
+        // Non-matrix servers pass through untouched.
+        let out = normalize_homeservers(vec![hs("http://localhost:8008")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].url, "http://localhost:8008");
+    }
+
+    #[test]
+    fn normalize_accounts_dedupes_and_prefers_canonical_active() {
+        // Stale resolved-endpoint account + fresh canonical account for the
+        // same user: the canonical (fresh) one wins.
+        let list = vec![
+            acct("https://matrix-client.matrix.org", "alice", true),
+            acct("https://matrix.org", "alice", true),
+        ];
+        let out = normalize_accounts(list);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].homeserver, "https://matrix.org");
+        assert_eq!(out[0].user_id, "@alice:matrix.org");
+        assert!(out[0].active);
+
+        // Only a resolved-endpoint account: re-key it.
+        let out = normalize_accounts(vec![acct("https://matrix-client.matrix.org", "bob", true)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].homeserver, "https://matrix.org");
+        assert_eq!(out[0].user_id, "@bob:matrix.org");
+
+        // Different users on the same endpoint stay separate.
+        let out = normalize_accounts(vec![
+            acct("https://matrix-client.matrix.org", "alice", true),
+            acct("https://matrix-client.matrix.org", "bob", false),
+        ]);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|a| a.homeserver == "https://matrix.org"));
+    }
+
+    #[test]
+    fn invalid_grant_classifies_oauth_refresh_failures() {
+        // matrix-sdk wraps the server's invalid_grant JSON error in the
+        // refresh-token failure it surfaces to the app.
+        assert!(is_invalid_grant(
+            "failed to detect refresh token: server returned error response \
+             invalid_grant provided access grant is invalid, expired or revoked"
+        ));
+        assert!(is_invalid_grant(
+            "error refreshing an OAuth 2.0 token: the access grant is invalid"
+        ));
+        // Unrelated failures are NOT treated as a dead grant.
+        assert!(!is_invalid_grant("Invalid stream token"));
+        assert!(!is_invalid_grant("network error: connection refused"));
+        assert!(!is_invalid_grant(""));
     }
 }

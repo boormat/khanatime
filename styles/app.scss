@@ -154,6 +154,12 @@
       background-color: #d4ecfa;
     }
   }
+  // B29: the staged car has started and is locked in — amber to signal it
+  // can't be replaced until it finishes.
+  &.is-on-course {
+    background-color: #fff3cd;
+    border-color: #e0a800;
+  }
 }
 
 // Tag badge separator between car-chip groups.

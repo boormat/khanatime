@@ -128,15 +128,39 @@ pub fn resume_on_load(model: Model) {
 }
 
 /// Build a client from a stored session, restore it, join the current event's
-/// timing room and start syncing.  Reused by [resume_on_load] and one-tap
-/// Re-login.
+/// timing room and start syncing.  Reused by [resume_on_load], one-tap
+/// Re-login, and (via [connect_after_publish]) right after a publish.
 #[cfg(target_arch = "wasm32")]
-fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
+pub fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
     model.sync.conn.set(ConnState::Connecting);
     wasm_bindgen_futures::spawn_local(async move {
         let res = async {
             let client = crate::services::matrix::new_client(&stored.homeserver).await?;
-            crate::services::matrix::restore_session(&client, &stored).await?;
+            match crate::services::matrix::restore_session(&client, &stored).await {
+                Ok(()) => {}
+                Err(e) if crate::services::matrix::is_invalid_grant(&e) => {
+                    // The stored refresh grant is dead (expired, rotated away
+                    // or revoked server-side).  Recover: password accounts log
+                    // back in with the stored password (minting a fresh grant);
+                    // SSO sessions have no password and must re-run sign-in.
+                    if crate::services::matrix::recover_with_stored_password(&client, &stored)
+                        .await
+                        .is_ok()
+                    {
+                        khanatime::log!("recovered session via stored password (invalid grant)");
+                    } else {
+                        crate::services::matrix::deactivate_session_for(
+                            &stored.homeserver,
+                            &stored.user_id,
+                        );
+                        return Err(format!(
+                            "Your session on {} expired or was revoked — sign in again.",
+                            stored.homeserver
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
             // Re-persist (refresh tokens rotate on restore) and mark active.
             crate::services::matrix::save_session(&client, &stored.homeserver);
             crate::services::matrix::set_client(Some(client.clone()));
@@ -146,7 +170,7 @@ fn restore_and_connect(model: Model, stored: crate::services::matrix::Account) {
             )
             .await;
             crate::services::matrix::set_room(room.clone());
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             if room.is_some() {
                 spawn_backfill(model);
             }
@@ -190,6 +214,19 @@ pub fn join_current_event(model: Model) {
         }
         flush_pending(model);
     });
+}
+
+/// Full connect after a publish: restore the stored session for `hs`, join the
+/// current event's room and start the sync loop.  `join_current_event` alone
+/// only re-joins the room — it doesn't start sync or set `LoggedIn`, so a
+/// publish from an offline state left the app looking disconnected until a
+/// refresh (which runs [restore_and_connect] via `resume_on_load`).
+#[cfg(target_arch = "wasm32")]
+pub fn connect_after_publish(model: Model, hs: &str) {
+    match crate::services::matrix::load_session_for(hs) {
+        Some(stored) => restore_and_connect(model, stored),
+        None => join_current_event(model),
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -697,7 +734,7 @@ pub fn join_via_link(model: Model, invite: crate::event::Invite) {
             // Adopt the event by space room id (no alias), seed locally.
             let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
             crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             Ok::<_, String>(JoinDone::Joined(ev.id))
         }
         .await;
@@ -788,7 +825,7 @@ fn tieback_connect(model: Model, username: String, password: String) {
             crate::services::matrix::set_client(Some(client.clone()));
             let ev = crate::services::matrix::open_published_event(&client, &invite.sid).await?;
             crate::log::seed_setup_to_log(&ev.id, &crate::event::setup_body(&ev), "");
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             Ok::<_, String>(ev)
         }
         .await;
@@ -839,7 +876,9 @@ fn logout(model: Model) {
 }
 
 /// One-tap re-login after a soft logout: restore the stored session for
-/// `homeserver` and connect exactly like [resume_on_load].
+/// `homeserver` and connect exactly like [resume_on_load].  SSO (OAuth)
+/// accounts can't be restored once their grant is dead, so they always get a
+/// fresh authorization instead (the popup opens within this click's gesture).
 #[cfg(target_arch = "wasm32")]
 fn relogin(model: Model, hs: String) {
     let Some(stored) = crate::services::matrix::load_session_for(&hs) else {
@@ -849,6 +888,13 @@ fn relogin(model: Model, hs: String) {
             .set(ConnState::Error(format!("No stored session for {hs}")));
         return;
     };
+    if matches!(
+        stored.kind,
+        crate::services::matrix::StoredAuth::OAuth { .. }
+    ) {
+        sso_login_for(model, hs);
+        return;
+    }
     restore_and_connect(model, stored);
 }
 
@@ -943,7 +989,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 )
                 .await;
                 crate::services::matrix::set_room(room.clone());
-                crate::services::matrix::start_sync(client, sink_for(model));
+                crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
                 if room.is_some() {
                     spawn_backfill(model);
                 }
@@ -964,7 +1010,7 @@ fn add_homeserver(model: Model, hs: String, username: String) {
                 set_local_identity_if_empty(model, &user_id);
                 model.sync.conn.set(ConnState::LoggedIn(user_id));
                 model.sync.room.set(room_id);
-                crate::update(model, crate::Msg::Show(crate::Screen::Home));
+                crate::update(model, crate::Msg::Show(model.sync.return_to.get_clone()));
                 flush_pending(model);
                 // Resume a pending join if it targets this homeserver.
                 let pending = model.sync.pending_join.get_clone();
@@ -1133,7 +1179,7 @@ fn sso_complete(model: Model, callback_url: String) {
             )
             .await;
             crate::services::matrix::set_room(room.clone());
-            crate::services::matrix::start_sync(client, sink_for(model));
+            crate::services::matrix::start_sync(client, sink_for(model), sync_error_for(model));
             if room.is_some() {
                 spawn_backfill(model);
             }
@@ -1159,7 +1205,7 @@ fn sso_complete(model: Model, callback_url: String) {
                     crate::update(model, crate::Msg::Join(link));
                     return;
                 }
-                crate::update(model, crate::Msg::Show(crate::Screen::Home));
+                crate::update(model, crate::Msg::Show(model.sync.return_to.get_clone()));
                 flush_pending(model);
             }
             Err(e) => model.sync.conn.set(ConnState::Error(e)),
@@ -1175,6 +1221,15 @@ fn sso_complete(model: Model, callback_url: String) {
 #[cfg(target_arch = "wasm32")]
 fn sink_for(model: Model) -> Rc<dyn Fn(crate::services::matrix::IncomingMessage)> {
     Rc::new(move |msg| handle_incoming(model, msg))
+}
+
+/// Sync-loop error callback: surfaces the message as a connection error (used
+/// for terminal conditions like an invalidated sync token).
+#[cfg(target_arch = "wasm32")]
+fn sync_error_for(model: Model) -> Rc<dyn Fn(String)> {
+    Rc::new(move |msg| {
+        model.sync.conn.set(ConnState::Error(msg));
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1312,12 +1367,6 @@ fn handle_incoming(model: Model, msg: crate::services::matrix::IncomingMessage) 
         let run = crate::event::record_from_timing(&te);
         model.khana.runs.update(|runs| {
             crate::event::add_run(runs, run);
-        });
-    }
-    if te.r#type == crate::event::RUN_START && te.status.as_deref() == Some("dns") {
-        // A no-show start scores NOSHO so the results cell reads "DNS".
-        model.khana.scores.update(|s| {
-            crate::event::upsert_ktime(s, te.test, &te.car, crate::event::KTime::NOSHO);
         });
     }
     if te.r#type == crate::event::RUN_FINISH {

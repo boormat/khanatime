@@ -201,6 +201,11 @@ pub struct EventInfo {
     /// Base64 Ed25519 signature of the canonical event payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+
+    /// App release this event was created/published with (`X.Y.Z`). Invite QRs
+    /// use the pinned Pages path for this version. Empty on legacy events.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app_version: String,
 }
 
 /// How a scanned invite should authenticate on its homeserver.
@@ -444,6 +449,7 @@ impl Default for EventInfo {
             parent_rooms: vec![],
             signing_key: None,
             signature: None,
+            app_version: String::new(),
         }
     }
 }
@@ -459,6 +465,24 @@ impl EventInfo {
         if self.uid.is_empty() {
             self.uid = crate::ids::gen_short_id();
         }
+    }
+
+    /// Stamp `app_version` from the running build when unset (draft create /
+    /// first publish freeze). Does not overwrite an existing pin.
+    pub fn ensure_app_version(&mut self) {
+        if self.app_version.is_empty() {
+            self.app_version = khanatime::APP_VERSION.to_string();
+        }
+    }
+
+    /// Pages base URL for invite QRs from this event's pin (or running build).
+    pub fn invite_app_base(&self) -> String {
+        let v = if self.app_version.is_empty() {
+            khanatime::APP_VERSION
+        } else {
+            self.app_version.as_str()
+        };
+        khanatime::version::pinned_app_base(v)
     }
 
     /// True for the local training event.  Demo events are never published and
@@ -885,7 +909,7 @@ pub fn base_times_for(event: &EventInfo, runs: &[RunRecord]) -> Vec<u16> {
 /// for display but `sum` stays None.  A 0-of-0 stage (total = 0) is completed
 /// by every entrant with a total time of zero — any runs recorded are
 /// display-only (struck out).  DNF/FTS/WD finishes and a declared DNS (a
-/// `start` marked `dns`, no finish) are completed attempts; a DNS scores the
+/// `finish` marked `dns`, no time) are completed attempts; a DNS scores the
 /// no-time `base + 100`.  Returns the aggregate score together with every real
 /// run (in run order, counted runs flagged).  None when the car has no attempts
 /// in the test.
@@ -909,22 +933,12 @@ fn stage_result(
         relevant.sort_by_key(|r| r.ts);
         let all: Vec<RunScore> = relevant
             .iter()
-            .filter(|r| {
-                r.r#type == RUN_FINISH
-                    || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
-            })
-            .map(|r| {
-                let (time, score) = if r.r#type == RUN_FINISH {
-                    (finish_to_ktime(r), run_net_score(r, base_time))
-                } else {
-                    (KTime::NOSHO, base_time as u32 + 100)
-                };
-                RunScore {
-                    ts: r.ts,
-                    time,
-                    score,
-                    counted: false,
-                }
+            .filter(|r| r.r#type == RUN_FINISH)
+            .map(|r| RunScore {
+                ts: r.ts,
+                time: finish_to_ktime(r),
+                score: run_net_score(r, base_time),
+                counted: false,
             })
             .collect();
         return Some(StageScore {
@@ -939,21 +953,12 @@ fn stage_result(
 
     let mut all: Vec<RunScore> = relevant
         .iter()
-        .filter(|r| {
-            r.r#type == RUN_FINISH || (r.r#type == RUN_START && r.status.as_deref() == Some("dns"))
-        })
-        .map(|r| {
-            let (time, score) = if r.r#type == RUN_FINISH {
-                (finish_to_ktime(r), run_net_score(r, base_time))
-            } else {
-                (KTime::NOSHO, base_time as u32 + 100)
-            };
-            RunScore {
-                ts: r.ts,
-                time,
-                score,
-                counted: false,
-            }
+        .filter(|r| r.r#type == RUN_FINISH)
+        .map(|r| RunScore {
+            ts: r.ts,
+            time: finish_to_ktime(r),
+            score: run_net_score(r, base_time),
+            counted: false,
         })
         .collect();
     all.sort_by_key(|r| r.ts);
@@ -1262,6 +1267,47 @@ pub fn is_matrix_org_homeserver(homeserver: &str) -> bool {
     host == "matrix.org" || host.ends_with(".matrix.org")
 }
 
+/// The canonical key for a homeserver's stored account/config.  matrix.org is
+/// reached through its well-known client-server endpoint
+/// `https://matrix-client.matrix.org`, so a resolved client reports that URL
+/// even though the user configured `https://matrix.org` — sessions must be
+/// stored under the config's URL or they never associate (B24).  Also strips
+/// the trailing slash a matrix-sdk `Url` serializes with, so a resolved client
+/// reports `https://matrix-client.matrix.org/` (slash included).
+#[allow(dead_code)] // used from services/matrix.rs (wasm build)
+pub fn canonical_homeserver(homeserver: &str) -> String {
+    let hs = homeserver.trim_end_matches('/');
+    if hs == "https://matrix-client.matrix.org" {
+        "https://matrix.org".to_string()
+    } else {
+        hs.to_string()
+    }
+}
+
+/// The IndexedDB store name for a homeserver's sync state.  matrix-sdk keeps
+/// the sync token per store (not per homeserver), so a shared store lets one
+/// homeserver's token leak into another and the server rejects it with
+/// "Invalid stream token".  Keying the store by homeserver isolates them.
+/// The canonical homeserver URL is used so matrix.org and its resolved
+/// endpoint share one store.
+#[allow(dead_code)] // used from services/matrix.rs (wasm build)
+pub fn homeserver_store_key(homeserver: &str) -> String {
+    let hs = canonical_homeserver(homeserver);
+    let host = hs
+        .split("://")
+        .nth(1)
+        .unwrap_or(&hs)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(&hs)
+        .to_lowercase();
+    let safe: String = host
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("khanatime_sync_{safe}")
+}
+
 /// Default Element Web origin for `homeserver` (used when the event has no
 /// explicit `element_link`): app.element.io for Matrix, else the local Element
 /// dev instance.  Empty for an unknown/blank homeserver.
@@ -1518,45 +1564,96 @@ pub fn demo_event() -> EventInfo {
             .collect(),
         ..Default::default()
     };
-    // Stage 2 is the multi-run test: best 2 of 3 (the others are single runs).
-    ev.stages[1].runs_total = 3;
-    ev.stages[1].runs_scored = 2;
-    // Stage 3 is 0 of 0: everyone completes it with a total time of zero, so
-    // positions tie and the cumulative chain continues on to stage 4.
-    ev.stages[2].runs_total = 0;
-    ev.stages[2].runs_scored = 0;
-    // Stage 4 is a normal single run after the zero stage.
-    ev.stages[3].runs_total = 1;
-    ev.stages[3].runs_scored = 1;
-    for (car, name, classes) in [
-        ("1", "Alice", &["Outright", "Female"][..]),
-        ("2", "Bob", &["Outright"][..]),
-        ("3", "Carol", &["Outright", "Female", "Junior"][..]),
-        ("4", "Dan", &["Outright", "Junior"][..]),
-        ("5", "Erin", &["Outright", "Female"][..]),
-        ("6", "Frank", &["Outright"][..]),
-        ("12", "Gail", &["Outright", "Female"][..]),
-    ] {
+    // Named stages: Windmill, Back Dam (best 1 of 2), Powerline (0 of 0),
+    // The Paddock.
+    for (i, name) in ["Windmill", "Back Dam", "Powerline", "The Paddock"]
+        .iter()
+        .enumerate()
+    {
+        ev.stages[i].name = name.to_string();
+    }
+    // Stage 2 is the multi-run test: best 1 of 2.
+    ev.stages[1].runs_total = 2;
+    ev.stages[1].runs_scored = 1;
+    // Stage 3 is a normal single run.
+    ev.stages[2].runs_total = 1;
+    ev.stages[2].runs_scored = 1;
+    // Stage 4 (T4) is 0 of 0: everyone completes it with a total time of zero.
+    ev.stages[3].runs_total = 0;
+    ev.stages[3].runs_scored = 0;
+    let mut push = |car: &str,
+                    name: &str,
+                    classes: &[&str],
+                    vehicle: &str,
+                    desc: &str,
+                    passenger: Option<&str>| {
         ev.add_entry(car, name);
         if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
             entry.classes = classes.iter().map(|s| s.to_string()).collect();
+            entry.vehicle = Some(vehicle.to_string());
+            entry.description = Some(desc.to_string());
+            entry.passenger = passenger.map(|p| p.to_string());
         }
-    }
-    // Erin and Gail share Erin's MX-5 (a typed shared-car name).
+    };
+    push(
+        "1",
+        "Andy",
+        &["Outright", "Female"],
+        "wrx",
+        "blue wrx",
+        Some("Sam"),
+    );
+    push("2", "Bob B", &["Outright"], "318", "red bmw", None);
+    push(
+        "3",
+        "Simey",
+        &["Outright", "Female", "Junior"],
+        "evo7",
+        "silver evo 7",
+        None,
+    );
+    push(
+        "4",
+        "Sub",
+        &["Outright", "Junior"],
+        "datsun 180B",
+        "green datsun 180b",
+        Some("Tess"),
+    );
+    push(
+        "5",
+        "Petey",
+        &["Outright", "Female"],
+        "mx5",
+        "white mx-5",
+        None,
+    );
+    push(
+        "6",
+        "Frank",
+        &["Outright"],
+        "corolla",
+        "black corolla",
+        None,
+    );
+    push(
+        "12",
+        "Gail",
+        &["Outright", "Female"],
+        "mx5",
+        "white mx-5",
+        None,
+    );
+    push("007", "Mat", &["Outright"], "bmw", "blue bmw", None);
+    // Petey and Gail share Petey's MX-5 (a typed shared-car name).
     for car in ["5", "12"] {
         if let Some(entry) = ev.entries.iter_mut().find(|e| e.car == car) {
-            entry.shared = Some("Erin's MX-5".to_string());
+            entry.shared = Some("Petey's MX-5".to_string());
         }
     }
     ev.ensure_uid();
+    ev.ensure_app_version();
     ev
-}
-
-/// Restore the demo event to its pristine template, wiping all training state
-/// (entries, stages, times, runs) added while practising.
-pub fn reset_demo() {
-    crate::log::remove_event_log(DEMO_EVENT_ID);
-    ensure_demo();
 }
 
 /// Ensure the demo event exists in the transaction log (its setup manifest is
@@ -1570,18 +1667,17 @@ pub fn ensure_demo() {
 }
 
 /// The `khanatime_setup:` manifest body for an event.
+/// Build the signed setup-manifest body for `ev`.  Always re-signs over the
+/// current payload: a carried-over signature (replay/echo) won't match once
+/// the event has been mutated (B32).
 ///
-/// Signs the EventInfo with the device key if not already signed.
+/// Signs the EventInfo with the device key.
 pub fn setup_body(ev: &EventInfo) -> String {
     let mut ev = ev.clone();
-    if ev.signature.is_none() {
-        // Generate an in-memory key if storage is blocked so signing never fails
-        // (and unsigned data — which is now rejected — can never be produced).
-        let keys = crate::signing::DeviceKeys::load_or_generate();
-        let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
-        ev.signature = Some(sig);
-        ev.signing_key = Some(key);
-    }
+    let keys = crate::signing::DeviceKeys::load_or_generate();
+    let (sig, key) = crate::signing::sign_payload(&ev, &keys).expect("signing failed");
+    ev.signature = Some(sig);
+    ev.signing_key = Some(key);
     format!(
         "{}{}",
         crate::timing_event::TimingEvent::SETUP_PREFIX,
@@ -1728,7 +1824,6 @@ pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
     let mut out: Vec<&RunRecord> = runs
         .iter()
         .filter(|r| r.r#type == RUN_START && r.test == test)
-        .filter(|r| r.status.as_deref() != Some("dns"))
         .filter(|r| !r.voided)
         .filter(|r| {
             !runs
@@ -1743,6 +1838,17 @@ pub fn pending_starts(runs: &[RunRecord], test: u8) -> Vec<&RunRecord> {
 /// Whether `car` has an unfinished (pending) start for `test`.
 pub fn pending_for_car(runs: &[RunRecord], test: u8, car: &str) -> bool {
     pending_starts(runs, test).iter().any(|r| r.car == car)
+}
+
+/// Completed attempts for a car in a test: non-voided finishes.
+/// A DNS is a finish (status `dns`) — the car chose not to compete — so it
+/// counts as an attempt here too (multiple DNS allowed).  A car has "done" a
+/// test when all its attempts are accounted for.
+pub fn car_attempts_done(runs: &[RunRecord], test: u8, car: &str) -> usize {
+    runs.iter()
+        .filter(|r| r.test == test && r.car == car && !r.voided)
+        .filter(|r| r.r#type == RUN_FINISH)
+        .count()
 }
 
 /// Elapsed time between a start and its finish, in deciseconds.
@@ -2091,7 +2197,53 @@ mod tests {
     }
 
     #[test]
-    fn pending_starts_hides_finished_and_dns() {
+    fn car_attempts_done_counts_finishes_and_dns() {
+        // One finish = one attempt; two finishes = two attempts.
+        let runs = vec![
+            run("finish", 1, "7", 100),
+            run("finish", 1, "7", 200),
+            run("finish", 1, "8", 100),
+        ];
+        assert_eq!(car_attempts_done(&runs, 1, "7"), 2);
+        assert_eq!(car_attempts_done(&runs, 1, "8"), 1);
+        assert_eq!(car_attempts_done(&runs, 1, "9"), 0);
+        assert_eq!(car_attempts_done(&runs, 2, "7"), 0);
+    }
+
+    #[test]
+    fn car_attempts_done_counts_multiple_dns() {
+        // DNS finishes fill skipped attempts (a 2-run test can be 1 finish + 1
+        // DNS, or 2 DNS, and still be "done").
+        let mut runs = vec![
+            run("finish", 1, "7", 100),
+            run("finish", 1, "7", 200),
+            run("finish", 1, "8", 100),
+            run("finish", 1, "8", 110),
+        ];
+        runs[0].status = Some("dns".into());
+        runs[2].status = Some("dns".into());
+        runs[3].status = Some("dns".into());
+        // A clean start is NOT an attempt.
+        runs.push(run("start", 1, "9", 100));
+        assert_eq!(car_attempts_done(&runs, 1, "7"), 2);
+        assert_eq!(car_attempts_done(&runs, 1, "8"), 2);
+        assert_eq!(car_attempts_done(&runs, 1, "9"), 0);
+    }
+
+    #[test]
+    fn car_attempts_done_excludes_voided() {
+        let mut runs = vec![
+            run("finish", 1, "7", 100),
+            run("finish", 1, "7", 200),
+            run("start", 1, "7", 300),
+        ];
+        runs[0].voided = true;
+        runs[2].voided = true;
+        assert_eq!(car_attempts_done(&runs, 1, "7"), 1);
+    }
+
+    #[test]
+    fn pending_starts_hides_finished_and_voided() {
         let mut runs = vec![
             run("start", 1, "7", 100),
             run("start", 1, "8", 200),
@@ -2100,9 +2252,9 @@ mod tests {
         ];
         // Finish for car 8 references start uid "uid-start-200"
         runs[3].refs = vec!["uid-start-200".into()];
-        let mut dns = run("start", 1, "9", 300);
-        dns.status = Some("dns".into());
-        runs[2] = dns;
+        let mut gone = run("start", 1, "9", 300);
+        gone.voided = true;
+        runs[2] = gone;
         let pending = pending_starts(&runs, 1);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].car, "7");
@@ -2714,17 +2866,17 @@ mod tests {
         let ss = stage_result(&stage, &[finish(1, 450), dnf], 1, "7", 0).unwrap();
         assert_eq!(ss.sum, Some(500)); // 450 + DNF(50)
 
-        // A declared DNS (start marked dns, no finish) is a completed attempt
+        // A declared DNS (finish marked dns, no time) is a completed attempt
         // scoring the no-time: clean + DNS is enough for best-2-of-3.
-        let dns_start = RunRecord {
-            r#type: "start".into(),
+        let dns_finish = RunRecord {
+            r#type: "finish".into(),
             test: 1,
             car: "7".into(),
             ts: 2,
             status: Some("dns".into()),
             ..Default::default()
         };
-        let ss = stage_result(&stage, &[finish(1, 450), dns_start], 1, "7", 0).unwrap();
+        let ss = stage_result(&stage, &[finish(1, 450), dns_finish], 1, "7", 0).unwrap();
         assert_eq!(ss.sum, Some(550)); // 450 + DNS(100)
 
         // No runs at all stays blank (None).
@@ -2759,10 +2911,10 @@ mod tests {
             stage_result(&stage, &[run(1, 450, 0)], 1, "7", 0).and_then(|ss| ss.sum),
             Some(450)
         );
-        // Declared DNS (start marked dns, no finish) on a 1:1 stage: a real
+        // Declared DNS (finish marked dns, no time) on a 1:1 stage: a real
         // recorded attempt scoring the no-time base + 100.
         let dnss = vec![RunRecord {
-            r#type: "start".into(),
+            r#type: "finish".into(),
             test: 1,
             car: "9".into(),
             ts: 1,
@@ -2863,9 +3015,9 @@ mod tests {
     #[test]
     fn demo_runs_scored_of_total_sums_runs_on_stage() {
         let ev = demo_event();
-        // Stage 2 ships as best-2-of-3; exercise that configuration.
-        assert_eq!(ev.stages[1].runs_total, 3);
-        assert_eq!(ev.stages[1].runs_scored, 2);
+        // Stage 2 ships as best-1-of-2; exercise that configuration.
+        assert_eq!(ev.stages[1].runs_total, 2);
+        assert_eq!(ev.stages[1].runs_scored, 1);
         let finish = |ith: u8, ds: u16| RunRecord {
             r#type: "finish".into(),
             test: 2,
@@ -2874,33 +3026,33 @@ mod tests {
             time_ds: Some(ds),
             ..Default::default()
         };
-        let runs = vec![finish(1, 450), finish(2, 470), finish(3, 100)];
+        let runs = vec![finish(1, 450), finish(2, 100)];
         let rv = create_result_view(&ev, &runs, "Outright");
         let stage2 = &rv.rows["1"].columns[1].as_ref().unwrap();
-        // Best 2 of 3 = 450 + 100 = 550.
-        assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 550);
+        // Best 1 of 2 = 100.
+        assert_eq!(stage2.stage_pos.as_ref().unwrap().score_ds, 100);
         // Display order is run order, with the non-counting run struck out.
         let shown: Vec<(i64, u32, bool)> = stage2
             .runs
             .iter()
             .map(|r| (r.ts, r.score, r.counted))
             .collect();
-        assert_eq!(shown, vec![(1, 450, true), (2, 470, false), (3, 100, true)]);
+        assert_eq!(shown, vec![(1, 450, false), (2, 100, true)]);
     }
 
     #[test]
     fn demo_event_has_zero_run_stage() {
         let ev = demo_event();
         assert_eq!(ev.stage_count(), 4);
-        // Stage 2 stays the multi-run test.
-        assert_eq!(ev.stages[1].runs_total, 3);
-        assert_eq!(ev.stages[1].runs_scored, 2);
-        // Stage 3 is 0 of 0: everyone completes it with a zero total.
-        assert_eq!(ev.stages[2].runs_total, 0);
-        assert_eq!(ev.stages[2].runs_scored, 0);
-        // Stage 4 is a normal single run after the zero stage.
-        assert_eq!(ev.stages[3].runs_total, 1);
-        assert_eq!(ev.stages[3].runs_scored, 1);
+        // Stage 2 stays the multi-run test (best 1 of 2).
+        assert_eq!(ev.stages[1].runs_total, 2);
+        assert_eq!(ev.stages[1].runs_scored, 1);
+        // Stage 3 is a normal single run.
+        assert_eq!(ev.stages[2].runs_total, 1);
+        assert_eq!(ev.stages[2].runs_scored, 1);
+        // Stage 4 (T4) is 0 of 0: everyone completes it with a zero total.
+        assert_eq!(ev.stages[3].runs_total, 0);
+        assert_eq!(ev.stages[3].runs_scored, 0);
     }
 
     #[test]
@@ -3201,6 +3353,53 @@ mod tests {
         assert_eq!(shared_car_key(" abc 123 "), "abc 123");
         assert_eq!(shared_car_key("Bob's MX5"), "bob's mx5");
         assert_eq!(shared_car_key("Erin's   MX-5"), "erin's mx-5");
+    }
+
+    #[test]
+    fn homeserver_store_key_is_per_server() {
+        assert_eq!(
+            homeserver_store_key("http://localhost:8008"),
+            "khanatime_sync_localhost_8008"
+        );
+        assert_eq!(
+            homeserver_store_key("http://boomtime.local:8008"),
+            "khanatime_sync_boomtime_local_8008"
+        );
+        assert_eq!(
+            homeserver_store_key("https://matrix.org"),
+            "khanatime_sync_matrix_org"
+        );
+        // The resolved endpoint (with trailing slash) maps to the same store.
+        assert_eq!(
+            homeserver_store_key("https://matrix-client.matrix.org/"),
+            "khanatime_sync_matrix_org"
+        );
+    }
+
+    #[test]
+    fn canonical_homeserver_maps_matrix_org_endpoint() {
+        assert_eq!(
+            canonical_homeserver("https://matrix-client.matrix.org"),
+            "https://matrix.org"
+        );
+        // A matrix-sdk Url serializes with a trailing slash — still canonical.
+        assert_eq!(
+            canonical_homeserver("https://matrix-client.matrix.org/"),
+            "https://matrix.org"
+        );
+        assert_eq!(
+            canonical_homeserver("https://matrix.org"),
+            "https://matrix.org"
+        );
+        assert_eq!(
+            canonical_homeserver("http://localhost:8008"),
+            "http://localhost:8008"
+        );
+        // Trailing slash is normalised off, so lookups agree with typed configs.
+        assert_eq!(
+            canonical_homeserver("http://localhost:8008/"),
+            "http://localhost:8008"
+        );
     }
 
     #[test]

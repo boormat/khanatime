@@ -8,6 +8,7 @@ pub fn view() -> View {
                     "Khana Time Tracker"
                     span(class="tag is-info is-medium ml-3") { (format!("v{}", khanatime::APP_VERSION)) }
                 }
+                (view_update_banner())
                 span {
                     r"
                     For the moment this works best on a PC, as it is designed
@@ -25,7 +26,67 @@ pub fn view() -> View {
                     item in the menu.
                     "
                 }
+                div(class="box mt-5") {
+                    h2(class="title is-5") { "Stage status colours (FIA rally results)" }
+                    p(class="help") {
+                        "The per-test tag on Home shows a test's state:"
+                    }
+                    div(class="mt-2") {
+                        div(class="tags has-addons") { span(class="tag is-info") { "Blue" } span(class="tag") { "Completed" } }
+                        div(class="tags has-addons") { span(class="tag is-warning") { "Orange" } span(class="tag") { "Running" } }
+                        div(class="tags has-addons") { span(class="tag is-light") { "Grey" } span(class="tag") { "To run" } }
+                        div(class="tags has-addons") { span(class="tag is-info kt-struck") { "Blue" } span(class="tag") { "Cancelled (struck out)" } }
+                    }
+                }
             }
+        }
+    }
+}
+
+/// Soft update notice from `releases.json` (Help / About). Fail-soft when offline.
+fn view_update_banner() -> View {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        view! {}
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let info: Signal<Option<(String, String, String)>> = create_signal(None);
+        // latest, notes, url — Signal is Copy in Sycamore 0.9
+        wasm_bindgen_futures::spawn_local(async move {
+            let Some(manifest) = khanatime::version::fetch_releases_manifest().await else {
+                return;
+            };
+            if let Some((latest, notes)) =
+                khanatime::version::update_available(khanatime::APP_VERSION, &manifest)
+            {
+                let url = khanatime::version::pinned_app_base(&latest);
+                info.set(Some((latest, notes, url)));
+            }
+        });
+        view! {
+            (move || {
+                let Some((latest, notes, url)) = info.get_clone() else {
+                    return view! {};
+                };
+                let latest_label = latest.clone();
+                let open_label = format!("Open v{latest}");
+                view! {
+                    div(class="notification is-link is-light mb-4") {
+                        p {
+                            strong { "Update available: " }
+                            (format!("v{latest_label} (you are on v{})", khanatime::APP_VERSION))
+                        }
+                        pre(class="is-family-monospace is-size-7") { (notes) }
+                        p(class="help") {
+                            "Major/minor versions must not change mid-event. Patches may, if a hotfix is needed."
+                        }
+                        a(class="button is-link is-small mt-2", href=url, target="_blank") {
+                            (open_label)
+                        }
+                    }
+                }
+            })
         }
     }
 }

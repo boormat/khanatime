@@ -1,0 +1,80 @@
+# Bleeding-edge preview from main → /khanatime/main/ with app_version=dev-<sha>.
+# Publishes ONLY to the gh-pages branch (same as release.yml).
+# Repo Settings → Pages → Source = Deploy from a branch → gh-pages /(root).
+name: preview
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/trunk-action@v0.5.1
+        with:
+          version: "v0.21.14"
+
+      - name: Short SHA
+        run: echo "SHA=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+
+      - name: Check
+        run: ./scripts/check.sh
+        env:
+          KHANATIME_APP_VERSION: dev-${{ env.SHA }}
+
+      - name: Build preview WASM
+        run: |
+          set -euo pipefail
+          export KHANATIME_APP_VERSION="dev-${SHA}"
+          trunk build --release --public-url /khanatime/main/
+
+      - name: Assemble site (update /main + catalog index)
+        run: |
+          set -euo pipefail
+          mkdir -p site
+          git fetch origin gh-pages:gh-pages 2>/dev/null || true
+          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
+            git archive gh-pages | tar -x -C site
+          fi
+          rm -rf site/main
+          mkdir -p site/main
+          cp -a dist/. site/main/
+          mkdir -p "site/main/${SHA}"
+          cat > "site/main/${SHA}/index.html" <<EOF
+          <!DOCTYPE html>
+          <meta charset="utf-8">
+          <title>Khanatime preview ${SHA}</title>
+          <meta http-equiv="refresh" content="0; url=/khanatime/main/">
+          <link rel="canonical" href="/khanatime/main/">
+          <p>Preview <code>dev-${SHA}</code> — <a href="/khanatime/main/">continue</a>.</p>
+          EOF
+          find site -mindepth 1 -maxdepth 1 -type f ! -name 'releases.json' -delete
+          python3 scripts/ci_write_pages_index.py site
+          test -d site/main
+          ls -la site | head -40
+
+      - name: Publish to gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          force_orphan: false
+          keep_files: false
+          full_commit_message: "pages: preview dev-${{ env.SHA }}"

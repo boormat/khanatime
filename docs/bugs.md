@@ -353,6 +353,293 @@ on the time field; restore the car-tag → picker-modal trigger and make
 `apply_car` amend a confirmed finish (new car) while using the live record car.
 `clear_after_confirm` clears the selection after a confirmed provisional.
 
+### B15. Edit event → remove a driver → Close → Open → event doesn't open
+**Files:** `src/khana/page/event.rs` (`Msg::DeleteEntry`, `save_batch`/confirm),
+`src/app.rs` (`OpenSaved`), `src/khana/event.rs` (`load_event`)
+**Severity:** High
+**Detail:** Edit the event, remove a driver (entry), Save, **Close Event**, then
+**Open** it from the Saved list — nothing happens; the event doesn't open (Home
+stays "No event open"). `DeleteEntry` removes from the staged `edit_event`; the
+suspect is the save/confirm → `enqueue_setup` → `load_event` (replay) path or the
+published-`Join` branch of `OpenSaved`.
+
+### ~~B16. Demo opens as Organiser, but refresh drops to Official~~ ✅ DONE
+**File:** `src/app.rs` — `Model::init` / `refresh_role`
+**Severity:** Medium
+**Detail:** Open the demo (or any loaded event) → role shows **Organiser**. A page
+refresh → **Official**. `refresh_role` was only called on `Msg::SetEvent`,
+`switch_to_draft`, and identity changes — not at init — so the role signal stayed
+at its default `Official` after a refresh.
+**Fix:** call `refresh_role(m)` at the end of `Model::init` (event + identity are
+set there), so the demo and any session-loaded event get the right role on refresh.
+
+### B17. Deleting a published event with pending results is too easy
+**Files:** `src/page/home.rs` — `view_delete_modal`; `src/app.rs` `DeleteEvent`
+**Severity:** High
+**Detail:** The Saved-events delete modal is generic ("Its data is removed from
+this device only.") even for a **published** event with an unsent outbox
+(`pending`) and recorded results — a serious loss. Needs a strong warning for
+published events with a pending backlog/results, plus a second confirmation step
+(e.g. type-to-confirm).
+
+### B18. Stage/test naming — standardise to T1 / "T1: name"
+**Files:** app-wide (`home.rs` per-test tags, `timing.rs` stage list + header,
+results, event config)
+**Severity:** Low (consistency)
+**Detail:** Stages render as "Test 1", "Test 1 · 80%", etc. Standardise: compact
+views show **T1**; where a name is shown use **T1: Dog Trial**; a Stage/Test chip
+is just **T1**. (Home tags already use `T{n}`.)
+
+### B19. Timekeeper view needs a compact stage picker with per-test status
+**File:** `src/khana/page/timekeeper.rs`
+**Severity:** Medium
+**Detail:** The Timekeeper (manual entry) view changes stage only via the
+"stage N" command-line; there's no visual stage picker. Add a compact stage
+picker list at the top with the same per-test status/% colours as the Home page.
+
+### B20. Timing page car chips — colour-code by runs left
+**File:** `src/khana/page/stopwatch.rs` (`view_car_chips`)
+**Severity:** Medium
+**Detail:** Car chips are all the same colour. Colour-code them by how many runs
+a car has left: **green** needs to run, **red** done (or too many runs), **blue**
+done the minimum (`runs_scored`). Use the shared `car_attempts_done` so DNS
+counts.
+
+### B21. Timing page TBA "?" layout
+**File:** `src/khana/page/stopwatch.rs` (`view_car_chips`)
+**Severity:** Low
+**Detail:** The TBA row wastes space with a "TBA" label tag. Drop the "TBA" tag;
+make "?" a normal car chip (car icon, like the others) at the **start** of the
+row of cars that have done all their runs.
+
+### ~~B22. "Sign in or create" modal — homeserver dropdown alignment~~ ✅ DONE
+**File:** `src/page/accounts.rs` (`view_create_modal`, homeserver `<select>`)
+**Severity:** Low (UI)
+**Detail:** The homeserver picker in the create/sign-in modal is a `<select>`
+dropdown with poor alignment.
+**Fix:** replaced with selectable homeserver **tag/button** pickers
+(`.kt-hs-tags`, selected = `is-primary is-selected`), consistent with the
+other tag pickers in the app.
+
+### ~~B23. SSO sign-in from #accounts redirects to Home~~ ✅ DONE
+**File:** `src/sync.rs` (`sso_complete` / `add_homeserver` end with
+`Show(Screen::Home)`), `src/app.rs` (`SyncState.return_to`)
+**Severity:** Medium
+**Detail:** Signing in via SSO while on the Accounts page bounces you to Home.
+`CreateAccount` (app.rs) stays on Accounts — the redirect is the SSO/login path,
+which should return to Accounts (or the originating screen), not Home.
+**Fix:** a `return_to` screen signal is set at the dispatch site (Accounts'
+SSO + "Login with password" buttons → `Accounts`); `sso_complete` and
+`add_homeserver`'s login path show `return_to` instead of hardcoded Home. A
+parked join still resumes first.
+
+### ~~B24. SSO accounts not associated with matrix.org~~ ✅ DONE
+**File:** `src/services/matrix.rs` (`save_session_inner`, `ensure_homeserver`,
+`set_session_reg`, `save_homeserver`, `save_account`, `ensure_client_for`),
+`src/khana/event.rs` (`canonical_homeserver`)
+**Severity:** Medium
+**Detail:** `new_client("https://matrix.org")` resolves to
+`matrix-client.matrix.org` and SSO saved the session keyed by
+`client.homeserver()` (sync.rs:1129), while the homeserver config entry is
+`https://matrix.org` — so SSO accounts didn't associate with the matrix.org
+entry (exact-string match). Non-SSO (local synapse) accounts match fine.
+**Root cause:** a matrix-sdk `Url` serializes with a **trailing slash**, so
+`client.homeserver()` is `https://matrix-client.matrix.org/` — an exact string
+match against `https://matrix-client.matrix.org` misses, and the account +
+config were stored under the trailing-slash resolved URL (a separate
+"matrix-client.matrix.org" entry) on every fresh SSO.
+**Fix:** `canonical_homeserver` trims trailing slashes and maps the resolved
+matrix.org endpoint → `https://matrix.org`. Every low-level writer
+(`save_session_inner`, `ensure_homeserver`, `set_session_reg`, `save_homeserver`,
+`save_account`) and the lookups (`load_session_for`, `remove_session`,
+`remove_homeserver`) canonicalize, and `ensure_client_for` compares canonically
+so it reuses the active client. Startup `normalize_homeserver_storage()` folds
+any pre-fix entries. No migration needed beyond that (pre-release).
+
+### ~~B25. Creating an account should also create a Contact~~ ✅ DONE
+**File:** `src/app.rs` (`Msg::CreateAccount`)
+**Severity:** Medium
+**Detail:** Creating an account doesn't add the user to contacts.
+**Fix:** a new account now also upserts a `Contact`. The creation lives in
+`save_session_inner`'s new-account branch, so it fires on **every** path that
+creates an account — SSO, username/password create, and the add-homeserver
+auto-register — while re-logins of an existing account skip it. The
+`CreateAccount` handler then enriches the contact with name/description.
+Account deletion only touches accounts, so the contact survives.
+
+### ~~B26. Destructive deletes need a deliberate gesture + confirm~~ ✅ DONE
+**Files:** `src/page/accounts.rs` (homeserver remove, contact remove),
+`view_remove_modal`
+**Severity:** Medium
+**Detail:** Some delete actions fired on a stray click. Account forget and
+saved-event delete already had confirm modals; homeserver remove and contact
+remove fired immediately.
+**Fix:** both now arm a `RemoveTarget` and confirm via a modal (mirroring the
+forget modal) — no immediate deletes remain.
+
+### B27. Signing-key display → compact tag + share modal
+**File:** `src/page/accounts.rs` (`view_signing_key`)
+**Severity:** Low
+**Detail:** Collapse the signing-key card to a small tag near the bottom of the
+page with a **share** button that opens a modal (QR / copy URI / other) — the
+general share pattern, to save space.
+**Status:** skipped for now (space savings not worth the churn).
+
+### ~~B28. Add-homeserver quick-pick buttons~~ ✅ DONE
+**File:** `src/page/accounts.rs` (`view_add_hs_modal`)
+**Severity:** Low
+**Detail:** Offer one-tap buttons for common local homeservers
+(`localhost:8008`, `boomtime.local:8008`) alongside the existing `matrix.org`
+button. Synapse's default client API port is **8008** (8448 is federation-only,
+not used — decided to stay on 8008).
+
+### ~~B29. #timing — staged car replaceable after it has started~~ ✅ DONE
+**File:** `src/khana/page/stopwatch.rs` (`view_action_buttons`,
+`view_car_chips`), `styles/app.scss`
+**Severity:** Medium
+**Detail:** After pressing Start the car stays staged in the selected-car box
+(`sm.car` is never cleared), but it can still be replaced — type another car
+number, tap a car chip, or reopen the picker. The box is no longer
+`is-clickable` once the car is on course, yet the input and chips still change
+the staged car, so the user can stage a *different* car while the first is
+still out on the course. Confusing: the running car vanishes from the box, and
+Stop on the staged car errors ("not on course") or a second Start can be sent.
+**Fix:** once the staged car has a pending start it is locked in — the car
+chips and TBA chip are disabled until it finishes or is voided, and the
+selected-car box turns amber (`.kt-selected-car.is-on-course`) to signal the
+locked/running state.
+
+### B30. Join via QR — "Invalid stream token" sync loop
+**Files:** `src/services/matrix.rs` (`new_client`, `start_sync`),
+`src/khana/event.rs` (`homeserver_store_key`), `src/sync.rs` (`sync_error_for`)
+**Severity:** High
+**Detail:** After publishing to a local homeserver and opening the QR link on
+another device, the joining client logged `400 / M_UNKNOWN Invalid stream
+token` in a tight loop forever. matrix-sdk keeps the sync `since` token
+**per store, not per homeserver**; `new_client` gave every homeserver the same
+IndexedDB store (`khanatime_sync`), so once any homeserver had been synced on
+that origin (e.g. an earlier matrix.org SSO), the next client — joining
+localhost — read that server's token and sent it to the wrong homeserver,
+which rejected it and the loop retried the same token.
+**Fix:**
+- Each homeserver gets its own IndexedDB store (`homeserver_store_key`, based
+  on the canonical URL) so sync tokens never cross homeservers. Existing
+  `khanatime_sync` data is orphaned (re-login once; `kt_accounts` sessions in
+  localStorage restore in one tap).
+- `start_sync` now takes an error callback: on `Invalid stream token` it clears
+  the stored token (so a re-login does a fresh full sync), surfaces
+  `ConnState::Error` ("Re-login to resume") and stops the loop instead of
+  spamming.
+
+### B31. Publish — createRoom 400 "Room alias already taken" + 502 directory lookups
+**File:** `src/services/matrix.rs` (`server_name`, `alias`, `create_or_join_space`)
+**Severity:** High
+**Detail:** Publishing to the local Synapse failed with `POST /createRoom →
+400` and the alias pre-check (`GET /directory/room/…`) returned **502**. The
+homeserver URL was `http://localhost:8008`, so `server_name()` returned
+`localhost:8008` and every alias was built as `#…:localhost:8008`. But the
+Synapse server name is `localhost` (the domain of user ids) — `#…:localhost:8008`
+is a *remote* alias, so directory lookups 502 (federation) and, on re-publish
+of an already-published alias, Synapse 1.158 returns **400 `M_ROOM_IN_USE`
+"Room alias already taken"** (its createRoom handler raises 400, not 409). The
+create-or-join fallback then can't resolve the existing room because it queries
+the wrong alias form, so the raw 400 surfaces. The same bug would break
+matrix.org aliases (`matrix-client.matrix.org` ≠ `matrix.org`).
+**Fix:** `server_name()` now takes the domain of the authenticated user id
+(`@mat:localhost` → `localhost`), falling back to the homeserver host minus
+`:port`. Aliases become `#…:localhost` (and `#…:matrix.org`), directory
+lookups are local, and the alias-taken fallback re-joins the existing room
+(same event id) or reports the clear "alias in use by a different event"
+error.
+
+### ~~B32. Publish then refresh — event replays empty (draft), setup manifest rejected~~ ✅ DONE
+**Files:** `src/app.rs` (`enqueue_setup`), `src/khana/event.rs` (`setup_body`),
+`src/khana/page/event.rs` (`copy_as_new`)
+**Severity:** High
+**Detail:** After a successful publish, a refresh left the event as an
+empty-named **draft** that wouldn't open. The published setup manifest was
+persisted to the local log/pending, but **rejected at replay**: the manifest
+carried a *stale signature*. `enqueue_setup`/`setup_body` only signed when
+`signature.is_none()`, and the in-memory event already carried a signature
+from an earlier replay/echo (or from `copy_as_new` cloning a published event
+without clearing the source's signature). `publish_execute` then mutated the
+event (`status → Published`, `space_id`/`timing_id`) and the manifest was
+built with the old signature over the pre-publish payload — so
+`verdict_with` returned `Invalid`, `merge_setup` was skipped, and the event
+replayed as `EventInfo::default()`.
+**Fix:** `setup_body` and `enqueue_setup` now **always re-sign** over the
+current payload (the signing key is stable, so this is cheap); `copy_as_new`
+clears `signature`/`signing_key` on the clone. `enqueue_setup` now delegates
+to `setup_body` instead of duplicating the sign+serialise logic.
+
+### B33. `promote` leaves `origin=""` — confirmed entries never relay to a second room
+**File:** `src/log.rs` (`promote`)
+**Severity:** Low (latent, multi-transport)
+**Detail:** `promote` moves a pending message into the durable log with
+`mid`/`pending` set but `origin` left empty. `relay_to_room`
+(`src/sync.rs:285`) skips entries with empty origin, so a message promoted
+from the outbox after a successful send is never relayed to a second
+homeserver/room even when it's not yet confirmed there. Confirmed-in-room
+tracking relies only on the mid/content-id, not the origin.
+
+### B34. `enqueue_setup`'s internal flush can target the previously-joined room
+**File:** `src/app.rs` (`enqueue_setup`), `src/sync.rs` (`flush_pending_wasm`)
+**Severity:** Low (latent)
+**Detail:** `enqueue_setup` calls `flush_pending` immediately, before
+`publish_execute` calls `join_current_event` to switch to the new event's
+timing room. If `matrix::room()` still holds a previously-joined room, the new
+event's setup manifest is sent to the **old** room. Nothing is lost locally
+(`promote` still records it), but the old room receives the manifest.
+
+### ~~B35. After publish, app looks offline (no comms) until a refresh~~ ✅ DONE
+**Files:** `src/khana/page/event.rs` (`publish_execute`), `src/sync.rs`
+(`connect_after_publish`, `restore_and_connect`)
+**Severity:** Medium
+**Detail:** After a successful publish the Chat window showed no comms and
+nothing connected until an F5. `publish_execute` ended with
+`join_current_event`, which only re-joins the room — it never starts the sync
+loop or sets `ConnState::LoggedIn`. A refresh worked because `resume_on_load`
+runs the full `restore_and_connect` (identity + `LoggedIn` + sync loop).
+**Fix:** publish now ends with `connect_after_publish(model, hs)`, which
+restores the stored session for the publish homeserver and runs the same full
+connect as F5 (`restore_and_connect`); it falls back to a room-only re-join if
+no session is stored.
+
+---
+
+### ~~B36. Connect fails after matrix.org publish — `invalid_grant ... access grant is invalid, expired or revoked`~~ ✅ DONE
+**Files:** `src/services/matrix.rs` (`start_sync`, `is_invalid_grant`,
+`recover_with_stored_password`, `deactivate_session_for`), `src/sync.rs`
+(`restore_and_connect`)
+**Severity:** High
+**Detail:** After publishing to matrix.org the connect step failed with
+`failed to detect refresh token: server returned error response invalid_grant
+provided access grant is invalid, expired or revoked`, and every reload/publish
+retried the same dead session. Two underlying problems:
+- **Stale stored refresh token.** matrix-sdk (built with `handle_refresh_tokens`)
+  rotates refresh tokens on every refresh, persisting the new ones only to its
+  own IndexedDB store; the app's `kt_accounts` was re-saved only at connect
+  time, so after any mid-session auto-refresh a reload restored the already
+  revoked grant → `invalid_grant`.
+- **No recovery path.** `restore_and_connect` surfaced the raw SDK error and
+  left the dead session active, so reconnects failed forever. The stored
+  password (open-reg servers) documented for expiry re-login was never used.
+**Fix:**
+- `start_sync` now subscribes to `client.subscribe_to_session_changes()` and
+  re-saves the session (`save_session`) whenever tokens change, so the stored
+  grant stays in lockstep with rotation (covers every connect path).
+- On an `invalid_grant` connect error, `restore_and_connect` recovers: a
+  password account with a stored password re-logs in transparently
+  (`recover_with_stored_password`); an SSO/no-password account (matrix.org) is
+  deactivated (`deactivate_session_for`) and a clear
+  "session expired or was revoked — sign in again" error is shown instead of the
+  raw SDK message. The sync loop also stops (instead of retrying silently) on
+  `invalid_grant`, mirroring the stale-sync-token handling.
+- The account-list "Login" button was restore-only, so an SSO account with a
+  dead grant just re-restored the dead tokens. `relogin` now routes `OAuth`
+  accounts to the fresh SSO flow (always), and the button is labelled
+  "Sign in with SSO" for them; password accounts keep the one-tap restore.
+
 ---
 
 ## Priority Suggestion
