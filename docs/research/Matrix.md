@@ -385,4 +385,4 @@ gaps where WiFi cannot reach.
 - [Continuwuity homeserver](https://gitlab.com/continuwuity/continuwuity)
 - [Maubot](https://mau.bot/)
 - [PLAN.md](../../PLAN.md) — full project planning document
-- [Berty.md](Berty.md) — Berty P2P proof of concept
+- [Berty.md](https://github.com/boormat/boomtrack/blob/main/docs/research/Berty.md) — Berty P2P proof of concept (moved to the boomtrack repo)

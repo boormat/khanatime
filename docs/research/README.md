@@ -11,11 +11,13 @@
 |------|-------|--------|
 | `Matrix.md` | Matrix transport architecture | **Partly superseded** — multi-room (general/timing/results/safety/location) design; current plan uses a **single shared room per event** with store-and-forward via room history |
 | `MessagingSpike.md` | Matrix spike conclusions / decision record | Current — landed on one room per event named "timing"; local echo + broadcast is the sync model |
-| `Bluetooth.md` | BLE phone-to-phone options | Background only — BLE may supplement Matrix offline, not a primary transport |
-| `Berty.md` | Berty PWA deep-link idea | Background only — not adopted |
-| `StoreAndForward.md` | Mesh / store-and-forward landscape | Background only — room history is our store-and-forward layer |
 | `Cryptography.md` | Identity & signatures | Background — Matrix E2EE + per-official DID concepts inform identity design |
 | `Architecture.md` | Original architecture notes + open questions | Background — several open questions remain open in `PLAN.md` |
+
+The offline-comms research (`Bluetooth.md`, `Berty.md`, `StoreAndForward.md`)
+moved to the **boomtrack** repo (private, `boormat/boomtrack`) with the
+competitor-tracking project (BLE tags, trackside stations, courier phones,
+LoRa/GPS) on 2026-09-06. This repo is khana-cross timing only.
 
 ## Current direction (see PLAN.md)
 
